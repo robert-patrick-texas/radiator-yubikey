@@ -1,0 +1,13 @@
+# Release packages are built locally and attached to GitHub releases, not committed
+dist/
+
+# Never commit real databases or user CSVs: they contain YubiKey AES keys
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.csv
+!users.example.csv
+
+# Test output
+tests/tmp/

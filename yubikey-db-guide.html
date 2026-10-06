@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="How to build and maintain the local SQLite YubiKey database used by Radiator RADIUS for offline YubiKey OTP authentication.">
+<title>Radiator YubiKey Database Guide</title>
+<!--
+  Self-contained page: no external fonts, scripts, images or CDNs, so it can be
+  copied to any web server (including air-gapped networks) as a single file.
+  The small inline script only adds "Copy" buttons and table-of-contents
+  highlighting; the page is fully usable if a Content-Security-Policy blocks it.
+  Source: README.md shipped with yubikey-db.sh. Keep the two in sync.
+-->
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --bg-code: #f3f4f6;
+  --text: #1f2328;
+  --text-muted: #59636e;
+  --border: #d8dee4;
+  --accent: #0b5cad;
+  --accent-soft: #e8f1fb;
+  --warn: #9a6700;
+  --warn-bg: #fff8e5;
+  --warn-border: #e9c46a;
+  --danger: #b42318;
+  --danger-bg: #fdf0ef;
+  --danger-border: #f1a9a0;
+  --note-bg: #eef5fd;
+  --note-border: #9cc3ec;
+  --code-comment: #6a737d;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216;
+    --bg-soft: #161b22;
+    --bg-code: #1b2129;
+    --text: #e6edf3;
+    --text-muted: #9aa5b1;
+    --border: #2d333b;
+    --accent: #6cb6ff;
+    --accent-soft: #15283d;
+    --warn: #e3b341;
+    --warn-bg: #2a2212;
+    --warn-border: #6b5418;
+    --danger: #ff8f84;
+    --danger-bg: #2c1614;
+    --danger-border: #6e2a24;
+    --note-bg: #13233a;
+    --note-border: #2c5282;
+    --code-comment: #8b949e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --bg-soft: #161b22; --bg-code: #1b2129; --text: #e6edf3;
+  --text-muted: #9aa5b1; --border: #2d333b; --accent: #6cb6ff; --accent-soft: #15283d;
+  --warn: #e3b341; --warn-bg: #2a2212; --warn-border: #6b5418; --danger: #ff8f84;
+  --danger-bg: #2c1614; --danger-border: #6e2a24; --note-bg: #13233a;
+  --note-border: #2c5282; --code-comment: #8b949e; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 var(--sans);
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--bg); padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+
+/* Layout: sidebar table of contents on wide screens, stacked on narrow ones */
+.layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+}
+@media (min-width: 1000px) {
+  .layout { grid-template-columns: 250px minmax(0, 1fr); padding: 0 32px; }
+}
+
+header.hero {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+header.hero .inner { max-width: 1180px; margin: 0 auto; padding: 40px 16px 32px; }
+@media (min-width: 1000px) { header.hero .inner { padding: 48px 32px 36px; } }
+.eyebrow { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+header.hero h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 38px); line-height: 1.2; letter-spacing: -.01em; }
+header.hero .lede { margin: 0; max-width: 70ch; font-size: 18px; color: var(--text-muted); }
+.meta { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-muted); }
+
+nav.toc { padding-top: 32px; font-size: 14px; }
+@media (min-width: 1000px) {
+  nav.toc { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: 32px 0 32px; }
+}
+nav.toc h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); border: 0; padding: 0; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; }
+nav.toc li { margin: 0; }
+nav.toc a { display: block; padding: 5px 10px; border-left: 2px solid var(--border); color: var(--text-muted); text-decoration: none; }
+nav.toc a:hover { color: var(--text); border-left-color: var(--text-muted); }
+nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+@media (max-width: 999px) {
+  nav.toc { border-bottom: 1px solid var(--border); padding-bottom: 24px; }
+  nav.toc ol { columns: 2 220px; column-gap: 16px; }
+}
+
+main { min-width: 0; padding: 8px 0 64px; }
+section { padding-top: 24px; }
+h2 { margin: 24px 0 12px; padding-bottom: 8px; font-size: 24px; line-height: 1.3; border-bottom: 1px solid var(--border); }
+h3 { margin: 28px 0 8px; font-size: 19px; }
+p, ul, ol { margin: 0 0 14px; }
+li { margin: 4px 0; }
+main > section > p, main > section > ul, main > section > ol { max-width: 78ch; }
+strong { font-weight: 650; }
+
+code {
+  font-family: var(--mono);
+  font-size: .88em;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .08em .35em;
+  overflow-wrap: anywhere;
+}
+.codeblock { position: relative; margin: 0 0 16px; }
+pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 13.5px/1.55 var(--mono);
+  tab-size: 4;
+}
+pre code { background: none; border: 0; padding: 0; font-size: inherit; overflow-wrap: normal; }
+pre .c { color: var(--code-comment); font-style: italic; }
+.copy {
+  position: absolute; top: 8px; right: 8px;
+  padding: 3px 10px;
+  font: 600 12px/1.6 var(--sans);
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.codeblock:hover .copy, .copy:focus-visible, .copy.done { opacity: 1; }
+@media (hover: none) { .copy { opacity: 1; } }
+.copy:hover { color: var(--text); }
+
+.table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+th { background: var(--bg-soft); font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+td.wrap code { white-space: normal; overflow-wrap: normal; }
+/* On phones, tables with 3+ columns keep a readable width and scroll sideways. */
+@media (max-width: 700px) {
+  table.wide { min-width: 640px; }
+  table.wide td:last-child { min-width: 24ch; }
+}
+
+.callout {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--note-border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--note-bg);
+  max-width: 78ch;
+}
+.callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+.callout .label { display: block; margin-bottom: 2px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.callout.warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.callout.warn .label { color: var(--warn); }
+.callout.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+.callout.danger .label { color: var(--danger); }
+.callout.note .label { color: var(--accent); }
+
+.flow { counter-reset: step; list-style: none; padding: 0; max-width: 78ch; }
+.flow li { position: relative; padding-left: 40px; margin: 10px 0; }
+.flow li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  font-weight: 700; font-size: 14px; text-align: center; line-height: 26px;
+}
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0 0 18px; }
+.card { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft); }
+.card h4 { margin: 0 0 4px; font-size: 15px; }
+.card p { margin: 0; font-size: 14.5px; color: var(--text-muted); }
+
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
+.top-link { font-size: 13px; }
+
+@media print {
+  nav.toc, .copy, .skip, .top-link { display: none !important; }
+  .layout { display: block; padding: 0; }
+  header.hero { background: none; }
+  body { font-size: 11pt; }
+  pre, .callout, .table-wrap, .card { break-inside: avoid; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .table-wrap { overflow: visible; }
+  a { color: inherit; }
+  h2, h3 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+
+<header class="hero">
+  <div class="inner">
+    <p class="eyebrow">Radiator RADIUS · YubiKey OTP · Offline</p>
+    <h1>Radiator YubiKey Database Guide</h1>
+    <p class="lede"><code>yubikey-db.sh</code> builds and maintains the local SQLite database that Radiator RADIUS uses to check YubiKey one-time passwords (OTPs) <strong>offline</strong>, without contacting Yubico's cloud (YubiCloud).</p>
+    <div class="meta">
+      <span class="chip">Radiator 4.x · AuthBy SQLYUBIKEY</span>
+      <span class="chip">SQLite</span>
+      <span class="chip">No cloud dependency</span>
+      <span class="chip">Document version 1.0.1 · October 2026</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#how-it-works">How offline authentication works</a></li>
+      <li><a href="#prerequisites">Prerequisites</a></li>
+      <li><a href="#quick-start">Quick start</a></li>
+      <li><a href="#step-1">Step 1: Program the YubiKeys</a></li>
+      <li><a href="#step-2">Step 2: Create the database</a></li>
+      <li><a href="#step-3">Step 3: Load users</a></li>
+      <li><a href="#step-4">Step 4: Configure Radiator</a></li>
+      <li><a href="#step-5">Step 5: Test a login</a></li>
+      <li><a href="#day-to-day">Day-to-day management</a></li>
+      <li><a href="#reference">Command reference</a></li>
+      <li><a href="#database">Database layout</a></li>
+      <li><a href="#security">Security notes</a></li>
+      <li><a href="#troubleshooting">Troubleshooting</a></li>
+      <li><a href="#upgrading">Upgrading old databases</a></li>
+      <li><a href="#references">References</a></li>
+    </ol>
+  </nav>
+
+  <main id="content">
+
+<section id="overview">
+  <h2>Overview</h2>
+  <p>Use <code>yubikey-db.sh</code> to:</p>
+  <ul>
+    <li>create the database and its <code>yubikeys</code> table</li>
+    <li>add users one at a time, or in bulk from a CSV file</li>
+    <li>list, enable, disable, and delete users</li>
+    <li>print a matching Radiator configuration block</li>
+  </ul>
+  <div class="cards">
+    <div class="card"><h4>yubikey-db.sh</h4><p>The management script. Run it on, or next to, the Radiator server.</p></div>
+    <div class="card"><h4>users.example.csv</h4><p>A sample bulk-import file that contains test values only.</p></div>
+    <div class="card"><h4>This guide</h4><p>Setup, day-to-day use, and troubleshooting.</p></div>
+  </div>
+</section>
+
+<section id="how-it-works">
+  <h2>How offline YubiKey authentication works</h2>
+  <p>Each time someone touches a YubiKey, it types a 44-character one-time password. The first 12 characters are the key's <strong>public ID</strong>. The remaining 32 are encrypted with an <strong>AES key</strong> that is stored on the YubiKey.</p>
+  <p>Radiator's <code>&lt;AuthBy SQLYUBIKEY&gt;</code> module:</p>
+  <ol class="flow">
+    <li>looks up the user and public ID in the SQLite database</li>
+    <li>decrypts the OTP with the AES key stored for that YubiKey</li>
+    <li>compares the YubiKey's use counters with the saved values, so a captured OTP can't be replayed, and then saves the new counters</li>
+  </ol>
+  <div class="callout note">
+    <span class="label">Key point</span>
+    <p>Nothing leaves the Radiator server. The catch is that Radiator must know each YubiKey's AES key. Yubico keeps the factory-programmed key secret, so <strong>every YubiKey must be reprogrammed with a key you generate</strong>, and that key must be loaded into this database.</p>
+  </div>
+</section>
+
+<section id="prerequisites">
+  <h2>Prerequisites</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Where</th><th>What</th></tr></thead>
+    <tbody>
+      <tr><td>Machine where you run the script</td><td><code>bash</code> 4 or later, <code>sqlite3</code>, <code>perl</code></td></tr>
+      <tr><td>Radiator server</td><td class="wrap">Radiator 4.x with the Perl modules <code>DBD::SQLite</code>, <code>Auth::Yubikey_Decrypter</code> (0.05 or later), and <code>Crypt::Rijndael</code></td></tr>
+      <tr><td>Machine where you program keys</td><td>YubiKey Manager (<code>ykman</code>)</td></tr>
+    </tbody>
+  </table></div>
+  <p>To install the tools on Debian or Ubuntu:</p>
+<pre><code>sudo apt install sqlite3 perl</code></pre>
+  <p>To check that Radiator's Perl modules are installed:</p>
+<pre><code>perl -MDBD::SQLite -MAuth::Yubikey_Decrypter -MCrypt::Rijndael -e 'print "ok\n"'</code></pre>
+</section>
+
+<section id="quick-start">
+  <h2>Quick start</h2>
+<pre><code><span class="c"># 1. Create the database so the Radiator service account can write to it</span>
+sudo ./yubikey-db.sh init --owner radiator:radiator
+
+<span class="c"># 2. Load users from a CSV file (check the file first, then import it)</span>
+sudo ./yubikey-db.sh import --dry-run users.csv
+sudo ./yubikey-db.sh import users.csv
+
+<span class="c"># 3. Print the Radiator config block and paste it into radius.cfg</span>
+./yubikey-db.sh config
+
+<span class="c"># 4. Confirm the users are loaded</span>
+sudo ./yubikey-db.sh list</code></pre>
+  <p>The database is created at <code>/etc/radiator/db/yubicred.db</code> unless you set a different path with <code>-d</code> (see <a href="#global-options">Global options</a>).</p>
+</section>
+
+<section id="step-1">
+  <h2>Step 1: Program the YubiKeys</h2>
+  <p>Do this once for each YubiKey, on a trusted workstation. The command overwrites OTP slot 1 or 2, which is the slot that types an OTP when the key is touched briefly.</p>
+  <div class="callout warn">
+    <span class="label">Warning</span>
+    <p>Slot 1's factory configuration can't be restored. After you reprogram it, the key no longer works with services that check OTPs through YubiCloud.</p>
+  </div>
+<pre><code>ykman otp yubico 2 --serial-public-id --generate-private-id --generate-key</code></pre>
+  <p><code>ykman</code> shows three values. Record them for this user:</p>
+  <div class="table-wrap"><table class="wide">
+    <thead><tr><th>ykman output</th><th>CSV column</th><th>Format</th></tr></thead>
+    <tbody>
+      <tr><td>Public ID</td><td><code>public_id</code></td><td>12 modhex characters (only <code>cbdefghijklnrtuv</code>)</td></tr>
+      <tr><td>Private ID</td><td><code>private_id</code></td><td>12 hex characters</td></tr>
+      <tr><td>Secret key</td><td><code>aes_key</code></td><td>32 hex characters</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout danger">
+    <span class="label">Do not</span>
+    <p>Do not add <code>--upload</code>. That option sends the key to Yubico.</p>
+  </div>
+  <p>To use a public ID that you choose instead of one based on the serial number, replace <code>--serial-public-id</code> with <code>--public-id &lt;modhex&gt;</code>.</p>
+</section>
+
+<section id="step-2">
+  <h2>Step 2: Create the database</h2>
+<pre><code>sudo ./yubikey-db.sh init --owner radiator:radiator</code></pre>
+  <ul>
+    <li><code>init</code> is safe to run again. It doesn't change an existing table or its data.</li>
+    <li><code>--owner</code> should be the account that the Radiator service runs as. Radiator writes to the database after every login to save the counters that block replayed OTPs. SQLite also creates a temporary journal file next to the database, so Radiator needs write access to the <strong>folder</strong> as well as the file. If Radiator runs as <code>root</code>, you can leave out <code>--owner</code>.</li>
+    <li>New files are created with mode <code>0640</code> and new folders with <code>0750</code>.</li>
+  </ul>
+</section>
+
+<section id="step-3">
+  <h2>Step 3: Load users</h2>
+
+  <h3 id="csv-import">Option A: Bulk import from a CSV file</h3>
+  <p>Create a CSV file with these columns:</p>
+<pre><code>username,public_id,private_id,aes_key,password,active
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,1234,1
+bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,yes</code></pre>
+  <div class="table-wrap"><table class="wide">
+    <thead><tr><th>Column</th><th>Required</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>username</code></td><td>Yes</td><td>The RADIUS login name. Allowed characters: letters, digits, and <code>. _ @ + -</code></td></tr>
+      <tr><td><code>public_id</code></td><td>Yes</td><td>YubiKey public ID in modhex (usually 12 characters)</td></tr>
+      <tr><td><code>private_id</code></td><td>Yes</td><td>12 hex characters. 12 modhex characters are also accepted and converted to hex.</td></tr>
+      <tr><td><code>aes_key</code></td><td>Yes</td><td>32 hex characters. Spaces and colons are removed.</td></tr>
+      <tr><td><code>password</code></td><td>No</td><td>Static password or PIN for two-factor logins. Leave it empty if users log in with the OTP only.</td></tr>
+      <tr><td><code>active</code></td><td>No</td><td><code>1</code>/<code>0</code>, <code>true</code>/<code>false</code>, or <code>yes</code>/<code>no</code>. The default is <code>1</code>.</td></tr>
+    </tbody>
+  </table></div>
+  <p>CSV rules:</p>
+  <ul>
+    <li>The header row is optional.</li>
+    <li>Blank lines and lines that start with <code>#</code> are skipped.</li>
+    <li>Windows (CRLF) line endings are accepted.</li>
+    <li>Spaces around fields and double quotes around a field are removed.</li>
+    <li><strong>Fields can't contain commas</strong>, including passwords.</li>
+    <li>One user can have several YubiKeys: add one row per key.</li>
+  </ul>
+  <p>Import steps:</p>
+<pre><code>chmod 600 users.csv                                <span class="c"># the file contains secret keys</span>
+sudo ./yubikey-db.sh import --dry-run users.csv    <span class="c"># check every row; makes no changes</span>
+sudo ./yubikey-db.sh import users.csv              <span class="c"># load the users</span>
+shred -u users.csv                                 <span class="c"># securely delete the file when done</span></code></pre>
+  <p>How the import works:</p>
+  <ul>
+    <li>Every row is checked first: field formats, plus duplicate public IDs or private IDs within the file. Problems are reported with their line numbers.</li>
+    <li>If any row is invalid, <strong>nothing is imported</strong>. Fix the file, or add <code>--skip-invalid</code> to load only the valid rows.</li>
+    <li>Valid rows are loaded in <strong>one transaction</strong>. If any row fails (for example, because the YubiKey is already in the database), none are loaded.</li>
+    <li>Add <code>--replace</code> to overwrite YubiKeys that are already in the database, for example after reprogramming them.</li>
+  </ul>
+  <p>See <code>users.example.csv</code> for a working example.</p>
+
+  <h3 id="single-add">Option B: Add one user</h3>
+  <p>If you run <code>add</code> with no values, it asks for each one. The private ID, AES key, and password aren't shown as you type:</p>
+<pre><code>sudo ./yubikey-db.sh add</code></pre>
+  <p>You can also pass the values as options:</p>
+<pre><code>sudo ./yubikey-db.sh add -u alice -P vvccccbbcdef        <span class="c"># asks for the private ID, key, and password</span>
+sudo ./yubikey-db.sh add -u svc.backup -P vvccccbbcdeh --no-password</code></pre>
+  <div class="callout warn">
+    <span class="label">Caution</span>
+    <p>Values passed with <code>-k</code> (AES key) and <code>-w</code> (password) can be seen by other users in <code>ps</code> and are saved in your shell history. Let the script ask for them, or use a CSV file.</p>
+  </div>
+</section>
+
+<section id="step-4">
+  <h2>Step 4: Configure Radiator</h2>
+  <p>Print a config block that already contains your database path:</p>
+<pre><code>./yubikey-db.sh config
+<span class="c"># or, for a database in another location:</span>
+./yubikey-db.sh -d /srv/radius/yubi.db config</code></pre>
+  <p>Paste the output into <code>radius.cfg</code> and reference it from your <code>&lt;Handler&gt;</code> with <code>AuthBy YubiKeyLocal</code>. The block it prints:</p>
+<pre><code>&lt;AuthBy SQLYUBIKEY&gt;
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=/etc/radiator/db/yubicred.db
+    DBUsername
+    DBAuth
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+    Require2Factor
+    CheckSecretId
+&lt;/AuthBy&gt;</code></pre>
+  <p>What the settings do:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Setting</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>AuthSelect</code></td><td>Finds a row by <strong>both</strong> the username and the YubiKey's public ID. This lets one user have several YubiKeys and stops one user's YubiKey from working for another user.</td></tr>
+      <tr><td><code>UpdateQuery</code></td><td>Saves the counters after each login. It takes the time from Radiator's <code>%5</code> value (the time in seconds) because SQLite doesn't support <code>current_timestamp()</code>.</td></tr>
+      <tr><td><code>Require2Factor</code></td><td>Makes users enter their static password, a colon, and then the OTP, for example <code>1234:vvccccbbcdef…</code>. <strong>Remove this line</strong> if users log in with the OTP only.</td></tr>
+      <tr><td><code>CheckSecretId</code></td><td>Also checks the private ID inside the OTP against the database.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Restart Radiator after you change its configuration.</p>
+</section>
+
+<section id="step-5">
+  <h2>Step 5: Test a login</h2>
+  <p>Use Radiator's <code>radpwtst</code> tool. Touch the YubiKey where the OTP goes:</p>
+<pre><code><span class="c"># Two-factor (Require2Factor set)</span>
+radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
+         -user alice -password '1234:&lt;touch YubiKey here&gt;'
+
+<span class="c"># OTP only</span>
+radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
+         -user alice -password '&lt;touch YubiKey here&gt;'</code></pre>
+  <p>Then check that the counters were updated:</p>
+<pre><code>sudo ./yubikey-db.sh list alice      <span class="c"># "accessed" and "counter" should now be filled in</span></code></pre>
+  <p>Enter the <strong>same</strong> OTP a second time. It must be rejected; that's the replay protection working.</p>
+  <div class="callout note">
+    <span class="label">Before the first rollout</span>
+    <p>Test with <code>Trace 4</code> in <code>radius.cfg</code> and read the SQL statements Radiator logs. See <a href="#confirm">Values to confirm on your first deployment</a>.</p>
+  </div>
+</section>
+
+<section id="day-to-day">
+  <h2>Day-to-day management</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>Command</th></tr></thead>
+    <tbody>
+      <tr><td>List all users and keys</td><td><code>sudo ./yubikey-db.sh list</code></td></tr>
+      <tr><td>Show one user</td><td><code>sudo ./yubikey-db.sh list alice</code></td></tr>
+      <tr><td>Suspend a user (all of their keys)</td><td><code>sudo ./yubikey-db.sh disable alice</code></td></tr>
+      <tr><td>Suspend one lost YubiKey</td><td><code>sudo ./yubikey-db.sh disable alice vvccccbbcdef</code></td></tr>
+      <tr><td>Turn a user back on</td><td><code>sudo ./yubikey-db.sh enable alice</code></td></tr>
+      <tr><td>Remove one YubiKey</td><td><code>sudo ./yubikey-db.sh delete alice vvccccbbcdef</code></td></tr>
+      <tr><td>Remove a user completely</td><td><code>sudo ./yubikey-db.sh delete alice</code></td></tr>
+      <tr><td>Replace a reprogrammed YubiKey</td><td><code>sudo ./yubikey-db.sh add --replace -u alice -P vvccccbbcdef</code></td></tr>
+    </tbody>
+  </table></div>
+  <p><code>list</code> never shows AES keys or passwords.</p>
+</section>
+
+<section id="reference">
+  <h2>Command reference</h2>
+<pre><code>yubikey-db.sh [global options] &lt;command&gt; [command options]</code></pre>
+
+  <h3 id="global-options">Global options</h3>
+  <div class="table-wrap"><table class="wide">
+    <thead><tr><th>Option</th><th>Environment variable</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>-d, --db FILE</code></td><td><code>DB_FILE</code></td><td><code>/etc/radiator/db/yubicred.db</code></td><td>Database file</td></tr>
+      <tr><td><code>-e, --secret-encoding ENC</code></td><td><code>SECRET_ENCODING</code></td><td><code>base64</code></td><td>How the AES key is stored: <code>base64</code> or <code>hex</code></td></tr>
+      <tr><td><code>-H, --password-hash MODE</code></td><td><code>PASSWORD_HASH</code></td><td><code>crypt</code></td><td>How passwords are stored: <code>crypt</code> (SHA-512 hash) or <code>clear</code> (plain text)</td></tr>
+      <tr><td><code>-h, --help</code></td><td></td><td></td><td>Show help</td></tr>
+      <tr><td></td><td><code>SQLITE3</code></td><td><code>sqlite3</code></td><td>Path to the <code>sqlite3</code> program</td></tr>
+    </tbody>
+  </table></div>
+  <p>Global options go <strong>before</strong> the command, for example <code>./yubikey-db.sh -d /tmp/test.db list</code>.</p>
+
+  <h3 id="commands">Commands</h3>
+  <div class="table-wrap"><table class="wide">
+    <thead><tr><th>Command</th><th>Options</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>init</code></td><td><code>-o, --owner USER[:GROUP]</code></td><td>Create the folder, database file, table, and index</td></tr>
+      <tr><td><code>add</code></td><td><code>-u USER</code>, <code>-P PUBLIC_ID</code>, <code>-p PRIVATE_ID</code>, <code>-k AES_KEY</code>, <code>-w PASSWORD</code>, <code>--no-password</code>, <code>--inactive</code>, <code>--replace</code></td><td>Add one user and YubiKey. Asks for any value you leave out.</td></tr>
+      <tr><td><code>import</code></td><td><code>--dry-run</code>, <code>--skip-invalid</code>, <code>--replace</code>, <code>CSV_FILE</code></td><td>Bulk-load users from a CSV file</td></tr>
+      <tr><td><code>list</code></td><td><code>[USER]</code></td><td>Show users and keys without their secrets</td></tr>
+      <tr><td><code>enable</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Set <code>active = 1</code></td></tr>
+      <tr><td><code>disable</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Set <code>active = 0</code></td></tr>
+      <tr><td><code>delete</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Delete the user's rows (or one key)</td></tr>
+      <tr><td><code>config</code></td><td></td><td>Print a sample <code>&lt;AuthBy SQLYUBIKEY&gt;</code> block</td></tr>
+    </tbody>
+  </table></div>
+  <p>The script exits with <code>0</code> on success and <code>1</code> on any error, so you can use it in other scripts and automation.</p>
+</section>
+
+<section id="database">
+  <h2>Database layout</h2>
+  <p>The table is <code>yubikeys</code>. There is one row per YubiKey.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Column</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td><code>username</code></td><td>RADIUS login name. Indexed. Not unique, because one user can have several YubiKeys.</td></tr>
+      <tr><td><code>password</code></td><td>Static password or PIN: <code>{crypt}$6$...</code>, plain text, or empty</td></tr>
+      <tr><td><code>active</code></td><td><code>1</code> = allowed, <code>0</code> = disabled. Radiator rejects any value other than <code>1</code>.</td></tr>
+      <tr><td><code>created</code></td><td>When the row was added (UTC)</td></tr>
+      <tr><td><code>accessed</code></td><td>Time of the last successful login (UTC). Empty until the first login.</td></tr>
+      <tr><td><code>tokenId</code></td><td>YubiKey public ID in modhex. Unique.</td></tr>
+      <tr><td><code>userId</code></td><td>YubiKey private ID in hex. Unique. This is the primary key.</td></tr>
+      <tr><td><code>secret</code></td><td>AES key, in base64 by default</td></tr>
+      <tr><td><code>counter</code>, <code>low</code>, <code>high</code></td><td>Counters that Radiator uses to block replayed OTPs</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>--replace</code> resets a YubiKey's counters to 0. Only use it for a YubiKey that has just been reprogrammed.</p>
+</section>
+
+<section id="security">
+  <h2>Security notes</h2>
+  <ul>
+    <li><strong>The database holds every user's AES key.</strong> Anyone who can read the file can copy those YubiKeys. Keep the file at <code>0640</code> or stricter, readable only by the Radiator account and root. Include it in encrypted backups only.</li>
+    <li><strong>CSV files hold the same secrets.</strong> Set them to <code>chmod 600</code>, don't commit them to Git or attach them to tickets, and delete them with <code>shred -u</code> after importing. The script warns you if a CSV file is readable by all users.</li>
+    <li>AES keys and passwords are sent to <code>sqlite3</code> through its input, not on its command line, so <code>ps</code> doesn't show them. The script checks the format of every value and quotes it safely.</li>
+    <li>Passwords are stored as salted SHA-512 <code>{crypt}</code> hashes by default. Only use <code>-H clear</code> if something else needs to read the plain-text password.</li>
+    <li>To revoke a lost YubiKey, use <code>disable</code> or <code>delete</code> straight away. Logins are checked against this database only, so there's nothing to revoke in a cloud service.</li>
+  </ul>
+</section>
+
+<section id="troubleshooting">
+  <h2>Troubleshooting</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Symptom</th><th>Cause and fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>sqlite3 not found</code></td><td>Install <code>sqlite3</code>, or set <code>SQLITE3=/path/to/sqlite3</code>.</td></tr>
+      <tr><td class="wrap"><code>no write access to ... (run with sudo?)</code></td><td>Run the script with <code>sudo</code>, or as the account that owns the database.</td></tr>
+      <tr><td class="wrap"><code>UNIQUE constraint failed: yubikeys.tokenId</code> (or <code>userId</code>)</td><td>That YubiKey is already in the database. Add <code>--replace</code> if it was reprogrammed.</td></tr>
+      <tr><td class="wrap"><code>import failed and was rolled back</code></td><td>No rows were loaded. Fix the cause shown above the message and run the import again.</td></tr>
+      <tr><td class="wrap"><code>nothing imported; fix the rows above</code></td><td>One or more CSV rows are invalid. Fix them, or add <code>--skip-invalid</code>.</td></tr>
+      <tr><td>All logins are rejected and <code>active</code> shows <code>true</code></td><td>The row was created with the old example commands. See <a href="#upgrading">Upgrading old databases</a>.</td></tr>
+      <tr><td class="wrap">Logins fail and Radiator logs <code>attempt to write a readonly database</code></td><td>Radiator can't write to the file <strong>or its folder</strong>. Run <code>init --owner &lt;radiator-user&gt;</code> again.</td></tr>
+      <tr><td>Logins fail and Radiator logs a bad OTP or decryption failure</td><td>The <code>secret</code> column is in the wrong format. See <a href="#confirm">Values to confirm</a>.</td></tr>
+      <tr><td>Logins fail and Radiator logs a <code>CheckSecretId</code> mismatch</td><td>The private ID is wrong, or is stored in a different format. Check it against the <code>ykman</code> output.</td></tr>
+      <tr><td>The first OTP works but the next ones fail</td><td><code>UpdateQuery</code> isn't saving counters. Check the folder permissions and the <code>UpdateQuery</code> line.</td></tr>
+      <tr><td><code>database is locked</code></td><td>Radiator is writing at that moment. The script waits up to 5 seconds, so run it again.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="confirm">Values to confirm on your first deployment</h3>
+  <p>These settings come from the Radiator 4.x reference manual. Confirm them on one test server with <code>Trace 4</code> before you load users in bulk:</p>
+  <ol>
+    <li><strong>AES key format.</strong> The manual says the <code>secret</code> column holds the key in base64, but it also says the default setup assumes hex. The script stores base64. If logins fail with decryption errors, rebuild the test database with <code>-e hex</code> and test again.</li>
+    <li><strong>Quoting of <code>%3</code> and <code>%7</code>.</strong> The sample config assumes Radiator quotes the public ID, as it does the username in <code>%0</code>. In the trace log, check that the SQL shows <code>tokenId='vvcc...'</code>.</li>
+    <li><strong>Two-factor login format.</strong> Check the <code>password:OTP</code> format with <code>radpwtst</code> before you tell users how to log in.</li>
+  </ol>
+  <p>After these work on one server, use the same settings everywhere.</p>
+</section>
+
+<section id="upgrading">
+  <h2>Upgrading a database built with the old example commands</h2>
+  <p>The original example commands created rows that Radiator can't use:</p>
+  <ul>
+    <li><code>"current_timestamp"</code> in double quotes stored the literal text <code>current_timestamp</code> in <code>created</code>, not the date and time.</li>
+    <li><code>active="true"</code> stored the text <code>true</code>, but Radiator only accepts <code>1</code>.</li>
+  </ul>
+  <p>To fix the existing rows:</p>
+<pre><code>sudo sqlite3 /etc/radiator/db/yubicred.db &lt;&lt;'SQL'
+UPDATE yubikeys SET active = 1 WHERE active = 'true';
+UPDATE yubikeys SET active = 0 WHERE active = 'false';
+UPDATE yubikeys SET created = CURRENT_TIMESTAMP WHERE created = 'current_timestamp';
+SQL</code></pre>
+  <p>The old commands also stored the AES key in hex, the private ID in modhex, and passwords in plain text. The cleanest fix is to export your source data to the CSV format above and re-import it with <code>--replace</code>, so that every row matches what this script creates.</p>
+</section>
+
+<section id="references">
+  <h2>References</h2>
+  <ul>
+    <li><a href="https://files.radiatorsoftware.com/radiator/ref/AuthBySQLYUBIKEY.html">Radiator reference: <code>&lt;AuthBy SQLYUBIKEY&gt;</code></a></li>
+    <li><a href="https://files.radiatorsoftware.com/radiator/ref/AuthSelect_AuthBySQLYUBIKEY.html">Radiator reference: <code>AuthSelect</code> for SQLYUBIKEY</a></li>
+    <li>The Radiator distribution's <code>goodies/yubikey.cfg</code> and <code>goodies/yubikey.txt</code></li>
+    <li><a href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey Manager CLI (<code>ykman</code>) documentation</a></li>
+  </ul>
+  <p class="top-link"><a href="#content">Back to top ↑</a></p>
+  <footer>
+    Radiator YubiKey Database Guide · Document version 1.0.1 · October 2026 · Goes with <code>yubikey-db.sh</code> and <code>users.example.csv</code>.
+  </footer>
+</section>
+
+  </main>
+</div>
+
+<script>
+/* Progressive enhancement only: the page works without this script. */
+(function () {
+  "use strict";
+
+  // Add a "Copy" button to every code block.
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Fallback for pages served over plain HTTP, where the Clipboard API is unavailable.
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy") ? resolve() : reject(); } catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+
+  document.querySelectorAll("pre").forEach(function (pre) {
+    var wrap = document.createElement("div");
+    wrap.className = "codeblock";
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy";
+    btn.textContent = "Copy";
+    btn.setAttribute("aria-label", "Copy code to clipboard");
+    btn.addEventListener("click", function () {
+      copyText(pre.innerText.replace(/\n$/, "")).then(function () {
+        btn.textContent = "Copied";
+        btn.classList.add("done");
+      }, function () {
+        btn.textContent = "Press Ctrl+C";
+      });
+      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1800);
+    });
+    wrap.appendChild(btn);
+  });
+
+  // Highlight the table-of-contents entry for the section being read.
+  if (!("IntersectionObserver" in window)) return;
+  var links = {};
+  document.querySelectorAll("nav.toc a").forEach(function (a) {
+    links[a.getAttribute("href").slice(1)] = a;
+  });
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      Object.keys(links).forEach(function (id) { links[id].classList.remove("active"); });
+      var link = links[entry.target.id];
+      if (link) link.classList.add("active");
+    });
+  }, { rootMargin: "0px 0px -70% 0px" });
+  document.querySelectorAll("main section[id]").forEach(function (s) { observer.observe(s); });
+})();
+</script>
+</body>
+</html>
