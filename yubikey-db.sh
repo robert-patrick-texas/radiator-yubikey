@@ -92,6 +92,7 @@ DB_FILE=${DB_FILE:-/etc/radiator/db/yubicred.db}
 SQLITE3=${SQLITE3:-sqlite3}
 SECRET_ENCODING=${SECRET_ENCODING:-base64}
 PASSWORD_HASH=${PASSWORD_HASH:-crypt}
+DB_BACKEND=sqlite   # every database operation goes through the db_* functions
 
 # YubiKey "modhex" alphabet and the hex digits it maps to, position by position.
 MODHEX=cbdefghijklnrtuv
@@ -150,37 +151,15 @@ EOF
 }
 
 require_tools() {
-    command -v "$SQLITE3" >/dev/null 2>&1 \
-        || die "sqlite3 not found (install the sqlite3 package or set SQLITE3=/path/to/sqlite3)"
+    db_require_tools
     command -v perl >/dev/null 2>&1 \
         || die "perl not found (needed for key encoding and password hashing)"
-}
-
-# Run SQL read from stdin against the database. SQL is fed on stdin, never on
-# the command line, so AES keys and passwords do not appear in 'ps'. .bail
-# stops at the first error, so a failed import leaves its transaction
-# uncommitted and SQLite rolls it back.
-run_sql() {
-    { printf '.bail on\n.timeout 5000\n'; cat; } | "$SQLITE3" -batch "$DB_FILE"
 }
 
 # Quote a value as an SQL string literal ('' escapes an embedded quote).
 sql_quote() {
     local s=${1//\'/\'\'}
     printf "'%s'" "$s"
-}
-
-# Exit unless the database exists and this user can write to it and its
-# directory (SQLite creates journal files next to the database).
-ensure_db_writable() {
-    [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
-    [[ -w $DB_FILE && -w $(dirname -- "$DB_FILE") ]] \
-        || die "no write access to $DB_FILE or its directory (run with sudo?)"
-}
-
-ensure_db_readable() {
-    [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
-    [[ -r $DB_FILE ]] || die "no read access to $DB_FILE (run with sudo?)"
 }
 
 # Convert a 32-hex-character AES key into the stored format.
@@ -260,21 +239,90 @@ validate_record() {
     R_PASSWORD=$(hash_password "$pw") || { ERR="could not hash the password for $user"; return 1; }
 }
 
-# Print the INSERT statement for the record held in the R_* globals.
-# tokenId = public ID (modhex), userId = private ID (hex). The accessed column
-# starts empty and is filled in by Radiator's UpdateQuery.
-insert_sql() {
-    local verb=INSERT
-    [[ $REPLACE == 1 ]] && verb="INSERT OR REPLACE"
-    printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, CURRENT_TIMESTAMP, '', %s, %s, %s, 0, 0, 0);\n" \
-        "$verb" \
-        "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" \
-        "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
+# Read a value from the terminal. $1 = variable name, $2 = prompt, $3 = "secret"
+# to turn off echo.
+prompt_value() {
+    local __var=$1 __prompt=$2 __val
+    [[ -t 0 ]] || die "missing value for: $__prompt (no terminal to prompt on; pass it as an option)"
+    if [[ ${3-} == secret ]]; then
+        read -rsp "$__prompt: " __val; echo >&2
+    else
+        read -rp "$__prompt: " __val
+    fi
+    printf -v "$__var" '%s' "$__val"
+}
+
+# --------------------------------------------------------------------------
+# Database backend interface
+#
+# Commands reach the database only through these db_* functions. Each one
+# calls the function with the same name for $DB_BACKEND (db_run calls
+# sqlite_run, and so on), so a new backend is one more set of <backend>_*
+# functions:
+#
+#   db_require_tools     exit unless the backend's client program is installed
+#   db_run               run SQL read from stdin, stopping at the first error
+#   db_ensure_readable   exit unless the database exists and can be read
+#   db_ensure_writable   exit unless the database exists and can be changed
+#   db_init [OPTIONS]    create the database and yubikeys table (safe to re-run)
+#   db_insert_sql        print SQL that inserts the record in the R_* globals,
+#                        replacing clashing rows when REPLACE=1
+#   db_list [WHERE]      print users and keys, optionally filtered by WHERE
+#   db_change SQL        run one UPDATE or DELETE and print how many rows it
+#                        changed
+#   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause
+# --------------------------------------------------------------------------
+
+db_require_tools()   { "${DB_BACKEND}_require_tools"; }
+db_run()             { "${DB_BACKEND}_run"; }
+db_ensure_readable() { "${DB_BACKEND}_ensure_readable"; }
+db_ensure_writable() { "${DB_BACKEND}_ensure_writable"; }
+db_init()            { "${DB_BACKEND}_init" "$@"; }
+db_insert_sql()      { "${DB_BACKEND}_insert_sql"; }
+db_list()            { "${DB_BACKEND}_list" "$@"; }
+db_change()          { "${DB_BACKEND}_change" "$@"; }
+db_config()          { "${DB_BACKEND}_config" "$@"; }
+
+# The query behind 'list', shared by every backend. It never selects the AES
+# key or password. $1 = optional WHERE clause.
+list_sql() {
+    printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter\n'
+    printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
+}
+
+# --------------------------------------------------------------------------
+# SQLite backend
+# --------------------------------------------------------------------------
+
+sqlite_require_tools() {
+    command -v "$SQLITE3" >/dev/null 2>&1 \
+        || die "sqlite3 not found (install the sqlite3 package or set SQLITE3=/path/to/sqlite3)"
+}
+
+# Run SQL read from stdin against the database. SQL is fed on stdin, never on
+# the command line, so AES keys and passwords do not appear in 'ps'. .bail
+# stops at the first error, so a failed import leaves its transaction
+# uncommitted and SQLite rolls it back.
+sqlite_run() {
+    { printf '.bail on\n.timeout 5000\n'; cat; } | "$SQLITE3" -batch "$DB_FILE"
+}
+
+# Exit unless the database exists and this user can write to it and its
+# directory (SQLite creates journal files next to the database).
+sqlite_ensure_writable() {
+    [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
+    [[ -w $DB_FILE && -w $(dirname -- "$DB_FILE") ]] \
+        || die "no write access to $DB_FILE or its directory (run with sudo?)"
+}
+
+sqlite_ensure_readable() {
+    [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
+    [[ -r $DB_FILE ]] || die "no read access to $DB_FILE (run with sudo?)"
 }
 
 # Table definition from the original example. The username index speeds up
 # Radiator's lookups by user.
-schema_sql() {
+sqlite_schema() {
     cat <<'EOF'
 CREATE TABLE IF NOT EXISTS yubikeys (
     username varchar(255) not null,
@@ -294,24 +342,8 @@ CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
 EOF
 }
 
-# Read a value from the terminal. $1 = variable name, $2 = prompt, $3 = "secret"
-# to turn off echo.
-prompt_value() {
-    local __var=$1 __prompt=$2 __val
-    [[ -t 0 ]] || die "missing value for: $__prompt (no terminal to prompt on; pass it as an option)"
-    if [[ ${3-} == secret ]]; then
-        read -rsp "$__prompt: " __val; echo >&2
-    else
-        read -rp "$__prompt: " __val
-    fi
-    printf -v "$__var" '%s' "$__val"
-}
-
-# --------------------------------------------------------------------------
-# Commands
-# --------------------------------------------------------------------------
-
-cmd_init() {
+# Create the database directory and file, then the table. Options: --owner.
+sqlite_init() {
     local owner=
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -329,7 +361,7 @@ cmd_init() {
     [[ -w $dir ]] || die "no write access to $dir (run with sudo?)"
     [[ -e $DB_FILE ]] || created_file=1
 
-    schema_sql | run_sql
+    sqlite_schema | sqlite_run
     if [[ $created_file == 1 ]]; then
         chmod 0640 -- "$DB_FILE"
     fi
@@ -343,6 +375,60 @@ cmd_init() {
     fi
     info "Database ready: $DB_FILE"
 }
+
+# Print the INSERT statement for the record held in the R_* globals.
+# tokenId = public ID (modhex), userId = private ID (hex). The accessed column
+# starts empty and is filled in by Radiator's UpdateQuery.
+sqlite_insert_sql() {
+    local verb=INSERT
+    [[ $REPLACE == 1 ]] && verb="INSERT OR REPLACE"
+    printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, CURRENT_TIMESTAMP, '', %s, %s, %s, 0, 0, 0);\n" \
+        "$verb" \
+        "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" \
+        "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
+}
+
+sqlite_list() {
+    { printf '.headers on\n.mode column\n'; list_sql "${1-}"; } | sqlite_run
+}
+
+sqlite_change() {
+    printf '%s\nSELECT changes();\n' "$1" | sqlite_run
+}
+
+sqlite_config() {
+    cat <<EOF
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for $DB_FILE
+# (secret stored as $SECRET_ENCODING; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=$DB_FILE
+    DBUsername
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
+    # current_timestamp(), so %5 is used for the access time.
+    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+EOF
+}
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
 
 cmd_add() {
     local user='' pub='' priv='' key='' pw='' pw_set=0 active=1
@@ -359,7 +445,7 @@ cmd_add() {
             *) die "add: unknown option '$1'" ;;
         esac
     done
-    ensure_db_writable
+    db_ensure_writable
 
     [[ -n $user ]] || prompt_value user "Username"
     [[ -n $pub  ]] || prompt_value pub  "YubiKey public ID (modhex)"
@@ -377,7 +463,7 @@ cmd_add() {
     fi
 
     validate_record "$user" "$pub" "$priv" "$key" "$pw" "$active" || die "$ERR"
-    if ! insert_sql | run_sql; then
+    if ! db_insert_sql | db_run; then
         die "could not add $R_USER (if this YubiKey is already in the database, use --replace)"
     fi
     info "Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE)"
@@ -396,7 +482,7 @@ cmd_import() {
     done
     [[ -n $file ]] || die "import: CSV file required"
     [[ -r $file ]] || die "cannot read $file"
-    if [[ $dry_run == 0 ]]; then ensure_db_writable; fi
+    if [[ $dry_run == 0 ]]; then db_ensure_writable; fi
 
     # Warn if other users can read the CSV, since it contains AES keys.
     if [[ -n $(find "$file" -maxdepth 0 -perm /o=r 2>/dev/null) ]]; then
@@ -441,7 +527,7 @@ cmd_import() {
         seen_pub[$R_PUB]=$lineno
         seen_priv[$R_PRIV]=$lineno
 
-        insert_sql >>"$TMPFILE"
+        db_insert_sql >>"$TMPFILE"
         ok=$((ok + 1))
     done <"$file"
     echo 'COMMIT;' >>"$TMPFILE"
@@ -453,30 +539,25 @@ cmd_import() {
     if [[ $ok == 0 ]]; then die "no valid rows to import"; fi
     if [[ $dry_run == 1 ]]; then info "Dry run: database not changed"; return; fi
 
-    if ! run_sql <"$TMPFILE"; then
+    if ! db_run <"$TMPFILE"; then
         die "import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)"
     fi
     info "Imported $ok row(s) into $DB_FILE"
 }
 
 cmd_list() {
-    ensure_db_readable
+    db_ensure_readable
     local where=''
     [[ $# -le 1 ]] || die "list: too many arguments"
     if [[ $# -eq 1 ]]; then where="WHERE username = $(sql_quote "$1")"; fi
-    run_sql <<EOF
-.headers on
-.mode column
-SELECT username, tokenId AS public_id, active, created, accessed, counter
-  FROM yubikeys $where ORDER BY username, tokenId;
-EOF
+    db_list "$where"
 }
 
 # enable / disable / delete share the same USER [PUBLIC_ID] targeting.
 cmd_modify() {
     local action=$1; shift
     [[ $# -ge 1 && $# -le 2 ]] || die "$action: usage: $PROG $action USER [PUBLIC_ID]"
-    ensure_db_writable
+    db_ensure_writable
 
     local where
     where="username = $(sql_quote "$1")"
@@ -490,39 +571,9 @@ cmd_modify() {
     esac
 
     local n
-    n=$(printf '%s\nSELECT changes();\n' "$stmt" | run_sql)
+    n=$(db_change "$stmt")
     [[ $n -gt 0 ]] || die "$action: no matching entry for '$*'"
     info "$action: $n row(s) changed"
-}
-
-cmd_config() {
-    cat <<EOF
-# Sample Radiator <AuthBy SQLYUBIKEY> clause for $DB_FILE
-# (secret stored as $SECRET_ENCODING; see the comments below)
-<AuthBy SQLYUBIKEY>
-    Identifier   YubiKeyLocal
-    DBSource     dbi:SQLite:dbname=$DB_FILE
-    DBUsername
-    DBAuth
-
-    # Columns must come back in this order: secret, active, userId,
-    # counter, session_use (low), ignored (high), static_password.
-    # %0 = quoted username, %3 = token (public) ID in modhex.
-    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
-
-    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
-    # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
-    # current_timestamp(), so %5 is used for the access time.
-    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
-
-    # Require "password:OTP" (static password/PIN + YubiKey OTP).
-    # Remove this if users authenticate with the OTP alone.
-    Require2Factor
-
-    # Also check that the private ID in the OTP matches userId.
-    CheckSecretId
-</AuthBy>
-EOF
 }
 
 # --------------------------------------------------------------------------
@@ -549,11 +600,11 @@ done
 
 cmd=$1; shift
 case $cmd in
-    config) cmd_config "$@"; exit ;;   # needs no tools or database
+    config) db_config "$@"; exit ;;    # needs no tools or database
 esac
 require_tools
 case $cmd in
-    init)                   cmd_init "$@" ;;
+    init)                   db_init "$@" ;;
     add)                    cmd_add "$@" ;;
     import)                 cmd_import "$@" ;;
     list)                   cmd_list "$@" ;;

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added a regression test suite: `tests/run-tests.sh` (11 scenarios).
+- Internal: moved every SQLite-specific operation in `yubikey-db.sh` behind a
+  documented `db_*` backend interface, as groundwork for a PostgreSQL backend.
+  No change in behavior or output.
+
 ## 1.0.1 - 2026-10-06
 
 - Added `-V` / `--version` to `yubikey-db.sh`.
