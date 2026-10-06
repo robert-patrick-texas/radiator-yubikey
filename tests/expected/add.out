@@ -1,0 +1,57 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+Added alice with YubiKey vvccccbbcdef (active=1)
+[exit 0]
+
+# crypt check for alice: match
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u bob -P vvccccbbcdeg -p cccccccccccb -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password --inactive
+Added bob with YubiKey vvccccbbcdeg (active=0)
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
+Runtime error near line 3: UNIQUE constraint failed: yubikeys.tokenId (19)
+yubikey-db.sh: error: could not add alice (if this YubiKey is already in the database, use --replace)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --replace -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
+Added alice with YubiKey vvccccbbcdef (active=1)
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 111111111111 | AAAAAAAAAAAAAAAAAAAAAA== | 0 | 0 | 0
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --replace -u carol -P vvccccbbcdeg -p 111111111111 -k ffffffffffffffffffffffffffffffff --no-password
+Added carol with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 111111111111 | /////////////////////w== | 0 | 0 | 0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u dave -P vvccccbbcdeh
+yubikey-db.sh: error: missing value for: YubiKey private ID (12 hex) (no terminal to prompt on; pass it as an option)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u dave -P vvccccbbcdeh -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+Added dave with YubiKey vvccccbbcdeh (active=1)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u bad name -P vvccccbbcdeh -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password
+yubikey-db.sh: error: invalid username 'bad name' (allowed: letters, digits and . _ @ + -)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --bogus
+yubikey-db.sh: error: add: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/none.db add -u x -P vvccccbbcdeh -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password
+yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+

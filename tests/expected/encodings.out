@@ -1,0 +1,18 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db -e hex -H clear add -u hexuser -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6B1F0A9D2C7E4F3A8B5D0C1E9F2A7B6D -w plain pw
+Added hexuser with YubiKey vvccccbbcdef (active=1)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db -H clear add -u braceuser -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w {SHA}not-really
+Added braceuser with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ SECRET_ENCODING=hex PASSWORD_HASH=clear yubikey-db.sh -d <WORK>/yubicred.db add -u envuser -P vvccccbbcdeh -p 4a6f8e2d1c3d -k 00112233445566778899aabbccddeeff -w it's
+Added envuser with YubiKey vvccccbbcdeh (active=1)
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+hexuser | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 0 | 0 | 0
+braceuser | {clear}{SHA}not-really | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+envuser | it's | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 00112233445566778899aabbccddeeff | 0 | 0 | 0
+

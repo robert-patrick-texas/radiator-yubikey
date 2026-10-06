@@ -1,0 +1,18 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db disable test.user
+yubikey-db.sh: error: no write access to <WORK>/yubicred.db or its directory (run with sudo?)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list test.user
+username   public_id     active  created              accessed  counter
+---------  ------------  ------  -------------------  --------  -------
+test.user  cbdefghijkln  1       <TIMESTAMP>            0      
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+yubikey-db.sh: error: no read access to <WORK>/yubicred.db (run with sudo?)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/ro/yk.db init
+yubikey-db.sh: error: no write access to <WORK>/ro (run with sudo?)
+[exit 1]
+

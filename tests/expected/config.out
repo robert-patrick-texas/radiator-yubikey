@@ -1,0 +1,84 @@
+$ yubikey-db.sh config
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for /etc/radiator/db/yubicred.db
+# (secret stored as base64; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=/etc/radiator/db/yubicred.db
+    DBUsername
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
+    # current_timestamp(), so %5 is used for the access time.
+    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+[exit 0]
+
+$ yubikey-db.sh -d /srv/radius/yubi.db -e hex config
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for /srv/radius/yubi.db
+# (secret stored as hex; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=/srv/radius/yubi.db
+    DBUsername
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
+    # current_timestamp(), so %5 is used for the access time.
+    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+[exit 0]
+
+$ DB_FILE=/opt/yk.db yubikey-db.sh config
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for /opt/yk.db
+# (secret stored as base64; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=/opt/yk.db
+    DBUsername
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
+    # current_timestamp(), so %5 is used for the access time.
+    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+[exit 0]
+

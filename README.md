@@ -29,6 +29,7 @@ Use it to:
 - [Security notes](#security-notes)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading a database built with the old example commands](#upgrading-a-database-built-with-the-old-example-commands)
+- [Running the tests](#running-the-tests)
 - [References](#references)
 
 ## How offline YubiKey authentication works
@@ -413,6 +414,22 @@ The old commands also stored the AES key in hex, the private ID in modhex, and
 passwords in plain text. The cleanest fix is to export your source data to
 the CSV format above and re-import it with `--replace`, so that every row
 matches what this script creates.
+
+## Running the tests
+
+`tests/run-tests.sh` runs the script through a fixed set of scenarios against
+throwaway databases. It compares each transcript (commands, output, exit codes,
+and the final table contents) with the files in `tests/expected/`. It needs
+only `bash`, `sqlite3`, and `perl`, and must run as a normal user, not root.
+
+```bash
+tests/run-tests.sh                 # run every scenario
+tests/run-tests.sh add modify      # run only some scenarios
+tests/run-tests.sh --update        # accept a deliberate change in behavior
+```
+
+After `--update`, review the changes to `tests/expected/` with `git diff`
+before committing them. The test values are not real keys.
 
 ## References
 

@@ -1,0 +1,96 @@
+$ yubikey-db.sh --help
+Usage: yubikey-db.sh [global options] <command> [command options]
+
+Global options:
+  -d, --db FILE                 SQLite database (default: /etc/radiator/db/yubicred.db)
+  -e, --secret-encoding ENC     How the AES key is stored: base64 (default) | hex
+  -H, --password-hash MODE      How static passwords are stored: crypt (default) | clear
+  -h, --help                    Show this help
+  -V, --version                 Show the version
+
+Commands:
+  init [-o|--owner USER[:GROUP]]
+        Create the database directory, file, and yubikeys table. --owner chowns
+        the directory and file so Radiator can update counters (it needs write
+        access to the directory too, for SQLite's journal file).
+
+  add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
+      [--no-password] [--inactive] [--replace]
+        Add one user. Missing values are prompted for (the key and password
+        are not echoed). Options -k and -w are visible to other users in
+        'ps' and shell history, so prefer the prompts or 'import'.
+
+  import [--dry-run] [--skip-invalid] [--replace] CSV_FILE
+        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
+        Every row is validated first. If any row is invalid, nothing is
+        imported unless you pass --skip-invalid. Valid rows are loaded in one
+        transaction, so either all of them are loaded or none are.
+
+  list [USER]                   List users/keys (no secrets shown)
+  enable  USER [PUBLIC_ID]      Set active=1
+  disable USER [PUBLIC_ID]      Set active=0
+  delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  config                        Print a sample Radiator AuthBy clause
+
+--replace overwrites any existing row with the same public ID or private ID,
+and resets its counters. Use it after reprogramming a YubiKey.
+[exit 0]
+
+$ yubikey-db.sh --version
+yubikey-db.sh 1.0.1
+[exit 0]
+
+$ yubikey-db.sh 
+Usage: yubikey-db.sh [global options] <command> [command options]
+
+Global options:
+  -d, --db FILE                 SQLite database (default: /etc/radiator/db/yubicred.db)
+  -e, --secret-encoding ENC     How the AES key is stored: base64 (default) | hex
+  -H, --password-hash MODE      How static passwords are stored: crypt (default) | clear
+  -h, --help                    Show this help
+  -V, --version                 Show the version
+
+Commands:
+  init [-o|--owner USER[:GROUP]]
+        Create the database directory, file, and yubikeys table. --owner chowns
+        the directory and file so Radiator can update counters (it needs write
+        access to the directory too, for SQLite's journal file).
+
+  add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
+      [--no-password] [--inactive] [--replace]
+        Add one user. Missing values are prompted for (the key and password
+        are not echoed). Options -k and -w are visible to other users in
+        'ps' and shell history, so prefer the prompts or 'import'.
+
+  import [--dry-run] [--skip-invalid] [--replace] CSV_FILE
+        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
+        Every row is validated first. If any row is invalid, nothing is
+        imported unless you pass --skip-invalid. Valid rows are loaded in one
+        transaction, so either all of them are loaded or none are.
+
+  list [USER]                   List users/keys (no secrets shown)
+  enable  USER [PUBLIC_ID]      Set active=1
+  disable USER [PUBLIC_ID]      Set active=0
+  delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  config                        Print a sample Radiator AuthBy clause
+
+--replace overwrites any existing row with the same public ID or private ID,
+and resets its counters. Use it after reprogramming a YubiKey.
+[exit 1]
+
+$ yubikey-db.sh bogus
+yubikey-db.sh: error: unknown command 'bogus' (see 'yubikey-db.sh help')
+[exit 1]
+
+$ yubikey-db.sh --bogus-option list
+yubikey-db.sh: error: unknown option '--bogus-option' (see 'yubikey-db.sh help')
+[exit 1]
+
+$ yubikey-db.sh -e rot13 list
+yubikey-db.sh: error: --secret-encoding must be base64 or hex
+[exit 1]
+
+$ yubikey-db.sh -H md5 list
+yubikey-db.sh: error: --password-hash must be crypt or clear
+[exit 1]
+

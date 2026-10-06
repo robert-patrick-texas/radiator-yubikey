@@ -1,0 +1,61 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db import <WORK>/users.csv
+Validated <WORK>/users.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db disable alice
+disable: 2 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db enable alice VVCCCCBBCDEG
+enable: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db disable bob
+disable: 1 row(s) changed
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db delete alice vvccccbbcdef
+delete: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db delete bob
+delete: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db delete bob
+yubikey-db.sh: error: delete: no matching entry for 'bob'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db enable o'brien
+yubikey-db.sh: error: enable: no matching entry for 'o'brien'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db disable x' OR '1'='1
+yubikey-db.sh: error: disable: no matching entry for 'x' OR '1'='1'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db disable carol x' OR '1'='1
+yubikey-db.sh: error: disable: no matching entry for 'carol x' OR '1'='1'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db enable
+yubikey-db.sh: error: enable: usage: yubikey-db.sh enable USER [PUBLIC_ID]
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db disable a b c
+yubikey-db.sh: error: disable: usage: yubikey-db.sh disable USER [PUBLIC_ID]
+[exit 1]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+

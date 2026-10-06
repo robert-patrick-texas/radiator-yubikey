@@ -1,0 +1,46 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+yubikey-db.sh: error: database <WORK>/yubicred.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db init
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/yubicred.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/yubicred.db
+[exit 0]
+
+# schema of yubicred.db
+CREATE TABLE yubikeys (
+    username varchar(255) not null,
+    password varchar(64)  not null,
+    active   boolean default false,
+    created  datetime not null,
+    accessed datetime not null,
+    tokenId  varchar(60) unique not null,   -- YubiKey public ID (modhex)
+    userId   varchar(60) unique not null,   -- YubiKey private ID (hex)
+    secret   varchar(60) not null,          -- AES key (base64 or hex)
+    counter  int default 0,
+    low      int default 0,
+    high     int default 0,
+    primary key (userId)
+);
+CREATE INDEX yubikeys_username ON yubikeys (username);
+
+$ yubikey-db.sh -d <WORK>/yubicred.db init
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/yubicred.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/yubicred.db
+[exit 0]
+
+# db mode 640
+$ yubikey-db.sh -d <WORK>/sub/dir/yk.db init
+Created directory <WORK>/sub/dir
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/sub/dir/yk.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/sub/dir/yk.db
+[exit 0]
+
+# new directory mode 750
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db init --bogus
+yubikey-db.sh: error: init: unknown option '--bogus'
+[exit 1]
+

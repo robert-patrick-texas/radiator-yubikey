@@ -1,0 +1,19 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db import <WORK>/formats.csv
+yubikey-db.sh: warning: line 4: invalid private ID for bob (expected 12 hex or 12 modhex characters)
+Validated <WORK>/formats.csv: 4 valid row(s), 1 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --skip-invalid <WORK>/formats.csv
+yubikey-db.sh: warning: line 4: invalid private ID for bob (expected 12 hex or 12 modhex characters)
+Validated <WORK>/formats.csv: 4 valid row(s), 1 invalid row(s)
+Imported 4 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+carol@example.com | {crypt}$6$<HASH> | 0 | integer | <TIMESTAMP> |  | vvccccbbcdei | 0a1b2c3d4e5f | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0
+dave |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 0a1b2c3d4e60 | ABEiM0RVZneImaq7zN3u8A== | 0 | 0 | 0
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeh | ffffffffffff | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+
