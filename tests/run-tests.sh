@@ -348,6 +348,11 @@ scenario_update() {
     run_lines "erin,vvccccbbcdej,4a6f8e2d1c3f,$k1" -- -d "$DB" import --dry-run -
     run -d "$DB" list
 
+    # Onboarding takes only 12-character public IDs, which is all Radiator
+    # reads from a login.
+    run -d "$DB" add -u frank -P vvccccbbcdefgh -p 4a6f8e2d1c40 -k $k1 --no-password
+    run_lines "frank,vvccccbbcd,4a6f8e2d1c40,$k1" -- -d "$DB" import --dry-run -
+
     run -d "$DB" add --update --replace -u x
     run -d "$DB" import --replace --update x.csv
     run -d "$DB" import --update --from-export x.csv
@@ -362,18 +367,21 @@ scenario_update() {
 }
 
 scenario_verify() {
-    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0 ssha
     run -d "$DB" init >/dev/null
     "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t' >/dev/null
     "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 -w 's3cr3t' >/dev/null
     "$SCRIPT" -d "$DB" -e hex add -u bob -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $k2 --no-password >/dev/null
-    "$SCRIPT" -d "$DB" add -u carol -P vvccccbbcdei -p 4a6f8e2d1c3e -k $k1 --no-password --inactive >/dev/null
+    "$SCRIPT" -d "$DB" add -u carol -P vvccccbbcdei -p 4a6f8e2d1c3e -k $k1 -w 's3cr3t' --inactive >/dev/null
     "$SCRIPT" -d "$DB" -H clear add -u dave -P vvccccbbcdej -p 4a6f8e2d1c3f -k $k1 -w '{weird}pw' >/dev/null
     "$SCRIPT" -d "$DB" -H clear add -u erin -P vvccccbbcdek -p 4a6f8e2d1c40 -k $k1 -w 'plain pw' >/dev/null
     # The sample OTP from Yubico's libyubikey README, which was not made by otp():
-    # it must decrypt to private ID 8792ebfe26cc, counter 19.
-    "$SCRIPT" -d "$DB" -e hex add -u yubico -P dteffuje -p 8792ebfe26cc -k ecde18dbe76fbd0c33330f1c354871db --no-password >/dev/null
-    run_lines '' dteffujehknhfjbrjnlnldnhcujvddbikngjrtgh -- -d "$DB" verify -u yubico
+    # it decrypts to private ID 8792ebfe26cc, counter 19, session 17. Its public
+    # ID has 8 characters, so it is still rejected, as Radiator rejects it. The
+    # row is inserted directly, since 'add' takes only 12-character public IDs.
+    sqlite3 "$DB" "INSERT INTO yubikeys VALUES ('yubico', '', 1, '2026-07-01 08:00:00', '', 'dteffuje',
+        '8792ebfe26cc', 'ecde18dbe76fbd0c33330f1c354871db', 0, 0, 0);"
+    run_lines '' dteffujehknhfjbrjnlnldnhcujvddbikngjrtgh -- -d "$DB" verify -u yubico --no-require2factor
 
     # Accepted; the counters are saved, so the same OTP is then a replay.
     run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 1)" -- -d "$DB" verify -u alice
@@ -381,25 +389,40 @@ scenario_verify() {
     run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 2 9)" -- -d "$DB" verify -u alice
     # The next OTP in the same session, and the username read from stdin too.
     run_lines alice 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 2)" -- -d "$DB" verify
-    # Wrong password: rejected, and the counters do not move.
+    # Wrong password, or none: rejected, and the counters do not move.
     run_lines 'wrong' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 4 0)" -- -d "$DB" verify -u alice
+    run_lines '' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 4 0)" -- -d "$DB" verify -u alice
     # Wrong AES key, wrong private ID, another of alice's keys.
     run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k2 9 0)" -- -d "$DB" verify -u alice
     run_lines 's3cr3t' "$(otp vvccccbbcdef 111111111111 $k1 9 0)" -- -d "$DB" verify -u alice
     run_lines 's3cr3t' "$(otp vvccccbbcdeg 4a6f8e2d1c3c $k2 1 0)" -- -d "$DB" verify -u alice
+    # The counter's top bit only says how the OTP was triggered: 0x8005 is 5.
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 $((0x8005)) 0)" -- -d "$DB" verify -u alice
     dump "$DB"
 
-    # OTP only (key stored as hex); a password entered when none is stored.
+    # No stored password (key stored as hex): rejected with Require2Factor.
+    # Without it the OTP alone is enough, even for alice, who has a password,
+    # but a password that is entered is still checked.
     run_lines '' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 1 0)" -- -d "$DB" verify -u bob
-    run_lines 'extra' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 2 0)" -- -d "$DB" verify -u bob
-    # Disabled; a {clear} password; a plain-text password.
-    run_lines '' "$(otp vvccccbbcdei 4a6f8e2d1c3e $k1 1 0)" -- -d "$DB" verify -u carol
+    run_lines '' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 1 0)" -- -d "$DB" verify -u bob --no-require2factor
+    run_lines 'extra' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 2 0)" -- -d "$DB" verify -u bob --no-require2factor
+    run_lines '' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 6 0)" -- -d "$DB" verify -u alice --no-require2factor
+    # active=0 disables a key; the text 'false' does not.
+    run_lines 's3cr3t' "$(otp vvccccbbcdei 4a6f8e2d1c3e $k1 1 0)" -- -d "$DB" verify -u carol
+    sqlite3 "$DB" "UPDATE yubikeys SET active = 'false' WHERE username = 'carol';"
+    run_lines 's3cr3t' "$(otp vvccccbbcdei 4a6f8e2d1c3e $k1 1 0)" -- -d "$DB" verify -u carol
+    # A {clear} password; a plain-text password.
     run_lines '{weird}pw' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 1 0)" -- -d "$DB" verify -u dave
     run_lines 'plain pw' "$(otp vvccccbbcdek 4a6f8e2d1c40 $k1 1 0)" -- -d "$DB" verify -u erin
-    # A password format the check cannot read, a NULL counter, a broken key.
-    sqlite3 "$DB" "UPDATE yubikeys SET password = '{SHA}abc', counter = NULL WHERE username = 'dave';
+    # An {SSHA} password and a NULL counter; a format the check cannot read; a
+    # broken key.
+    ssha=$(perl -MDigest::SHA=sha1 -MMIME::Base64 -e 'print "{SSHA}", encode_base64(sha1("anything" . "NaCl") . "NaCl", "")')
+    sqlite3 "$DB" "UPDATE yubikeys SET password = '$ssha', counter = NULL WHERE username = 'dave';
                    UPDATE yubikeys SET secret = 'not-a-key' WHERE username = 'erin';"
+    run_lines 'wrong' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 1 0)" -- -d "$DB" verify -u dave
     run_lines 'anything' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 1 0)" -- -d "$DB" verify -u dave
+    sqlite3 "$DB" "UPDATE yubikeys SET password = '{nthash}0123456789abcdef0123456789abcdef' WHERE username = 'dave';"
+    run_lines 'anything' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 2 0)" -- -d "$DB" verify -u dave
     run_lines 'plain pw' "$(otp vvccccbbcdek 4a6f8e2d1c40 $k1 2 0)" -- -d "$DB" verify -u erin
 
     # Unknown user, a key that is not the user's, and a user without that key.
@@ -437,6 +460,8 @@ scenario_wrapper() {
     make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=a,b
     run_wrapper
     make_wrapper "${rec[@]}" cred_secret=$k1 'cred_password="quoted"'
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=$k1 require2factor=maybe
     run_wrapper
     make_wrapper "${rec[@]}" cred_secret=bad-key
     chmod 744 "$WORK/user.sh"
@@ -1058,6 +1083,8 @@ INSERT INTO yubikeys VALUES ('badcounter', '', 1, '2026-07-01 08:00:00', '', 'vv
 -- the same private ID twice once lowercased
 INSERT INTO yubikeys VALUES ('dup1', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcden', 'cccccccccccb', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
 INSERT INTO yubikeys VALUES ('dup2', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcder', 'CCCCCCCCCCCB', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+-- the text 'false', which Radiator treats as active, becomes 0 (reported)
+INSERT INTO yubikeys VALUES ('offuser', '', 'false', '2026-07-01 08:00:00', '', 'vvccccbbcdeu', '4a6f8e2d1c44', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
 -- a bad accessed time is cleared, not rejected
 INSERT INTO yubikeys VALUES ('badtime', '', 1, '2026-07-01 08:00:00', 'yesterday', 'vvccccbbcdet', '4a6f8e2d1c43', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
 EOF

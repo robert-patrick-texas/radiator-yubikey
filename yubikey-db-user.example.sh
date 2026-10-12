@@ -33,8 +33,8 @@
 
 # ---- The record --------------------------------------------------------------
 cred_username=''      # login name, e.g. test.user
-cred_password=''      # static password/PIN; leave empty for OTP-only logins
-cred_publicid=''      # public ID, modhex (normally 12 characters)
+cred_password=''      # static password/PIN; empty = OTP-only (needs require2factor=no)
+cred_publicid=''      # public ID, 12 modhex characters
 cred_privateid=''     # private ID, 12 hex characters
 cred_secret=''        # AES key, 32 hex characters
 cred_active=1         # 1 = may log in, 0 = disabled
@@ -43,6 +43,8 @@ cred_active=1         # 1 = may log in, 0 = disabled
 db_backend=sqlite     # sqlite or pg
 db_name=''            # SQLite file or PostgreSQL database; empty = the default
 yubikey_db=''         # path to yubikey-db.sh; empty = next to this file, or on PATH
+require2factor=yes    # yes if Radiator's <AuthBy SQLYUBIKEY> has Require2Factor,
+                      # as 'yubikey-db.sh config' prints it; no if you removed it
 
 # ------------------------------------------------------------------------------
 
@@ -77,6 +79,14 @@ done
 if [[ $cred_password =~ ^[[:space:]]|[[:space:]]$ || $cred_password == \"*\" ]]; then
     die "cred_password cannot start or end with a space or be in double quotes; use 'yubikey-db.sh add --update' for it"
 fi
+case $require2factor in
+    yes) verify_opts=() ;;
+    no)  verify_opts=(--no-require2factor) ;;
+    *)   die "require2factor must be yes or no" ;;
+esac
+if [[ -z $cred_password && $require2factor == yes ]]; then
+    printf '%s: warning: cred_password is empty, and with Require2Factor Radiator rejects a user with no static password\n' "$PROG" >&2
+fi
 
 args=(-b "$db_backend")
 if [[ -n $db_name ]]; then args+=(-d "$db_name"); fi
@@ -92,6 +102,6 @@ printf 'username,public_id,private_id,aes_key,password,active\n%s,%s,%s,%s,%s,%s
 if [[ -t 0 ]]; then
     read -rp "Touch the YubiKey to check the record (or press Enter to skip): " otp
     if [[ -n $otp ]]; then
-        printf '%s\n%s\n' "$cred_password" "$otp" | "$yubikey_db" "${args[@]}" verify -u "$cred_username"
+        printf '%s\n%s\n' "$cred_password" "$otp" | "$yubikey_db" "${args[@]}" verify -u "$cred_username" "${verify_opts[@]}"
     fi
 fi

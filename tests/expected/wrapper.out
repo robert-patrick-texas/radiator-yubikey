@@ -20,6 +20,7 @@ test.user  vvccccbbcdef  0       <TIMESTAMP>  <TIMESTAMP>  7
 # crypt check for test.user: match
 
 $ user.sh
+user.sh: warning: cred_password is empty, and with Require2Factor Radiator rejects a user with no static password
 Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
 Replaced YubiKey vvccccbbcdef for test.user (active=1); counters reset, since its private ID or AES key changed
 Imported 1 row(s) into <WORK>/yubicred.db
@@ -45,13 +46,19 @@ user.sh: error: cred_password cannot start or end with a space or be in double q
 [exit 1]
 
 $ user.sh
+user.sh: error: require2factor must be yes or no
+[exit 1]
+
+$ user.sh
 user.sh: warning: other users can read <WORK>/user.sh, which holds an AES key; run: chmod 700 <WORK>/user.sh
+user.sh: warning: cred_password is empty, and with Require2Factor Radiator rejects a user with no static password
 yubikey-db.sh: warning: line 2: invalid AES key for test.user (expected 32 hex characters)
 Validated /dev/stdin: 0 valid row(s), 1 invalid row(s)
 yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
 [exit 1]
 
 $ user.sh
+user.sh: warning: cred_password is empty, and with Require2Factor Radiator rejects a user with no static password
 yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh init' first
 [exit 1]
 

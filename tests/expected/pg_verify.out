@@ -1,5 +1,5 @@
 $ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -b pg -d <T>_db verify -u alice
-Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db (Require2Factor on):
   active:           yes
   static password:  matches
   OTP:              decrypts with the stored AES key
@@ -9,7 +9,7 @@ Accepted. The OTP's counters were saved, so it cannot be used again.
 [exit 0]
 
 $ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -b pg -d <T>_db verify -u alice
-Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db (Require2Factor on):
   active:           yes
   static password:  matches
   OTP:              decrypts with the stored AES key
@@ -19,7 +19,7 @@ yubikey-db.sh: error: verify: rejected (replayed OTP)
 [exit 1]
 
 $ printf %s\n 'wrong' 'vvccccbbcdefnihthduiciibuiguudflgnctdhnkfhjt' | yubikey-db.sh -b pg -d <T>_db verify -u alice
-Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db (Require2Factor on):
   active:           yes
   static password:  WRONG
   OTP:              decrypts with the stored AES key
@@ -29,13 +29,13 @@ yubikey-db.sh: error: verify: rejected (static password)
 [exit 1]
 
 $ printf %s\n '' 'vvccccbbcdeitlghvfcbtuniflruinnftnvhfhkvdjrj' | yubikey-db.sh -b pg -d <T>_db verify -u carol
-Checking carol with YubiKey vvccccbbcdei in PostgreSQL database <T>_db:
-  active:           NO (active=0; Radiator accepts only 1)
-  static password:  none (OTP only)
+Checking carol with YubiKey vvccccbbcdei in PostgreSQL database <T>_db (Require2Factor on):
+  active:           NO (active=0)
+  static password:  WRONG (none is stored, and Radiator rejects an empty one)
   OTP:              decrypts with the stored AES key
   private ID:       matches
   replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
-yubikey-db.sh: error: verify: rejected (disabled)
+yubikey-db.sh: error: verify: rejected (disabled, static password)
 [exit 1]
 
 # yubikeys table in <T>_db

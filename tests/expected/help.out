@@ -48,14 +48,18 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
-  verify [-u USER]              Check a password and OTP against the database
-        the way Radiator does (with Require2Factor and CheckSecretId): the
-        user must have the OTP's YubiKey, active=1, the same static password,
-        an OTP that decrypts to the stored private ID, and counters ahead of
-        the stored ones. If accepted, the counters are saved, as Radiator
-        would, so the OTP cannot be used again. Values are prompted for, or
-        read one per line from standard input when it is not a terminal:
-        the username (unless -u is given), the password, then the OTP.
+  verify [-u USER] [--no-require2factor]
+        Check a password and OTP against the database the way Radiator 4.30
+        does with the configuration from 'config': the user must have the
+        OTP's YubiKey (with a 12-character public ID), active must not be 0
+        or empty, the static password must match a non-empty stored one, the
+        OTP must decrypt to the stored private ID, and its counters must be
+        ahead of the stored ones. With --no-require2factor (for a Radiator
+        without Require2Factor), the password is checked only if one is
+        entered. If accepted, the counters are saved, as Radiator would, so
+        the OTP cannot be used again. Values are prompted for, or read one per
+        line from standard input when it is not a terminal: the username
+        (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
@@ -130,14 +134,18 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
-  verify [-u USER]              Check a password and OTP against the database
-        the way Radiator does (with Require2Factor and CheckSecretId): the
-        user must have the OTP's YubiKey, active=1, the same static password,
-        an OTP that decrypts to the stored private ID, and counters ahead of
-        the stored ones. If accepted, the counters are saved, as Radiator
-        would, so the OTP cannot be used again. Values are prompted for, or
-        read one per line from standard input when it is not a terminal:
-        the username (unless -u is given), the password, then the OTP.
+  verify [-u USER] [--no-require2factor]
+        Check a password and OTP against the database the way Radiator 4.30
+        does with the configuration from 'config': the user must have the
+        OTP's YubiKey (with a 12-character public ID), active must not be 0
+        or empty, the static password must match a non-empty stored one, the
+        OTP must decrypt to the stored private ID, and its counters must be
+        ahead of the stored ones. With --no-require2factor (for a Radiator
+        without Require2Factor), the password is checked only if one is
+        entered. If accepted, the counters are saved, as Radiator would, so
+        the OTP cannot be used again. Values are prompted for, or read one per
+        line from standard input when it is not a terminal: the username
+        (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,

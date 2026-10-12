@@ -74,6 +74,16 @@ carol     vvccccbbcdeh  1       <TIMESTAMP>            0
 dave      vvccccbbcdei  1       <TIMESTAMP>            0      
 [exit 0]
 
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u frank -P vvccccbbcdefgh -p 4a6f8e2d1c40 -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password
+yubikey-db.sh: error: public ID 'vvccccbbcdefgh' for frank has 14 characters; Radiator accepts only 12
+[exit 1]
+
+$ printf %s\n 'frank,vvccccbbcd,4a6f8e2d1c40,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -d <WORK>/yubicred.db import --dry-run -
+yubikey-db.sh: warning: line 1: public ID 'vvccccbbcd' for frank has 10 characters; Radiator accepts only 12
+Validated /dev/stdin: 0 valid row(s), 1 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
 $ yubikey-db.sh -d <WORK>/yubicred.db add --update --replace -u x
 yubikey-db.sh: error: add: use either --replace or --update, not both
 [exit 1]

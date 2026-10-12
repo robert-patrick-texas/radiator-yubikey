@@ -10,7 +10,8 @@
 #   1. Takes a consistent snapshot of the SQLite file (sqlite3 .backup) into a
 #      private temporary directory, so Radiator can keep using SQLite.
 #   2. Streams the snapshot into PostgreSQL (COPY) inside one transaction and
-#      normalizes rows made by older tools: active 'true' becomes 1, AES keys
+#      normalizes rows made by older tools: active 'true' becomes 1 and
+#      'false' becomes 0 (reported, since Radiator treated it as active), AES keys
 #      are re-encoded (base64 by default), modhex private IDs become hex,
 #      invalid timestamps are replaced. Counters are always copied: resetting
 #      them would let previously used OTPs be replayed.
@@ -263,14 +264,17 @@ SELECT count(*) AS n_inserted FROM yk_inserted \gset
 
 -- What normalization changed, among the rows inserted
 SELECT count(*) FILTER (WHERE lower(btrim(active_raw)) IN ('true', 't', 'yes', 'y', 'on')) AS n_active_text,
+       count(*) FILTER (WHERE lower(btrim(active_raw)) IN ('false', 'f', 'no', 'n', 'off')) AS n_active_off_text,
        count(*) FILTER (WHERE active_raw IS NULL) AS n_active_null,
        count(*) FILTER (WHERE secret_format <> :'enc') AS n_reencoded,
        count(*) FILTER (WHERE userid_was_modhex) AS n_modhex,
        count(*) FILTER (WHERE created IS NULL) AS n_created_fixed,
        count(*) FILTER (WHERE had_accessed AND accessed IS NULL) AS n_accessed_dropped
   FROM yk_norm v WHERE EXISTS (SELECT FROM yk_inserted i WHERE i.userid = v.userid) \gset
-SELECT 'changed: ' || :n_active_text || ' active value(s) like ''true'' set to 1 (Radiator accepts only 1, so these keys could not log in before)'
+SELECT 'changed: ' || :n_active_text || ' active value(s) like ''true'' set to 1 (Radiator already treated them as active)'
  WHERE :n_active_text > 0;
+SELECT 'changed: ' || :n_active_off_text || ' active value(s) like ''false'' set to 0: Radiator treated these as active, so these keys could log in before and now cannot'
+ WHERE :n_active_off_text > 0;
 SELECT 'changed: ' || :n_active_null || ' empty (NULL) active value(s) set to 1 (Radiator already treated them as active)'
  WHERE :n_active_null > 0;
 SELECT 'changed: ' || :n_reencoded || ' AES key(s) re-encoded as ' || :'enc' WHERE :n_reencoded > 0;

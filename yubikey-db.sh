@@ -53,7 +53,8 @@
 #   export    Write every record and field to a CSV file, with AES keys and
 #             private IDs in clear text (the file is created with mode 0600)
 #   verify    Ask for a username, password and OTP, and check them against
-#             the database the way Radiator does; saves the counters if accepted
+#             the database the way Radiator 4.30 does; saves the counters if
+#             accepted
 #   config    Print a sample Radiator <AuthBy SQLYUBIKEY> clause for this database
 #   Run "yubikey-db.sh help" for every option.
 #
@@ -62,7 +63,8 @@
 #   test.user,cbdefghijkln,456789abcdef,0123456789abcdef0123456789abcdef,abc123,1
 #
 #   - The header row is optional. Blank lines and lines starting with '#' are skipped.
-#   - public_id : YubiKey public ID in modhex (usually 12 characters)
+#   - public_id : YubiKey public ID: 12 modhex characters (Radiator's
+#                 AuthBy SQLYUBIKEY accepts no other length)
 #   - private_id: 12 hex characters (12 modhex characters are also accepted)
 #   - aes_key   : 32 hex characters (spaces and colons are removed)
 #   - password  : optional static password/PIN, used with Require2Factor
@@ -86,8 +88,9 @@
 # DIFFERENCES FROM THE ORIGINAL EXAMPLE STATEMENTS
 #   - created is set with an unquoted CURRENT_TIMESTAMP. In SQLite,
 #     "current_timestamp" in double quotes stores the literal text.
-#   - active is stored as 1/0. Radiator rejects the token unless active
-#     equals 1, and the text 'true' does not.
+#   - active is stored as 1/0. Radiator disables a key only when active is
+#     0 or empty: the text 'false' from the original example still lets the
+#     key log in.
 #   - The secret is stored base64-encoded, as the Radiator AuthSelect
 #     documentation specifies for result field 0 (use --secret-encoding hex
 #     to change this).
@@ -207,14 +210,18 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
-  verify [-u USER]              Check a password and OTP against the database
-        the way Radiator does (with Require2Factor and CheckSecretId): the
-        user must have the OTP's YubiKey, active=1, the same static password,
-        an OTP that decrypts to the stored private ID, and counters ahead of
-        the stored ones. If accepted, the counters are saved, as Radiator
-        would, so the OTP cannot be used again. Values are prompted for, or
-        read one per line from standard input when it is not a terminal:
-        the username (unless -u is given), the password, then the OTP.
+  verify [-u USER] [--no-require2factor]
+        Check a password and OTP against the database the way Radiator 4.30
+        does with the configuration from 'config': the user must have the
+        OTP's YubiKey (with a 12-character public ID), active must not be 0
+        or empty, the static password must match a non-empty stored one, the
+        OTP must decrypt to the stored private ID, and its counters must be
+        ahead of the stored ones. With --no-require2factor (for a Radiator
+        without Require2Factor), the password is checked only if one is
+        entered. If accepted, the counters are saved, as Radiator would, so
+        the OTP cannot be used again. Values are prompted for, or read one per
+        line from standard input when it is not a terminal: the username
+        (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
@@ -319,6 +326,9 @@ validate_record() {
     [[ $user =~ ^[A-Za-z0-9._@+-]{1,255}$ ]] \
         || { ERR="invalid username '$user' (allowed: letters, digits and . _ @ + -)"; return 1; }
     validate_key_fields "$user" "$2" "$3" "$4" "${6-}" || return 1
+    # Radiator reads exactly 12 characters of public ID from a login.
+    [[ ${#R_PUB} -eq 12 ]] \
+        || { ERR="public ID '$2' for $user has ${#R_PUB} characters; Radiator accepts only 12"; return 1; }
 
     R_USER=$user
     # Explicit error checks: 'set -e' does not apply inside 'if validate_record'.
@@ -498,21 +508,44 @@ read_value() {
     fi
 }
 
-# Check a password and OTP against the user's row, as Radiator does. Reads
-# from stdin: the password, the OTP, then the rows from db_export_json for
-# the user and the OTP's public ID. Prints one line per check, and writes the
-# verdict to file descriptor 3: "accept COUNTER SESSION [unchecked]" or
-# "reject REASONS". Never prints the AES key or the private ID.
+# Check a password and OTP against the user's row the way Radiator 4.30's
+# AuthBy SQLYUBIKEY does (Radius::AuthYUBIKEYGENERIC::checkYubikey), with
+# CheckSecretId set. Reads from stdin: the password, the OTP, then the rows
+# from db_export_json for the user and the OTP's public ID. Prints one line
+# per check, and writes the verdict to file descriptor 3: "accept COUNTER
+# SESSION [unchecked]" or "reject REASONS". Never prints the AES key or the
+# private ID.
 #   $1 program name  $2 username  $3 the OTP's public ID
+#   $4 1 if Radiator's configuration has Require2Factor, else 0
 verify_otp() {
-    perl -MJSON::PP -MMIME::Base64 -MCrypt::Rijndael -e '
-        my ($prog, $user, $pub) = @ARGV;
+    perl -MJSON::PP -MMIME::Base64 -MDigest::SHA -MCrypt::Rijndael -e '
+        my ($prog, $user, $pub, $two_factor) = @ARGV;
         chomp(my $pw = <STDIN> // "");
         chomp(my $otp = <STDIN> // "");
         my $json = do { local $/; <STDIN> } // "";
         my $rows = $json =~ /\S/ ? JSON::PP->new->decode($json) : [];   # bytes, like $user and $pw
         open(my $res, ">&=", 3) or die "$prog: error: cannot report the result\n";
         sub show { printf "  %-17s %s\n", "$_[0]:", $_[1] }
+
+        # Radiator checks a password against a stored one as check_plain_password
+        # does. Returns undef for the formats this check does not implement.
+        sub password_matches {
+            my ($pw, $s) = @_;
+            if ($s =~ /^\{SS?HA\}(.*)/si) {
+                my ($hash, $salt) = unpack("a20a*", decode_base64($1));
+                return $hash eq Digest::SHA::sha1($pw . $salt);
+            }
+            if ($s =~ /^\{SS?HA(256|384|512)\}(.*)/si) {
+                my ($bits, $hash, $salt) = ($1, unpack("a" . $1 / 8 . "a*", decode_base64($2)));
+                return $hash eq Digest::SHA->new($bits)->add($pw . $salt)->digest;
+            }
+            return crypt($pw, $1) eq $1 if $s =~ /^\{crypt\}(.*)/si;
+            return undef if $s =~ /^\{(PBKDF2|mysql|mssql|nthash|dechpwd|MD5|NS-MTA-MD5|OSC-pw-hook|rcrypt)\}/i
+                         || $s =~ /^(md5|sha1)\$[0-9a-f]{5}\$/i;
+            return crypt($pw, $s) eq $s if $s =~ /^\$(1|[56]|2[axy])\$/;
+            $s =~ s/^\{clear\}//;
+            return $pw eq $s;
+        }
 
         my ($r) = grep { $_->{username} eq $user && $_->{tokenid} eq $pub } @$rows;
         if (!$r) {
@@ -525,35 +558,48 @@ verify_otp() {
         }
         my (@fail, $unchecked, $ctr, $use);
 
-        # Radiator treats a missing active value as active.
+        # Radiator reads a 12-character public ID from the login, so no other
+        # length is ever found in the database.
+        if (length $pub != 12) {
+            show("public ID", "NOT 12 characters (" . length($pub) . "); Radiator looks up only 12-character public IDs");
+            push @fail, "public ID length";
+        }
+
+        # Radiator rejects the key only when active is 0 or empty; a missing
+        # (NULL) value, or any other value such as "true" or "false", is active.
         my $active = $r->{active};
-        if (defined $active && "$active" ne "1") {
-            show("active", "NO (active=$active; Radiator accepts only 1)"); push @fail, "disabled";
+        if (defined $active && !$active) {
+            show("active", "NO (active=$active)"); push @fail, "disabled";
+        } elsif (defined $active && "$active" ne "1") {
+            show("active", "yes, as Radiator treats active=$active as active (only 0 or empty disable a key)");
         } else {
             show("active", "yes");
         }
 
+        # The static password is checked when one is entered, and always with
+        # Require2Factor. An empty stored password never matches.
         my $stored = $r->{password} // "";
-        my $pw_ok;
-        if ($stored eq "") {
-            $pw_ok = $pw eq "";
-            show("static password", $pw_ok ? "none (OTP only)" : "WRONG (none is stored, but one was entered)");
-        } elsif ($stored =~ /^\{(\w+)\}(.*)$/s && lc $1 ne "crypt" && lc $1 ne "clear") {
-            $unchecked = 1;
-            show("static password", "not checked (stored as {$1}, which this check does not support)");
+        if (!length $pw && !$two_factor) {
+            show("static password", "not checked (none entered, and Require2Factor is off)");
+        } elsif ($stored eq "" || $stored eq "{clear}") {
+            show("static password", "WRONG (none is stored, and Radiator rejects an empty one)");
+            push @fail, "static password";
         } else {
-            $pw_ok = $stored =~ /^\{crypt\}(.*)$/si ? crypt($pw, $1) eq $1
-                   : $stored =~ /^\{clear\}(.*)$/si ? $1 eq $pw
-                   : $stored eq $pw;
-            show("static password", $pw_ok ? "matches" : "WRONG");
+            my $ok = password_matches($pw, $stored);
+            if (!defined $ok) {
+                $unchecked = 1;
+                show("static password", "not checked (stored in a format this check does not support)");
+            } else {
+                show("static password", $ok ? "matches" : "WRONG");
+                push @fail, "static password" unless $ok;
+            }
         }
-        push @fail, "static password" if defined $pw_ok && !$pw_ok;
 
-        (my $s = $r->{secret} // "") =~ s/^ +| +$//g;
-        my $key = $s =~ /^[0-9A-Fa-f]{32}$/ ? pack("H*", $s)
-                : $s =~ m{^[A-Za-z0-9+/]{22}==$} ? decode_base64($s) : undef;
-        if (!defined $key) {
-            show("OTP", "not checked (the stored AES key is not 32 hex characters or base64)");
+        # A 32-hex-character key is hex; anything else is decoded as base64.
+        my $s = $r->{secret} // "";
+        my $key = $s =~ /^[0-9a-fA-F]{32}$/ ? pack("H*", $s) : decode_base64($s);
+        if (length $key != 16) {
+            show("OTP", "does NOT decrypt (the stored AES key is not 32 hex characters or base64 of 16 bytes)");
             push @fail, "stored AES key";
         } else {
             (my $hex = substr($otp, -32)) =~ tr/cbdefghijklnrtuv/0123456789abcdef/;
@@ -566,12 +612,13 @@ verify_otp() {
             }
             my $uid;
             ($uid, $ctr, undef, undef, $use) = unpack "H12 v v C C", $plain;
+            $ctr &= 0x7fff;    # the top bit only says how the OTP was triggered
             if ($crc != 0xf0b8) {
                 show("OTP", "does NOT decrypt with the stored AES key (wrong key, or a mistyped OTP)");
                 push @fail, "OTP";
             } else {
                 show("OTP", "decrypts with the stored AES key");
-                if ($uid eq lc($r->{userid} // "")) {
+                if ($uid eq ($r->{userid} // "")) {
                     show("private ID", "matches");
                 } else {
                     show("private ID", "does NOT match the stored private ID"); push @fail, "private ID";
@@ -801,8 +848,10 @@ sqlite_config() {
     # current_timestamp(), so %5 is used for the access time.
     UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
 
-    # Require "password:OTP" (static password/PIN + YubiKey OTP).
-    # Remove this if users authenticate with the OTP alone.
+    # Require2Factor: every login is the static password/PIN followed by the
+    # OTP ("1234:OTP", or "1234OTP"), and a user with no stored password is
+    # always rejected. Without it the OTP alone is accepted, even for users
+    # who have a password; a password is checked only if one is entered.
     Require2Factor
 
     # Also check that the private ID in the OTP matches userId.
@@ -1130,8 +1179,10 @@ pg_config() {
     # current_timestamp() is not valid in PostgreSQL, so %5 is used.
     UpdateQuery  update yubikeys set accessed=to_timestamp(%5), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
 
-    # Require "password:OTP" (static password/PIN + YubiKey OTP).
-    # Remove this if users authenticate with the OTP alone.
+    # Require2Factor: every login is the static password/PIN followed by the
+    # OTP ("1234:OTP", or "1234OTP"), and a user with no stored password is
+    # always rejected. Without it the OTP alone is accepted, even for users
+    # who have a password; a password is checked only if one is entered.
     Require2Factor
 
     # Also check that the private ID in the OTP matches userId.
@@ -1300,16 +1351,17 @@ cmd_import() {
 }
 
 # Check a username, static password and OTP the way Radiator's AuthBy
-# SQLYUBIKEY does with Require2Factor and CheckSecretId (see verify_otp). If
-# they are accepted, save the OTP's counters and the access time, as
-# Radiator's UpdateQuery would, so the same OTP is not accepted again. The
+# SQLYUBIKEY does with the configuration from 'config' (see verify_otp). If
+# they are accepted, save the OTP's counters and the access time, as the
+# UpdateQuery from 'config' would, so the same OTP is not accepted again. The
 # UPDATE only applies while the counters are still behind, so an OTP that
 # Radiator accepts in the meantime still counts as a replay.
 cmd_verify() {
-    local user='' pw='' otp='' pub rows result counter session note n
+    local user='' pw='' otp='' pub rows result counter session note n two_factor=1
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -u|--user) user=${2?}; shift 2 ;;
+            -u|--user)            user=${2?}; shift 2 ;;
+            --no-require2factor)  two_factor=0; shift ;;
             *) die "verify: unknown option '$1'" ;;
         esac
     done
@@ -1322,22 +1374,23 @@ cmd_verify() {
     read_value otp "YubiKey OTP (touch the YubiKey)"
     otp=${otp,,}
     otp=${otp//[[:space:]]/}
-    # The OTP is the public ID (2-32 modhex characters) and 32 characters of
-    # encrypted token. It is not printed: it may be a password typed by mistake.
+    # The OTP is the public ID (12 modhex characters; see verify_otp for other
+    # lengths) and 32 characters of encrypted token. It is not printed: it may
+    # be a password typed by mistake.
     [[ $otp =~ ^([cbdefghijklnrtuv]{2}){17,32}$ ]] \
         || die "verify: that is not a YubiKey OTP (expected 34 to 64 modhex characters, got ${#otp})"
     pub=${otp:0:${#otp}-32}
 
     rows=$(db_export_json "WHERE username = $(sql_quote "$user") OR tokenId = $(sql_quote "$pub")") \
         || die "verify: cannot read $DB_DESC"
-    info "Checking $user with YubiKey $pub in $DB_DESC:"
+    info "Checking $user with YubiKey $pub in $DB_DESC (Require2Factor $( ((two_factor)) && echo on || echo off)):"
     exec 4>&1
-    result=$(printf '%s\n%s\n%s' "$pw" "$otp" "$rows" | verify_otp "$user" "$pub" 3>&1 1>&4) \
+    result=$(printf '%s\n%s\n%s' "$pw" "$otp" "$rows" | verify_otp "$user" "$pub" "$two_factor" 3>&1 1>&4) \
         || die "verify: the check failed to run"
     [[ $result == accept\ * ]] || die "verify: rejected (${result#reject })"
 
     read -r _ counter session note <<<"$result"
-    n=$(db_change "UPDATE yubikeys SET accessed = CURRENT_TIMESTAMP, counter = $counter, low = $session
+    n=$(db_change "UPDATE yubikeys SET accessed = CURRENT_TIMESTAMP, counter = $counter, low = $session, high = 0
  WHERE username = $(sql_quote "$user") AND tokenId = $(sql_quote "$pub")
    AND (counter IS NULL OR counter < $counter OR (counter = $counter AND coalesce(low, 0) < $session));")
     [[ $n -gt 0 ]] || die "verify: rejected (replayed OTP: a newer one was used while this one was checked)"

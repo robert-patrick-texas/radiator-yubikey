@@ -151,7 +151,7 @@ bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,yes
 | Column | Required | Notes |
 |---|---|---|
 | `username` | Yes | The RADIUS login name. Allowed characters: letters, digits, and `. _ @ + -` |
-| `public_id` | Yes | YubiKey public ID in modhex (usually 12 characters) |
+| `public_id` | Yes | YubiKey public ID: 12 modhex characters. Radiator accepts no other length. |
 | `private_id` | Yes | 12 hex characters. 12 modhex characters are also accepted and converted to hex. |
 | `aes_key` | Yes | 32 hex characters. Spaces and colons are removed. |
 | `password` | No | Static password or PIN for two-factor logins. Leave it empty if users log in with the OTP only. |
@@ -236,6 +236,9 @@ sudo ~/yk-user.sh            # SQLite; for PostgreSQL run it as a member of yubi
 shred -u ~/yk-user.sh        # when you no longer need the test account's values
 ```
 
+Set `require2factor=no` in your copy if your Radiator configuration doesn't
+have `Require2Factor`, so the check matches Radiator (see Step 4).
+
 The YubiKey's public ID decides which record is meant. A new YubiKey is
 added, and any other YubiKeys the user has are left as they are. The password
 can't contain a comma, start or end with a space, or be in double quotes,
@@ -275,9 +278,13 @@ What the settings do:
 - `UpdateQuery` saves the counters after each login. It takes the time from
   Radiator's `%5` value (the time in seconds) because SQLite doesn't support
   `current_timestamp()`.
-- `Require2Factor` makes users enter their static password, a colon, and then
-  the OTP, for example `1234:vvccccbbcdef...`. **Remove this line** if users
-  log in with the OTP only.
+- `Require2Factor` makes every login the static password followed by the
+  OTP, with or without a colon: `1234:vvccccbbcdef...` or
+  `1234vvccccbbcdef...`. A user with **no** stored password is then always
+  rejected. **Remove this line** if users log in with the OTP only. Without
+  it, Radiator accepts the OTP alone **even for users who have a password**,
+  and checks a password only when one is typed in front of the OTP, so the
+  password becomes optional for everyone.
 - `CheckSecretId` also checks the private ID inside the OTP against the
   database.
 
@@ -297,7 +304,7 @@ sudo ./yubikey-db.sh verify
 Username: alice
 Static password/PIN (Enter for none):
 YubiKey OTP (touch the YubiKey): vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet
-Checking alice with YubiKey vvccccbbcdef in /etc/radiator/db/yubicred.db:
+Checking alice with YubiKey vvccccbbcdef in /etc/radiator/db/yubicred.db (Require2Factor on):
   active:           yes
   static password:  matches
   OTP:              decrypts with the stored AES key
@@ -313,6 +320,12 @@ shows the AES key or the private ID. When an OTP is accepted, its counters are
 saved, as Radiator saves them, so it can't be used again. In a script, pipe
 the values in, one per line (`-u` gives the username):
 `printf '%s\n' "$password" "$otp" | ./yubikey-db.sh verify -u alice`.
+
+`verify` follows the checks in Radiator 4.30's `<AuthBy SQLYUBIKEY>` code, and
+was compared with Radiator itself (see
+[Testing against Radiator](#testing-against-radiator)). It assumes the
+configuration from Step 4. If you removed `Require2Factor`, add
+`--no-require2factor`.
 
 Then test the whole path through Radiator with its `radpwtst` tool. Touch the
 YubiKey where the OTP goes:
@@ -336,9 +349,9 @@ sudo ./yubikey-db.sh list alice      # "accessed" and "counter" should now be fi
 Enter the **same** OTP a second time. It must be rejected; that's the replay
 protection working.
 
-> **Before the first rollout, test with `Trace 4`** in `radius.cfg` and read
-> the SQL statements Radiator logs. See
-> [Values to confirm on your first deployment](#values-to-confirm-on-your-first-deployment).
+> **`Trace 4` writes every user's AES key and password hash to Radiator's
+> log** (the `AuthSQLYUBIKEY read:` lines). Use it only on a test server with
+> test keys, and delete the log afterwards.
 
 ## Day-to-day management
 
@@ -466,7 +479,7 @@ The table is `yubikeys`. There is one row per YubiKey.
 |---|---|
 | `username` | RADIUS login name. Indexed. Not unique, because one user can have several YubiKeys. |
 | `password` | Static password or PIN: `{crypt}$6$...`, plain text, or empty |
-| `active` | `1` = allowed, `0` = disabled. Radiator rejects any value other than `1`. |
+| `active` | `1` = allowed, `0` = disabled. Radiator disables a key only when this is `0` or empty; any other value, even the text `false`, lets it log in. |
 | `created` | When the row was added (UTC) |
 | `accessed` | Time of the last successful login (UTC). Empty until the first login. |
 | `tokenId` | YubiKey public ID in modhex. Unique. |
@@ -510,40 +523,53 @@ AES key changed.
 | `UNIQUE constraint failed: yubikeys.tokenId` (or `userId`) | That YubiKey is already in the database. Add `--replace` if it was reprogrammed. |
 | `import failed and was rolled back` | No rows were loaded. Fix the cause shown above the message and run the import again. |
 | `nothing imported; fix the rows above` | One or more CSV rows are invalid. Fix them, or add `--skip-invalid`. |
-| All logins are rejected and `active` shows `true` | The row was created with the old example commands. See [Upgrading a database built with the old example commands](#upgrading-a-database-built-with-the-old-example-commands). |
+| A disabled user can still log in, and `active` shows `false` | The row was created with the old example commands; Radiator treats the text `false` as active. Run `disable` for the user, or see [Upgrading a database built with the old example commands](#upgrading-a-database-built-with-the-old-example-commands). |
+| A user with no static password is always rejected | `Require2Factor` is set, and Radiator then rejects an empty stored password. Give the user a password, or remove `Require2Factor` (see Step 4). |
 | Logins fail and Radiator logs `attempt to write a readonly database` | Radiator can't write to the file **or its folder**. Run `init --owner <radiator-user>` again. |
-| Logins fail and Radiator logs a bad OTP or decryption failure | The `secret` column is in the wrong format. See the next section. |
-| Logins fail and Radiator logs a `CheckSecretId` mismatch | The private ID is wrong, or is stored in a different format. Check it against the `ykman` output. |
+| Logins fail and Radiator logs `Bad Yubikey password` | The AES key in the database isn't the one in the YubiKey. Check with `verify`, and load the key again with `add --update`. |
+| Logins fail and Radiator logs `Bad Yubikey Secret-Id` | The private ID in the database isn't the one in the YubiKey (`CheckSecretId`). Check it against the `ykman` output. |
 | The first OTP works but the next ones fail | `UpdateQuery` isn't saving counters. Check the folder permissions and the `UpdateQuery` line. |
 | `database is locked` | Radiator is writing at that moment. The script waits up to 5 seconds, so run it again. |
 | `verify` says the OTP does NOT decrypt | The AES key in the database isn't the one programmed into the YubiKey. Load the key from the `ykman` output again with `add --update`. |
 | `verify` says the private ID does NOT match | The private ID in the database isn't the one programmed into the YubiKey. Correct it with `add --update`. |
-| `verify` passes but `radpwtst` fails | The database is right; check the Radiator configuration with `Trace 4`. |
+| Radiator logs `Replay attack detected` | That OTP, or a newer one from the same YubiKey, was already used. Touch the YubiKey again for a new OTP. |
+| Radiator logs `Yubikey secret not found in database` | No row has that username and public ID, or the public ID isn't 12 characters. Check with `list USER`. |
+| `verify` passes but `radpwtst` fails | The database is right; check the Radiator configuration (on a test server, with `Trace 4`). |
 
-### Values to confirm on your first deployment
+### Confirmed with Radiator 4.30
 
-These settings come from the Radiator 4.x reference manual. Confirm them on
-one test server with `Trace 4` before you load users in bulk:
+These were open questions in the Radiator reference manual. Radiator 4.30's
+source code and a test run against it (see
+[Testing against Radiator](#testing-against-radiator)) settle them:
 
-1. **AES key format.** The manual says the `secret` column holds the key in
-   base64, but it also says the default setup assumes hex. The script stores
-   base64. If logins fail with decryption errors, rebuild the test database
-   with `-e hex` and test again.
-2. **Quoting of `%3` and `%7`.** The sample config assumes Radiator quotes the
-   public ID, as it does the username in `%0`. In the trace log, check that
-   the SQL shows `tokenId='vvcc...'`.
-3. **Two-factor login format.** Check the `password:OTP` format with
-   `radpwtst` before you tell users how to log in.
+1. **AES key format.** Radiator reads a `secret` of 32 hex characters as hex
+   and anything else as base64, so the default (`base64`) and `-e hex` both
+   work, even mixed in one database.
+2. **Quoting of `%3` and `%7`.** Radiator quotes the public ID, so the SQL
+   reads `tokenId='vvccccbbcdef'`.
+3. **Two-factor login format.** `1234:OTP` and `1234OTP` both work.
+4. **Public ID length.** Radiator takes exactly 12 characters of public ID
+   from a login, so `add` and `import` accept no other length.
+5. **`active`.** Only `0` or an empty value disables a key.
+6. **Counters.** Radiator ignores the top bit of the YubiKey's usage counter
+   (it only records how the OTP was triggered), and the `UpdateQuery` from
+   `config` sets `high` to 0.
+7. **PostgreSQL.** The `-b pg` clause from `config` works as printed: Radiator
+   logs in as `radiator` over the local socket, its column grants are enough,
+   and `to_timestamp(%5)` stores the access time.
 
-After these work on one server, use the same settings for every team.
+With a different Radiator version, run that test against it before you load
+users in bulk.
 
 ## Upgrading a database built with the old example commands
 
-The original example commands created rows that Radiator can't use:
+The original example commands created rows with these problems:
 
 - `"current_timestamp"` in double quotes stored the literal text
   `current_timestamp` in `created`, not the date and time.
-- `active="true"` stored the text `true`, but Radiator only accepts `1`.
+- `active="true"` stored the text `true`, and `false` the text `false`.
+  Radiator treats both as active, so a key set to `false` was **not**
+  disabled.
 
 To fix the existing rows:
 
@@ -593,6 +619,26 @@ afterwards. `pg_radiator` also logs in as the Radiator role over TCP to
 `127.0.0.1` with a password, which Ubuntu's default `pg_hba.conf` allows.
 Without a reachable PostgreSQL 18 server, these scenarios are skipped, not
 failed.
+
+### Testing against Radiator
+
+`tests/radiator/run.sh` tests the scripts against a real Radiator in a Docker
+container. It needs Radiator's packages from Radiator Software, which aren't
+in this repository, and Docker that works without `sudo` (membership of the
+`docker` group):
+
+```bash
+tests/radiator/run.sh ~/downloads/radiator   # holds radiator_*.deb and radiator-radius-utilxs_*.deb
+```
+
+It builds an Ubuntu 26.04 image with Radiator, SQLite and PostgreSQL 18, sets
+up databases with `yubikey-db.sh`, starts `radiusd` with the clause from
+`config`, and logs in with `radpwtst`. For each login it checks Radiator's
+answer and the reason Radiator logs, and that `verify` reaches the same
+verdict. It covers both databases, Radiator with and without
+`Require2Factor`, and the example wrapper, and exits non-zero if any check
+fails. A run takes about a minute after the first image build. Run it again
+when you upgrade Radiator.
 
 ## References
 

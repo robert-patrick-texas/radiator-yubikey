@@ -52,15 +52,37 @@
 - `import -` reads the CSV from standard input (for example
   `gpg -d users.csv.gpg | yubikey-db.sh import -`), also with `--from-export`.
 - `verify` command: asks for a username, static password and OTP and checks
-  them the way Radiator does with `Require2Factor` and `CheckSecretId`
-  (active, password, decryption and CRC, private ID, replay), one line per
-  check, never showing the AES key or private ID. An accepted OTP's counters
-  are saved, so it can't be used again. Values can be piped in. Needs
-  `Crypt::Rijndael`.
+  them the way Radiator 4.30's `<AuthBy SQLYUBIKEY>` does with the clause from
+  `config` (public ID length, active, password, decryption and CRC, private
+  ID, replay), one line per check, never showing the AES key or private ID.
+  An accepted OTP's counters are saved, so it can't be used again. Values can
+  be piped in. `--no-require2factor` matches a Radiator configured without
+  `Require2Factor`. Needs `Crypt::Rijndael`. Compared with Radiator 4.30
+  itself: like Radiator, it ignores the counter's trigger bit (keeping it
+  would save a counter that blocks every later OTP), rejects an empty stored
+  password, disables a key only for `active` 0 or empty, and checks `{SSHA}`,
+  `{SHA256}`... and bare `$6$` crypt passwords.
 - `yubikey-db-user.example.sh`: an example wrapper that adds or updates one
   test account from variables at the top of the file, sends them to
   `import --update -` through a pipe, and offers to check the record with
-  `verify`.
+  `verify` (`require2factor=no` if Radiator runs without `Require2Factor`).
+- `add` and `import` accept only 12-character public IDs: Radiator reads
+  exactly 12 characters of public ID from a login. Restoring an export and
+  migrating still copy whatever is there.
+- `yubikey-db-migrate.sh` reports `active` values like `false` that become 0
+  (Radiator treated them as active, so those keys could log in), and no
+  longer claims keys with `true` could not log in.
+- Documentation corrected after testing against Radiator 4.30: only `active`
+  0 or empty disables a key; with `Require2Factor` a login may be
+  `1234:OTP` or `1234OTP` and a user with no stored password is always
+  rejected, and without it the password is optional for everyone; `Trace 4`
+  logs every AES key and password hash. "Values to confirm on your first
+  deployment" is now "Confirmed with Radiator 4.30". The comment that
+  `config` prints above `Require2Factor` says the same.
+- `tests/radiator/run.sh`: builds a Docker image with Radiator from your
+  packages and runs 63 checks of real Radiator logins (SQLite and
+  PostgreSQL, with and without `Require2Factor`, the example wrapper),
+  comparing each with `verify`.
 - Tests: `update`, `verify`, `wrapper`, `pg_update` and `pg_verify` scenarios
   (33 in total). `verify` is also checked against Yubico's published sample
   OTP. The `verify` scenarios need `openssl` and `Crypt::Rijndael`, and are

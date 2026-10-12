@@ -381,7 +381,7 @@ bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,yes</code></pre>
     <thead><tr><th>Column</th><th>Required</th><th>Notes</th></tr></thead>
     <tbody>
       <tr><td><code>username</code></td><td>Yes</td><td>The RADIUS login name. Allowed characters: letters, digits, and <code>. _ @ + -</code></td></tr>
-      <tr><td><code>public_id</code></td><td>Yes</td><td>YubiKey public ID in modhex (usually 12 characters)</td></tr>
+      <tr><td><code>public_id</code></td><td>Yes</td><td>YubiKey public ID: 12 modhex characters. Radiator accepts no other length.</td></tr>
       <tr><td><code>private_id</code></td><td>Yes</td><td>12 hex characters. 12 modhex characters are also accepted and converted to hex.</td></tr>
       <tr><td><code>aes_key</code></td><td>Yes</td><td>32 hex characters. Spaces and colons are removed.</td></tr>
       <tr><td><code>password</code></td><td>No</td><td>Static password or PIN for two-factor logins. Leave it empty if users log in with the OTP only.</td></tr>
@@ -446,7 +446,7 @@ sudo ./yubikey-db.sh add -u svc.backup -P vvccccbbcdeh --no-password</code></pre
     <tbody>
       <tr><td><code>AuthSelect</code></td><td>Finds a row by <strong>both</strong> the username and the YubiKey's public ID. This lets one user have several YubiKeys and stops one user's YubiKey from working for another user.</td></tr>
       <tr><td><code>UpdateQuery</code></td><td>Saves the counters after each login. It takes the time from Radiator's <code>%5</code> value (the time in seconds) because SQLite doesn't support <code>current_timestamp()</code>.</td></tr>
-      <tr><td><code>Require2Factor</code></td><td>Makes users enter their static password, a colon, and then the OTP, for example <code>1234:vvccccbbcdef…</code>. <strong>Remove this line</strong> if users log in with the OTP only.</td></tr>
+      <tr><td><code>Require2Factor</code></td><td>Makes every login the static password followed by the OTP, with or without a colon: <code>1234:vvccccbbcdef…</code> or <code>1234vvccccbbcdef…</code>. A user with <strong>no</strong> stored password is then always rejected. <strong>Remove this line</strong> if users log in with the OTP only. Without it, Radiator accepts the OTP alone <strong>even for users who have a password</strong>, and checks a password only when one is typed in front of the OTP.</td></tr>
       <tr><td><code>CheckSecretId</code></td><td>Also checks the private ID inside the OTP against the database.</td></tr>
     </tbody>
   </table></div>
@@ -467,8 +467,8 @@ radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
 <pre><code>sudo ./yubikey-db.sh list alice      <span class="c"># "accessed" and "counter" should now be filled in</span></code></pre>
   <p>Enter the <strong>same</strong> OTP a second time. It must be rejected; that's the replay protection working.</p>
   <div class="callout note">
-    <span class="label">Before the first rollout</span>
-    <p>Test with <code>Trace 4</code> in <code>radius.cfg</code> and read the SQL statements Radiator logs. See <a href="#confirm">Values to confirm on your first deployment</a>.</p>
+    <span class="label">Trace 4 logs secrets</span>
+    <p><code>Trace 4</code> writes every user's AES key and password hash to Radiator's log (the <code>AuthSQLYUBIKEY read:</code> lines). Use it only on a test server with test keys, and delete the log afterwards.</p>
   </div>
 </section>
 
@@ -532,7 +532,7 @@ radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
     <tbody>
       <tr><td><code>username</code></td><td>RADIUS login name. Indexed. Not unique, because one user can have several YubiKeys.</td></tr>
       <tr><td><code>password</code></td><td>Static password or PIN: <code>{crypt}$6$...</code>, plain text, or empty</td></tr>
-      <tr><td><code>active</code></td><td><code>1</code> = allowed, <code>0</code> = disabled. Radiator rejects any value other than <code>1</code>.</td></tr>
+      <tr><td><code>active</code></td><td><code>1</code> = allowed, <code>0</code> = disabled. Radiator disables a key only when this is <code>0</code> or empty; any other value, even the text <code>false</code>, lets it log in.</td></tr>
       <tr><td><code>created</code></td><td>When the row was added (UTC)</td></tr>
       <tr><td><code>accessed</code></td><td>Time of the last successful login (UTC). Empty until the first login.</td></tr>
       <tr><td><code>tokenId</code></td><td>YubiKey public ID in modhex. Unique.</td></tr>
@@ -565,31 +565,35 @@ radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
       <tr><td class="wrap"><code>UNIQUE constraint failed: yubikeys.tokenId</code> (or <code>userId</code>)</td><td>That YubiKey is already in the database. Add <code>--replace</code> if it was reprogrammed.</td></tr>
       <tr><td class="wrap"><code>import failed and was rolled back</code></td><td>No rows were loaded. Fix the cause shown above the message and run the import again.</td></tr>
       <tr><td class="wrap"><code>nothing imported; fix the rows above</code></td><td>One or more CSV rows are invalid. Fix them, or add <code>--skip-invalid</code>.</td></tr>
-      <tr><td>All logins are rejected and <code>active</code> shows <code>true</code></td><td>The row was created with the old example commands. See <a href="#upgrading">Upgrading old databases</a>.</td></tr>
+      <tr><td>A disabled user can still log in, and <code>active</code> shows <code>false</code></td><td>The row was created with the old example commands; Radiator treats the text <code>false</code> as active. Run <code>disable</code> for the user, or see <a href="#upgrading">Upgrading old databases</a>.</td></tr>
+      <tr><td>A user with no static password is always rejected</td><td><code>Require2Factor</code> is set, and Radiator then rejects an empty stored password. Give the user a password, or remove <code>Require2Factor</code>.</td></tr>
       <tr><td class="wrap">Logins fail and Radiator logs <code>attempt to write a readonly database</code></td><td>Radiator can't write to the file <strong>or its folder</strong>. Run <code>init --owner &lt;radiator-user&gt;</code> again.</td></tr>
-      <tr><td>Logins fail and Radiator logs a bad OTP or decryption failure</td><td>The <code>secret</code> column is in the wrong format. See <a href="#confirm">Values to confirm</a>.</td></tr>
-      <tr><td>Logins fail and Radiator logs a <code>CheckSecretId</code> mismatch</td><td>The private ID is wrong, or is stored in a different format. Check it against the <code>ykman</code> output.</td></tr>
+      <tr><td>Logins fail and Radiator logs <code>Bad Yubikey password</code></td><td>The AES key in the database isn't the one in the YubiKey. Check with <code>verify</code>, and load the key again with <code>add --update</code>.</td></tr>
+      <tr><td>Logins fail and Radiator logs <code>Bad Yubikey Secret-Id</code></td><td>The private ID in the database isn't the one in the YubiKey (<code>CheckSecretId</code>). Check it against the <code>ykman</code> output.</td></tr>
+      <tr><td>Radiator logs <code>Replay attack detected</code></td><td>That OTP, or a newer one from the same YubiKey, was already used. Touch the YubiKey again for a new OTP.</td></tr>
       <tr><td>The first OTP works but the next ones fail</td><td><code>UpdateQuery</code> isn't saving counters. Check the folder permissions and the <code>UpdateQuery</code> line.</td></tr>
       <tr><td><code>database is locked</code></td><td>Radiator is writing at that moment. The script waits up to 5 seconds, so run it again.</td></tr>
     </tbody>
   </table></div>
 
-  <h3 id="confirm">Values to confirm on your first deployment</h3>
-  <p>These settings come from the Radiator 4.x reference manual. Confirm them on one test server with <code>Trace 4</code> before you load users in bulk:</p>
+  <h3 id="confirm">Confirmed with Radiator 4.30</h3>
+  <p>These were open questions in the Radiator reference manual. Radiator 4.30's source code and a test run against it (<code>tests/radiator/run.sh</code>) settle them:</p>
   <ol>
-    <li><strong>AES key format.</strong> The manual says the <code>secret</code> column holds the key in base64, but it also says the default setup assumes hex. The script stores base64. If logins fail with decryption errors, rebuild the test database with <code>-e hex</code> and test again.</li>
-    <li><strong>Quoting of <code>%3</code> and <code>%7</code>.</strong> The sample config assumes Radiator quotes the public ID, as it does the username in <code>%0</code>. In the trace log, check that the SQL shows <code>tokenId='vvcc...'</code>.</li>
-    <li><strong>Two-factor login format.</strong> Check the <code>password:OTP</code> format with <code>radpwtst</code> before you tell users how to log in.</li>
+    <li><strong>AES key format.</strong> Radiator reads a <code>secret</code> of 32 hex characters as hex and anything else as base64, so the default (<code>base64</code>) and <code>-e hex</code> both work.</li>
+    <li><strong>Quoting of <code>%3</code> and <code>%7</code>.</strong> Radiator quotes the public ID, so the SQL reads <code>tokenId='vvccccbbcdef'</code>.</li>
+    <li><strong>Two-factor login format.</strong> <code>1234:OTP</code> and <code>1234OTP</code> both work.</li>
+    <li><strong>Public ID length.</strong> Radiator takes exactly 12 characters of public ID from a login, so <code>add</code> and <code>import</code> accept no other length.</li>
+    <li><strong><code>active</code>.</strong> Only <code>0</code> or an empty value disables a key.</li>
   </ol>
-  <p>After these work on one server, use the same settings everywhere.</p>
+  <p>With a different Radiator version, run that test against it before you load users in bulk.</p>
 </section>
 
 <section id="upgrading">
   <h2>Upgrading a database built with the old example commands</h2>
-  <p>The original example commands created rows that Radiator can't use:</p>
+  <p>The original example commands created rows with these problems:</p>
   <ul>
     <li><code>"current_timestamp"</code> in double quotes stored the literal text <code>current_timestamp</code> in <code>created</code>, not the date and time.</li>
-    <li><code>active="true"</code> stored the text <code>true</code>, but Radiator only accepts <code>1</code>.</li>
+    <li><code>active="true"</code> stored the text <code>true</code>, and <code>false</code> the text <code>false</code>. Radiator treats both as active, so a key set to <code>false</code> was <strong>not</strong> disabled.</li>
   </ul>
   <p>To fix the existing rows:</p>
 <pre><code>sudo sqlite3 /etc/radiator/db/yubicred.db &lt;&lt;'SQL'

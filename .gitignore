@@ -11,5 +11,8 @@ dist/
 # A filled-in copy of the example wrapper holds an AES key
 yubikey-db-user.sh
 
+# Radiator packages for tests/radiator/run.sh are licensed; keep them out
+*.deb
+
 # Test output
 tests/tmp/
