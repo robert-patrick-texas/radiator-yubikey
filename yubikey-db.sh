@@ -42,6 +42,8 @@
 #   init-pg   PostgreSQL only: create the roles and database, then the table
 #   add       Add one user/YubiKey (values from options, or prompted)
 #   import    Bulk-load users/YubiKeys from a CSV file in a single transaction
+#             (--from-export restores a file written by 'export', with its
+#             passwords, times and counters)
 #   list      Show users and keys (never shows AES keys or passwords)
 #   enable    Set active=1 for a user (optionally only one of their keys)
 #   disable   Set active=0 for a user (optionally only one of their keys)
@@ -132,7 +134,9 @@ MODHEX=cbdefghijklnrtuv
 HEXDIGITS=0123456789abcdef
 
 REPLACE=0     # 1 = INSERT OR REPLACE (overwrite an existing YubiKey entry)
-# Columns of an export file, in order.
+RESTORE=0     # 1 = import --from-export: restore passwords, times and counters
+# Columns of an export file, in order (export writes them; import --from-export
+# requires them as the header).
 EXPORT_COLUMNS=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
 TMPFILE=      # temp SQL file used by 'import'; removed on exit
 trap 'if [[ -n $TMPFILE ]]; then rm -f -- "$TMPFILE"; fi' EXIT
@@ -179,11 +183,16 @@ Commands:
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] CSV_FILE
+  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
         Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
+        --from-export restores a file written by 'export' instead (all its
+        columns, standard CSV quoting, its header required). Passwords are
+        stored as they are (already hashed; -H does not apply), and created,
+        accessed and the counters are restored. With --replace, counters
+        never move backward: where the database is ahead, its counters stay.
 
   list [USER]                   List users/keys (no secrets shown)
   enable  USER [PUBLIC_ID]      Set active=1
@@ -282,12 +291,62 @@ csv_from_json() {
 # key or private ID.
 #   $1 username  $2 public_id  $3 private_id  $4 aes_key  $5 password  $6 active
 validate_record() {
-    local user=$1 pub=${2,,} priv=${3,,} key=${4,,} pw=${5-} active=${6-}
-    active=${active,,}
+    local user=$1 pw=${5-}
     ERR=
 
     [[ $user =~ ^[A-Za-z0-9._@+-]{1,255}$ ]] \
         || { ERR="invalid username '$user' (allowed: letters, digits and . _ @ + -)"; return 1; }
+    validate_key_fields "$user" "$2" "$3" "$4" "${6-}" || return 1
+
+    R_USER=$user
+    # Explicit error checks: 'set -e' does not apply inside 'if validate_record'.
+    R_PASSWORD=$(hash_password "$pw") || { ERR="could not hash the password for $user"; return 1; }
+}
+
+# Validate one row of an export file (import --from-export). The password is
+# kept as stored (it is already hashed), and created, accessed and the
+# counters are restored. Usernames may be anything the database can hold. An
+# invalid time is replaced, with a note in R_NOTE; an invalid counter makes the
+# row invalid. Sets the R_* globals, or ERR and returns 1.
+#   $1..$11 = the export columns, in EXPORT_COLUMNS order
+validate_export_record() {
+    local user=$1 pw=$5 created=$7 accessed=$8 counter=$9 low=${10} high=${11}
+    local ts='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$'
+    ERR=''
+    R_NOTE=''
+
+    if [[ -z $user || ${#user} -gt 255 || $user =~ [[:cntrl:]] ]]; then
+        ERR="invalid username '${user//[[:cntrl:]]/?}' (must be 1-255 characters, with no control characters)"
+        return 1
+    fi
+    validate_key_fields "$user" "$2" "$3" "$4" "$6" || return 1
+    if [[ ! $counter =~ ^[0-9]{1,9}$ || ! $low =~ ^[0-9]{1,9}$ || ! $high =~ ^[0-9]{1,9}$ ]]; then
+        ERR="invalid counter, low or high for $user (expected whole numbers)"; return 1
+    fi
+    if [[ -n $created && ! $created =~ $ts ]]; then
+        R_NOTE="created '$created' for $user is not a UTC time; using the current time"
+        created=
+    fi
+    if [[ -n $accessed && ! $accessed =~ $ts ]]; then
+        R_NOTE+="${R_NOTE:+; }accessed '$accessed' for $user is not a UTC time; leaving it empty"
+        accessed=
+    fi
+
+    R_USER=$user
+    R_PASSWORD=$pw
+    R_CREATED=$created
+    R_ACCESSED=$accessed
+    R_COUNTER=$((10#$counter))
+    R_LOW=$((10#$low))
+    R_HIGH=$((10#$high))
+}
+
+# Check and normalize the YubiKey fields that both import formats share. Sets
+# R_PUB, R_PRIV, R_ACTIVE and R_SECRET, or ERR and returns 1.
+#   $1 username (for messages)  $2 public_id  $3 private_id  $4 aes_key  $5 active
+validate_key_fields() {
+    local user=$1 pub=${2,,} priv=${3,,} key=${4,,} active=${5-}
+    active=${active,,}
 
     [[ $pub =~ ^([cbdefghijklnrtuv]{2}){1,16}$ ]] \
         || { ERR="invalid public ID '$2' for $user (expected modhex, normally 12 characters from '$MODHEX')"; return 1; }
@@ -308,16 +367,59 @@ validate_record() {
     case $active in
         ''|1|true|yes|y|on)  active=1 ;;
         0|false|no|n|off)    active=0 ;;
-        *) ERR="invalid active value '$6' for $user (use 1/0, true/false, yes/no)"; return 1 ;;
+        *) ERR="invalid active value '$5' for $user (use 1/0, true/false, yes/no)"; return 1 ;;
     esac
 
-    R_USER=$user
     R_PUB=$pub
     R_PRIV=$priv
     R_ACTIVE=$active
-    # Explicit error checks: 'set -e' does not apply inside 'if validate_record'.
     R_SECRET=$(encode_secret "$key") || { ERR="could not encode the AES key for $user"; return 1; }
-    R_PASSWORD=$(hash_password "$pw") || { ERR="could not hash the password for $user"; return 1; }
+}
+
+# Read an export file ($1) as standard CSV (quoted fields may hold commas,
+# doubled quotes and line breaks) and print, NUL-separated, for each row: its
+# line number, its number of fields, and its first 11 fields (padded). The
+# first row must be the export header. "@@end" follows the last row, so a
+# reader can tell a complete parse from a failed one.
+parse_export_csv() {
+    perl -e '
+        my ($prog, $file, $header) = @ARGV;
+        open(my $in, "<", $file) or die "$prog: error: cannot read $file: $!\n";
+        binmode $in;
+        my $data = do { local $/; <$in> };
+        pos($data) = 0;
+        my ($line, $have_header) = (1, 0);
+        while (pos($data) < length $data) {
+            my ($start, @f) = ($line);
+            while (1) {
+                if ($data =~ /\G"((?:[^"]|"")*)"/gc) {
+                    my $v = $1;
+                    $line += ($v =~ tr/\n//);
+                    $v =~ s/""/"/g;
+                    push @f, $v;
+                } else {
+                    $data =~ /\G([^",\r\n]*)/gc;
+                    push @f, $1;
+                }
+                next if $data =~ /\G,/gc;
+                if ($data =~ /\G\r?\n/gc) { $line++; last }
+                last if pos($data) >= length $data;
+                die "$prog: error: $file line $start: malformed CSV (a quote inside an unquoted field, or an unterminated quoted field)\n";
+            }
+            next if @f == 1 && $f[0] eq "";              # blank line
+            if (!$have_header) {
+                join(",", @f) eq $header
+                    or die "$prog: error: $file is not an export file; its first line must be:\n  $header\n";
+                $have_header = 1;
+                next;
+            }
+            my $n = @f;
+            $#f = 10;
+            print join("\0", $start, $n, map { $_ // "" } @f), "\0";
+        }
+        $have_header or die "$prog: error: $file is empty\n";
+        print "\@\@end\0";
+    ' "$PROG" "$1" "$EXPORT_COLUMNS"
 }
 
 # Read a value from the terminal. $1 = variable name, $2 = prompt, $3 = "secret"
@@ -457,14 +559,34 @@ sqlite_init() {
 
 # Print the INSERT statement for the record held in the R_* globals.
 # tokenId = public ID (modhex), userId = private ID (hex). The accessed column
-# starts empty and is filled in by Radiator's UpdateQuery.
+# starts empty and is filled in by Radiator's UpdateQuery. When restoring an
+# export, created, accessed and the counters come from the export.
 sqlite_insert_sql() {
-    local verb=INSERT
+    local verb=INSERT created=CURRENT_TIMESTAMP accessed="''" counter=0 low=0 high=0
+    local user pw pub priv secret
     [[ $REPLACE == 1 ]] && verb="INSERT OR REPLACE"
-    printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, CURRENT_TIMESTAMP, '', %s, %s, %s, 0, 0, 0);\n" \
-        "$verb" \
-        "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" \
-        "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
+    if [[ $RESTORE == 1 ]]; then
+        [[ -z $R_CREATED ]] || created=$(sql_quote "$R_CREATED")
+        accessed=$(sql_quote "$R_ACCESSED")
+        counter=$R_COUNTER low=$R_LOW high=$R_HIGH
+    fi
+    user=$(sql_quote "$R_USER") pw=$(sql_quote "$R_PASSWORD")
+    pub=$(sql_quote "$R_PUB") priv=$(sql_quote "$R_PRIV") secret=$(sql_quote "$R_SECRET")
+
+    if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
+        # Restoring over existing rows: keep whichever counters are ahead, the
+        # export's or those of a row being replaced, so a restore never lets
+        # an already used OTP be accepted again.
+        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high)\n'
+        printf 'SELECT %s, %s, %s, %s, m.accessed, %s, %s, %s, m.counter, m.low, m.high FROM (\n' \
+            "$user" "$pw" "$R_ACTIVE" "$created" "$pub" "$priv" "$secret"
+        printf '    SELECT %s AS counter, %s AS low, %s AS high, %s AS accessed\n' "$counter" "$low" "$high" "$accessed"
+        printf '    UNION ALL SELECT coalesce(counter, 0), coalesce(low, 0), coalesce(high, 0), accessed FROM yubikeys WHERE tokenId = %s OR userId = %s\n' "$pub" "$priv"
+        printf '    ORDER BY counter DESC, low DESC, accessed DESC LIMIT 1) AS m;\n'
+    else
+        printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);\n" \
+            "$verb" "$user" "$pw" "$R_ACTIVE" "$created" "$accessed" "$pub" "$priv" "$secret" "$counter" "$low" "$high"
+    fi
 }
 
 # 'list' never selects the AES key or password.
@@ -730,10 +852,30 @@ EOF
 # statement (ON CONFLICT covers only one constraint), so the replacement is
 # atomic. Referencing the DELETE makes it run before the INSERT.
 pg_insert_sql() {
-    local cols vals
+    local cols vals created=CURRENT_TIMESTAMP accessed=NULL counter=0 low=0 high=0
+    if [[ $RESTORE == 1 ]]; then              # export times are UTC
+        [[ -z $R_CREATED ]] || created=$(sql_quote "$R_CREATED+00")
+        [[ -z $R_ACCESSED ]] || accessed=$(sql_quote "$R_ACCESSED+00")
+        counter=$R_COUNTER low=$R_LOW high=$R_HIGH
+    fi
     cols="username, password, active, created, accessed, tokenId, userId, secret, counter, low, high"
-    vals="$(sql_quote "$R_USER"), $(sql_quote "$R_PASSWORD"), $R_ACTIVE, CURRENT_TIMESTAMP, NULL, $(sql_quote "$R_PUB"), $(sql_quote "$R_PRIV"), $(sql_quote "$R_SECRET"), 0, 0, 0"
-    if [[ $REPLACE == 1 ]]; then
+    vals="$(sql_quote "$R_USER"), $(sql_quote "$R_PASSWORD"), $R_ACTIVE, $created, $accessed, $(sql_quote "$R_PUB"), $(sql_quote "$R_PRIV"), $(sql_quote "$R_SECRET"), $counter, $low, $high"
+    if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
+        # Restoring over existing rows: keep whichever counters are ahead, the
+        # export's or those of a row being replaced (read before the DELETE,
+        # since all parts of one statement see the same snapshot).
+        local pub priv
+        pub=$(sql_quote "$R_PUB") priv=$(sql_quote "$R_PRIV")
+        printf 'WITH old AS (SELECT counter, low, high, accessed FROM yubikeys WHERE tokenId = %s OR userId = %s),\n' "$pub" "$priv"
+        printf '     best AS (SELECT * FROM (SELECT %s AS counter, %s AS low, %s AS high, %s::timestamptz AS accessed\n' \
+            "$counter" "$low" "$high" "$accessed"
+        printf '                            UNION ALL SELECT * FROM old) b\n'
+        printf '               ORDER BY counter DESC, low DESC, accessed DESC NULLS LAST LIMIT 1),\n'
+        printf '     replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' "$pub" "$priv"
+        printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, %s, best.accessed, %s, %s, %s, best.counter, best.low, best.high\n' \
+            "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" "$created" "$pub" "$priv" "$(sql_quote "$R_SECRET")"
+        printf '  FROM best WHERE (SELECT count(*) FROM replaced) >= 0;\n'
+    elif [[ $REPLACE == 1 ]]; then
         printf 'WITH replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' \
             "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")"
         printf 'INSERT INTO yubikeys (%s)\nSELECT %s WHERE (SELECT count(*) FROM replaced) >= 0;\n' "$cols" "$vals"
@@ -860,6 +1002,22 @@ cmd_add() {
     info "Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE)"
 }
 
+# Append the INSERT for the validated record (R_* globals) to TMPFILE, unless
+# its public or private ID was already used earlier in the file. Updates
+# cmd_import's ok, bad, seen_pub and seen_priv. $1 = line number.
+queue_record() {
+    if [[ -n ${seen_pub[$R_PUB]-} ]]; then
+        warn "line $1: public ID $R_PUB is already used on line ${seen_pub[$R_PUB]}"; bad=$((bad + 1)); return
+    fi
+    if [[ -n ${seen_priv[$R_PRIV]-} ]]; then
+        warn "line $1: private ID for $R_USER is already used on line ${seen_priv[$R_PRIV]}"; bad=$((bad + 1)); return
+    fi
+    seen_pub[$R_PUB]=$1
+    seen_priv[$R_PRIV]=$1
+    db_insert_sql >>"$TMPFILE"
+    ok=$((ok + 1))
+}
+
 cmd_import() {
     local file='' dry_run=0 skip_invalid=0
     while [[ $# -gt 0 ]]; do
@@ -867,6 +1025,7 @@ cmd_import() {
             --dry-run)      dry_run=1; shift ;;
             --skip-invalid) skip_invalid=1; shift ;;
             --replace)      REPLACE=1; shift ;;
+            --from-export)  RESTORE=1; shift ;;
             -*)             die "import: unknown option '$1'" ;;
             *)              [[ -z $file ]] || die "import: only one CSV file allowed"; file=$1; shift ;;
         esac
@@ -884,9 +1043,27 @@ cmd_import() {
     echo 'BEGIN;' >"$TMPFILE"
 
     local line lineno=0 first_row=1 ok=0 bad=0 i
-    local -a f
+    local -a f items
     local -A seen_pub=() seen_priv=()
-    while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $RESTORE == 1 ]]; then
+        mapfile -d '' -t items < <(parse_export_csv "$file")
+        [[ ${#items[@]} -gt 0 && ${items[-1]} == '@@end' ]] \
+            || die "nothing imported"
+        unset 'items[-1]'
+        for (( i = 0; i < ${#items[@]}; i += 13 )); do
+            lineno=${items[i]}
+            f=("${items[@]:i+2:11}")
+            if [[ ${items[i+1]} != 11 ]]; then
+                warn "line $lineno: expected 11 fields, found ${items[i+1]}"; bad=$((bad + 1)); continue
+            fi
+            if ! validate_export_record "${f[@]}"; then
+                warn "line $lineno: $ERR"; bad=$((bad + 1)); continue
+            fi
+            if [[ -n $R_NOTE ]]; then warn "line $lineno: $R_NOTE"; fi
+            queue_record "$lineno"
+        done
+    fi
+    while [[ $RESTORE == 0 ]] && { IFS= read -r line || [[ -n $line ]]; }; do
         lineno=$((lineno + 1))
         line=${line%$'\r'}                              # tolerate Windows line endings
         [[ $line =~ ^[[:space:]]*(#|$) ]] && continue   # skip comments and blank lines
@@ -909,17 +1086,7 @@ cmd_import() {
         if ! validate_record "${f[0]}" "${f[1]}" "${f[2]}" "${f[3]}" "${f[4]-}" "${f[5]-}"; then
             warn "line $lineno: $ERR"; bad=$((bad + 1)); continue
         fi
-        if [[ -n ${seen_pub[$R_PUB]-} ]]; then
-            warn "line $lineno: public ID $R_PUB is already used on line ${seen_pub[$R_PUB]}"; bad=$((bad + 1)); continue
-        fi
-        if [[ -n ${seen_priv[$R_PRIV]-} ]]; then
-            warn "line $lineno: private ID for $R_USER is already used on line ${seen_priv[$R_PRIV]}"; bad=$((bad + 1)); continue
-        fi
-        seen_pub[$R_PUB]=$lineno
-        seen_priv[$R_PRIV]=$lineno
-
-        db_insert_sql >>"$TMPFILE"
-        ok=$((ok + 1))
+        queue_record "$lineno"
     done <"$file"
     echo 'COMMIT;' >>"$TMPFILE"
 
@@ -934,6 +1101,9 @@ cmd_import() {
         die "import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)"
     fi
     info "Imported $ok row(s) into $DB_DESC"
+    if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
+        info "Counters were kept from the database wherever it was ahead of the export."
+    fi
 }
 
 cmd_list() {

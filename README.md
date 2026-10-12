@@ -289,6 +289,7 @@ protection working.
 | Replace a reprogrammed YubiKey | `sudo ./yubikey-db.sh add --replace -u alice -P vvccccbbcdef` |
 | Export everything to CSV | `sudo ./yubikey-db.sh export users-export.csv` |
 | Export straight into an encrypted file | `sudo ./yubikey-db.sh export - \| gpg -e -r you@example.com > users.csv.gpg` |
+| Restore an export | `sudo ./yubikey-db.sh import --from-export users-export.csv` |
 
 `list` never shows AES keys or passwords. `export` does: see
 [Exporting to CSV](#exporting-to-csv).
@@ -310,14 +311,46 @@ alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,{crypt}$6$...,1
   counters.
 - Fields that contain a comma, a quote or a line break are quoted, with quotes
   doubled.
-- The first six columns are in `import` order, but `import` doesn't accept
-  this file as it is: it takes at most six columns, and it would hash a
-  `{crypt}` value again.
+- To load an export back, use `import --from-export` (see
+  [Restoring an export](#restoring-an-export)). The plain `import` is for
+  onboarding and doesn't accept export files.
 
 The file holds every AES key and private ID in clear text. `export` creates it
 with mode `0600`, never replaces an existing file unless you add `--force`, and
 leaves no partial file if it fails. Use `export -` to write to standard output,
 for example to encrypt the export without writing it to disk unencrypted.
+
+### Restoring an export
+
+`import --from-export` loads a file written by `export`, into either database
+(so it also moves users between SQLite and PostgreSQL):
+
+```bash
+sudo ./yubikey-db.sh import --from-export --dry-run users-export.csv   # check it first
+sudo ./yubikey-db.sh import --from-export users-export.csv
+gpg -d users.csv.gpg > users-export.csv && ./yubikey-db.sh -b pg import --from-export users-export.csv
+```
+
+How it differs from the onboarding `import`:
+
+| | `import` (onboarding) | `import --from-export` (restore) |
+|---|---|---|
+| Columns | 4 to 6, simple comma split | All 11 export columns, standard CSV quoting |
+| Header | Optional | Required, and must be the export header |
+| Password | Hashed (`{crypt}`) | Stored as it is (already hashed in the export) |
+| `created`, `accessed` | Now, empty | Restored |
+| Counters | 0 | Restored, so used OTPs stay rejected |
+| Usernames | Letters, digits and `. _ @ + -` | Anything up to 255 characters without control characters |
+| `--replace` | Overwrites and resets the counters | Overwrites, but never moves counters backward |
+
+With `--replace`, if the database's counters for a key are ahead of the
+export's, the database's counters and `accessed` time are kept. Restoring an
+old export can't make a used OTP valid again.
+
+Rows from the old example statements are normalized as `import` always does
+(`active` `true` becomes `1`, a modhex private ID becomes hex). An invalid
+`created` time is replaced with the current time, and an invalid `accessed`
+time is cleared, each with a warning. Invalid counters make the row invalid.
 
 ## Command reference
 
@@ -345,7 +378,7 @@ Global options go **before** the command, for example
 |---|---|---|
 | `init` | `-o, --owner USER[:GROUP]` | Create the folder, database file, table, and index |
 | `add` | `-u USER`, `-P PUBLIC_ID`, `-p PRIVATE_ID`, `-k AES_KEY`, `-w PASSWORD`, `--no-password`, `--inactive`, `--replace` | Add one user and YubiKey. Asks for any value you leave out. |
-| `import` | `--dry-run`, `--skip-invalid`, `--replace`, `CSV_FILE` | Bulk-load users from a CSV file |
+| `import` | `--dry-run`, `--skip-invalid`, `--replace`, `--from-export`, `CSV_FILE` | Bulk-load users from a CSV file, or restore an export (`--from-export`) |
 | `list` | `[USER]` | Show users and keys without their secrets |
 | `enable` | `USER [PUBLIC_ID]` | Set `active = 1` |
 | `disable` | `USER [PUBLIC_ID]` | Set `active = 0` |

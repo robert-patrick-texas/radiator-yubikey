@@ -474,6 +474,121 @@ scenario_export() {
     run -d "$DB" export -
 }
 
+# A database to restore from: the export rows, a used key, a key in the old
+# example format, and a username that onboarding import would not accept.
+restore_source() {
+    "$SCRIPT" -d "$WORK/src.db" init >/dev/null 2>&1
+    export_rows -d "$WORK/src.db"
+    sqlite3 "$WORK/src.db" "UPDATE yubikeys SET counter = 40, low = 7, high = 1, accessed = '2026-10-01 12:00:00', created = '2026-07-01 08:00:00' WHERE username = 'test.user';
+        INSERT INTO yubikeys VALUES ('DOMAIN\\old user', 'plainpin', 'true', 'current_timestamp', '2026-09-01 10:00:00',
+            'vvccccbbcdeg', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0);"
+    "$SCRIPT" -d "$WORK/src.db" export source.csv >/dev/null 2>&1
+}
+
+# Compare two export files, with times masked (a time set to "now" during the
+# run can differ by a second); times_sqlite and times_pg check times exactly.
+compare_exports() {
+    printf '# %s vs %s (times masked): ' "$1" "$2"
+    if cmp -s <(normalize <"$1") <(normalize <"$2"); then
+        echo identical
+    else
+        echo differs:; diff <(normalize <"$1") <(normalize <"$2")
+    fi
+    echo
+}
+
+# SQLite counterpart of times_pg: created and accessed exactly, in a format the
+# timestamp placeholder does not replace; a time set during the run is "now".
+times_sqlite() {
+    printf '# times in %s (UTC)\n' "${1##*/}"
+    sqlite3 -batch -header -separator ' | ' "$1" \
+        "SELECT username,
+                CASE WHEN created >= datetime('now', '-1 hour') THEN 'now' ELSE replace(created, ' ', 'T') END AS created,
+                replace(accessed, ' ', 'T') AS accessed
+           FROM yubikeys ORDER BY username;"
+    echo
+}
+
+scenario_restore() {
+    restore_source
+    cat source.csv; echo
+    run -d "$DB" init >/dev/null
+
+    # The default import is for onboarding and does not take an export.
+    run -d "$DB" import source.csv
+
+    run -d "$DB" import --from-export --dry-run source.csv
+    run -d "$DB" import --from-export source.csv
+    check_crypt "$DB" test.user abc123
+    times_sqlite "$DB"
+    "$SCRIPT" -d "$DB" export restored.csv >/dev/null 2>&1
+    # Identical except the old-format row, which import normalizes.
+    compare_exports source.csv restored.csv
+
+    # Without --replace, existing keys make the whole restore fail.
+    run -d "$DB" import --from-export source.csv
+
+    # With --replace, the export's values come back, but counters never move
+    # backward: test.user is ahead in the database (99/1) and keeps it;
+    # the old-format key is behind (2/0) and gets the export's 12/3.
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00' WHERE username = 'test.user';
+        UPDATE yubikeys SET counter = 2, low = 0 WHERE username = 'DOMAIN\\old user';
+        UPDATE yubikeys SET password = 'changed', active = 0 WHERE username = 'test.user2';"
+    run -d "$DB" import --from-export --replace source.csv
+    dump "$DB"
+    times_sqlite "$DB"
+    "$SCRIPT" -d "$DB" export replaced.csv >/dev/null 2>&1
+    compare_exports restored.csv replaced.csv
+}
+
+scenario_restore_errors() {
+    run -d "$DB" init >/dev/null
+    local header=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+    csv onboarding.csv <"$ROOT/users.example.csv"
+    run -d "$DB" import --from-export onboarding.csv
+    csv empty.csv </dev/null
+    run -d "$DB" import --from-export empty.csv
+    printf '%s\nalice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,"unterminated,1,,,0,0,0\n' "$header" >bad1.csv
+    run -d "$DB" import --from-export bad1.csv
+    printf '%s\nalice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,pass"word,1,,,0,0,0\n' "$header" >bad2.csv
+    run -d "$DB" import --from-export bad2.csv
+
+    {
+        echo "$header"
+        echo 'ok1,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,2026-07-01 08:00:00,,0,0,0'
+        echo 'short,vvccccbbcdeg,4a6f8e2d1c3c'
+        printf 'bell\a,vvccccbbcdeh,4a6f8e2d1c3d,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,,,0,0,0\n'
+        echo 'badkey,vvccccbbcdei,4a6f8e2d1c3e,ASNFZ4mrze8BI0VniavN7w==,,1,,,0,0,0'
+        echo 'badcount,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,,,x,0,0'
+        echo 'dup,vvccccbbcdef,4a6f8e2d1c40,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,,,0,0,0'
+        echo 'badtimes,vvccccbbcdek,4a6f8e2d1c41,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,2026-13-01 00:00:00,yesterday,5,1,0'
+        # quoted fields: a comma, a doubled quote and a line break; Windows line ending
+        printf 'multi,vvccccbbcdel,4a6f8e2d1c42,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,"line1\nline2, ""q""",0,2026-07-01 08:00:00,2026-10-01 12:00:00,3,2,0\r\n'
+    } >mixed.csv
+    chmod 600 mixed.csv
+    run -d "$DB" import --from-export mixed.csv
+    run -d "$DB" import --from-export --skip-invalid mixed.csv
+    dump "$DB"
+}
+
+scenario_pg_restore() {
+    restore_source
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    # A SQLite export restored into PostgreSQL, then exported again.
+    run -b pg -d "$PGDB" import --from-export source.csv
+    check_crypt_pg test.user abc123
+    "$SCRIPT" -b pg -d "$PGDB" export restored.csv >/dev/null 2>&1
+    compare_exports source.csv restored.csv
+    times_pg
+
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00+00' WHERE username = 'test.user';
+        UPDATE yubikeys SET counter = 2, low = 0 WHERE username = 'DOMAIN\\old user';
+        UPDATE yubikeys SET password = 'changed', active = 0 WHERE username = 'test.user2';"
+    run -b pg -d "$PGDB" import --from-export --replace source.csv
+    dump_pg
+    times_pg
+}
+
 scenario_pg_export() {
     run -b pg -d "$PGDB" init-pg >/dev/null
     export_rows -b pg -d "$PGDB"
@@ -744,8 +859,8 @@ EOF
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     export
-     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export
+     export restore restore_errors
+     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)
 
 # Scenarios that need a PostgreSQL server.

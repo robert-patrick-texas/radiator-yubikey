@@ -31,11 +31,16 @@ Commands:
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] CSV_FILE
+  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
         Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
+        --from-export restores a file written by 'export' instead (all its
+        columns, standard CSV quoting, its header required). Passwords are
+        stored as they are (already hashed; -H does not apply), and created,
+        accessed and the counters are restored. With --replace, counters
+        never move backward: where the database is ahead, its counters stay.
 
   list [USER]                   List users/keys (no secrets shown)
   enable  USER [PUBLIC_ID]      Set active=1
@@ -93,11 +98,16 @@ Commands:
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] CSV_FILE
+  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
         Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
+        --from-export restores a file written by 'export' instead (all its
+        columns, standard CSV quoting, its header required). Passwords are
+        stored as they are (already hashed; -H does not apply), and created,
+        accessed and the counters are restored. With --replace, counters
+        never move backward: where the database is ahead, its counters stay.
 
   list [USER]                   List users/keys (no secrets shown)
   enable  USER [PUBLIC_ID]      Set active=1

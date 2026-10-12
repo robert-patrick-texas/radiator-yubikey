@@ -22,6 +22,11 @@
   CSV, with AES keys as 32 hex characters and private IDs in clear text. The
   file is created with mode 0600 via a temporary file, an existing file is
   replaced only with `--force`, and `export -` writes to standard output.
+- `import --from-export` restores a file written by `export`, into either
+  database: standard CSV quoting, the export header required, passwords
+  stored as they are, and created, accessed and the counters restored. With
+  `--replace`, counters never move backward (the database's are kept where
+  they are ahead). The default `import` for onboarding is unchanged.
 - `yubikey-db-migrate.sh`: copies the users and keys from the SQLite database
   into PostgreSQL in one transaction.
   - Reads a consistent snapshot (`sqlite3 .backup`), so Radiator can keep
@@ -36,8 +41,8 @@
     only, never backward; rows that differ are listed and left unchanged.
   - Invalid rows are listed by user and public ID (never key or private ID)
     and block the migration unless `--skip-invalid` is given.
-- Tests: 7 PostgreSQL, 5 migration and 2 export scenarios (25 in total); the
-  ones that need a server are skipped without one.
+- Tests: 8 PostgreSQL, 5 migration, 2 export and 2 restore scenarios (28 in
+  total); the ones that need a server are skipped without one.
 
 ## 1.0.1 - 2026-10-06
 

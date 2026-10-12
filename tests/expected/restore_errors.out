@@ -1,0 +1,52 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export onboarding.csv
+yubikey-db.sh: error: onboarding.csv is not an export file; its first line must be:
+  username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+yubikey-db.sh: error: nothing imported
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export empty.csv
+yubikey-db.sh: error: empty.csv is empty
+yubikey-db.sh: error: nothing imported
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export bad1.csv
+yubikey-db.sh: warning: bad1.csv is world-readable and contains AES keys; consider: chmod 600 'bad1.csv'
+yubikey-db.sh: error: bad1.csv line 2: malformed CSV (a quote inside an unquoted field, or an unterminated quoted field)
+yubikey-db.sh: error: nothing imported
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export bad2.csv
+yubikey-db.sh: warning: bad2.csv is world-readable and contains AES keys; consider: chmod 600 'bad2.csv'
+yubikey-db.sh: error: bad2.csv line 2: malformed CSV (a quote inside an unquoted field, or an unterminated quoted field)
+yubikey-db.sh: error: nothing imported
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export mixed.csv
+yubikey-db.sh: warning: line 3: expected 11 fields, found 3
+yubikey-db.sh: warning: line 4: invalid username 'bell?' (must be 1-255 characters, with no control characters)
+yubikey-db.sh: warning: line 5: invalid AES key for badkey (expected 32 hex characters)
+yubikey-db.sh: warning: line 6: invalid counter, low or high for badcount (expected whole numbers)
+yubikey-db.sh: warning: line 7: public ID vvccccbbcdef is already used on line 2
+yubikey-db.sh: warning: line 8: created '<TIMESTAMP>' for badtimes is not a UTC time; using the current time; accessed 'yesterday' for badtimes is not a UTC time; leaving it empty
+Validated mixed.csv: 3 valid row(s), 5 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export --skip-invalid mixed.csv
+yubikey-db.sh: warning: line 3: expected 11 fields, found 3
+yubikey-db.sh: warning: line 4: invalid username 'bell?' (must be 1-255 characters, with no control characters)
+yubikey-db.sh: warning: line 5: invalid AES key for badkey (expected 32 hex characters)
+yubikey-db.sh: warning: line 6: invalid counter, low or high for badcount (expected whole numbers)
+yubikey-db.sh: warning: line 7: public ID vvccccbbcdef is already used on line 2
+yubikey-db.sh: warning: line 8: created '<TIMESTAMP>' for badtimes is not a UTC time; using the current time; accessed 'yesterday' for badtimes is not a UTC time; leaving it empty
+Validated mixed.csv: 3 valid row(s), 5 invalid row(s)
+Imported 3 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+ok1 |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+badtimes |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c41 | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0
+multi | line1
+line2, "q" | 0 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdel | 4a6f8e2d1c42 | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 2 | 0
+

@@ -1,0 +1,42 @@
+$ yubikey-db.sh -b pg -d <T>_db import --from-export source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into PostgreSQL database <T>_db
+[exit 0]
+
+# crypt check for test.user: match
+
+# source.csv vs restored.csv (times masked): differs:
+2c2
+< DOMAIN\old user,vvccccbbcdeg,tttttttttttt,00112233445566778899aabbccddeeff,plainpin,true,current_timestamp,<TIMESTAMP>,12,3,0
+---
+> DOMAIN\old user,vvccccbbcdeg,dddddddddddd,00112233445566778899aabbccddeeff,plainpin,1,<TIMESTAMP>,<TIMESTAMP>,12,3,0
+
+# times in <T>_db (UTC)
+username | created | accessed
+DOMAIN\old user | now | 2026-09-01T10:00:00
+comma.user | now | 
+test.user | 2026-07-01T08:00:00 | 2026-10-01T12:00:00
+test.user2 | now | 
+
+$ yubikey-db.sh -b pg -d <T>_db import --from-export --replace source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into PostgreSQL database <T>_db
+Counters were kept from the database wherever it was ahead of the export.
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 99 | 1 | 1
+comma.user | a,b"c | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdef | cccccccccccb | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0
+DOMAIN\old user | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0
+
+# times in <T>_db (UTC)
+username | created | accessed
+DOMAIN\old user | now | 2026-09-01T10:00:00
+comma.user | now | 
+test.user | 2026-07-01T08:00:00 | 2026-10-12T11:00:00
+test.user2 | now | 
+

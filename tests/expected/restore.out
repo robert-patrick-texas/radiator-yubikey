@@ -1,0 +1,76 @@
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+DOMAIN\old user,vvccccbbcdeg,tttttttttttt,00112233445566778899aabbccddeeff,plainpin,true,current_timestamp,<TIMESTAMP>,12,3,0
+comma.user,vvccccbbcdef,cccccccccccb,00112233445566778899aabbccddeeff,"a,b""c",0,<TIMESTAMP>,,0,0,0
+test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,40,7,1
+test.user2,cbdefghijklr,0a1b2c3d4e5f,0123456789abcdef0123456789abcdef,,1,<TIMESTAMP>,,0,0,0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import source.csv
+yubikey-db.sh: warning: line 2: expected 4-6 fields, found 11
+yubikey-db.sh: warning: line 3: expected 4-6 fields, found 12
+yubikey-db.sh: warning: line 4: expected 4-6 fields, found 11
+yubikey-db.sh: warning: line 5: expected 4-6 fields, found 11
+Validated source.csv: 0 valid row(s), 4 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export --dry-run source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Dry run: database not changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# crypt check for test.user: match
+
+# times in yubicred.db (UTC)
+username | created | accessed
+DOMAIN\old user | now | 2026-09-01T10:00:00
+comma.user | now | 
+test.user | 2026-07-01T08:00:00 | 2026-10-01T12:00:00
+test.user2 | now | 
+
+# source.csv vs restored.csv (times masked): differs:
+2c2
+< DOMAIN\old user,vvccccbbcdeg,tttttttttttt,00112233445566778899aabbccddeeff,plainpin,true,current_timestamp,<TIMESTAMP>,12,3,0
+---
+> DOMAIN\old user,vvccccbbcdeg,dddddddddddd,00112233445566778899aabbccddeeff,plainpin,1,<TIMESTAMP>,<TIMESTAMP>,12,3,0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Runtime error near line 4: UNIQUE constraint failed: yubikeys.userId (19)
+yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export --replace source.csv
+yubikey-db.sh: warning: line 2: created 'current_timestamp' for DOMAIN\old user is not a UTC time; using the current time
+Validated source.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into <WORK>/yubicred.db
+Counters were kept from the database wherever it was ahead of the export.
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+test.user2 |  | 1 | integer | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
+test.user | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 99 | 1 | 1
+comma.user | a,b"c | 0 | integer | <TIMESTAMP> |  | vvccccbbcdef | cccccccccccb | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0
+DOMAIN\old user | plainpin | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0
+
+# times in yubicred.db (UTC)
+username | created | accessed
+DOMAIN\old user | now | 2026-09-01T10:00:00
+comma.user | now | 
+test.user | 2026-07-01T08:00:00 | 2026-10-12T11:00:00
+test.user2 | now | 
+
+# restored.csv vs replaced.csv (times masked): differs:
+4c4
+< test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,40,7,1
+---
+> test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,99,1,1
+
