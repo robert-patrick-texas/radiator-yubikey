@@ -8,6 +8,8 @@ dist/
 *.db-shm
 *.csv
 !users.example.csv
+# A filled-in copy of the example wrapper holds an AES key
+yubikey-db-user.sh
 
 # Test output
 tests/tmp/

@@ -26,13 +26,15 @@ Commands:
         for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
-      [--no-password] [--inactive] [--replace]
+      [--no-password] [--inactive] [--replace | --update]
         Add one user. Missing values are prompted for (the key and password
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
-        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
+  import [--dry-run] [--skip-invalid] [--replace | --update] [--from-export]
+         CSV_FILE|-
+        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]),
+        or from standard input with -.
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
@@ -46,6 +48,14 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  verify [-u USER]              Check a password and OTP against the database
+        the way Radiator does (with Require2Factor and CheckSecretId): the
+        user must have the OTP's YubiKey, active=1, the same static password,
+        an OTP that decrypts to the stored private ID, and counters ahead of
+        the stored ones. If accepted, the counters are saved, as Radiator
+        would, so the OTP cannot be used again. Values are prompted for, or
+        read one per line from standard input when it is not a terminal:
+        the username (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
@@ -56,6 +66,11 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+--update does the same, but keeps the counters (and the created and accessed
+times) when the existing row has the same public ID, private ID and AES key,
+so only the username, password and active flag change. Use it to change a
+password, or when you are not sure whether a YubiKey is already loaded. If
+the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
 PGSERVICE settings. Keep passwords in ~/.pgpass.
@@ -93,13 +108,15 @@ Commands:
         for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
-      [--no-password] [--inactive] [--replace]
+      [--no-password] [--inactive] [--replace | --update]
         Add one user. Missing values are prompted for (the key and password
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
-        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
+  import [--dry-run] [--skip-invalid] [--replace | --update] [--from-export]
+         CSV_FILE|-
+        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]),
+        or from standard input with -.
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
@@ -113,6 +130,14 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  verify [-u USER]              Check a password and OTP against the database
+        the way Radiator does (with Require2Factor and CheckSecretId): the
+        user must have the OTP's YubiKey, active=1, the same static password,
+        an OTP that decrypts to the stored private ID, and counters ahead of
+        the stored ones. If accepted, the counters are saved, as Radiator
+        would, so the OTP cannot be used again. Values are prompted for, or
+        read one per line from standard input when it is not a terminal:
+        the username (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
@@ -123,6 +148,11 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+--update does the same, but keeps the counters (and the created and accessed
+times) when the existing row has the same public ID, private ID and AES key,
+so only the username, password and active flag change. Use it to change a
+password, or when you are not sure whether a YubiKey is already loaded. If
+the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
 PGSERVICE settings. Keep passwords in ~/.pgpass.

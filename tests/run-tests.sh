@@ -18,7 +18,9 @@
 #                                 named yubikey-db.sh, which appears in messages)
 #
 # Needs: bash 4+, sqlite3, perl. Run as a normal user, not root (one scenario
-# checks permission errors, which root bypasses).
+# checks permission errors, which root bypasses). The verify scenarios also
+# need openssl (to make test OTPs) and the Perl module Crypt::Rijndael, and
+# are skipped without them.
 #
 # The pg_* and migrate_* scenarios (except *_offline) also need psql and a
 # PostgreSQL 18 (or later) server that
@@ -43,6 +45,7 @@ WORK=          # scenario scratch directory under TMPROOT, emptied per scenario
 PGT=yk_test_$$ # prefix for throwaway PostgreSQL databases and roles
 PGDB=${PGT}_db
 PG_OK=0        # 1 when a PostgreSQL 18+ server is reachable
+OTP_OK=0       # 1 when openssl and Crypt::Rijndael are available
 PG_SKIP_REASON="no PostgreSQL server reachable"
 
 cleanup() {
@@ -85,6 +88,60 @@ run_env() {
     local out rc=0
     out=$(env "${envs[@]}" "$SCRIPT" "$@" </dev/null 2>&1) || rc=$?
     printf '$ %s yubikey-db.sh %s\n%s%s[exit %d]\n\n' "${envs[*]}" "$*" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# Same as run, with LINEs (CSV rows, or values to answer prompts) as standard
+# input: run_lines LINE... -- ARGS...
+run_lines() {
+    local -a lines=()
+    while [[ $1 != -- ]]; do lines+=("$1"); shift; done
+    shift
+    local out rc=0
+    out=$(printf '%s\n' "${lines[@]}" | "$SCRIPT" "$@" 2>&1) || rc=$?
+    printf '$ printf %%s\\n %s | yubikey-db.sh %s\n%s%s[exit %d]\n\n' "${lines[*]@Q}" "$*" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# Same as run, with standard input from a file: run_from FILE ARGS...
+run_from() {
+    local in=$1 out rc=0
+    shift
+    out=$("$SCRIPT" "$@" <"$in" 2>&1) || rc=$?
+    printf '$ yubikey-db.sh %s < %s\n%s%s[exit %d]\n\n' "$*" "${in##*/}" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# Print the OTP a YubiKey programmed with these values would type:
+# otp PUBLIC_ID PRIVATE_ID AES_KEY COUNTER SESSION. It is encrypted with
+# openssl, independently of the Perl code that 'verify' decrypts it with.
+otp() {
+    printf '%s' "$1"
+    perl -e '
+        my ($priv, $counter, $session) = @ARGV;
+        my $token = pack("H12 v C3 C v", $priv, $counter, 0x12, 0x34, 0x00, $session, 0xbeef);
+        my $crc = 0xffff;
+        for my $b (unpack "C*", $token) {
+            $crc ^= $b;
+            for (1 .. 8) { my $lsb = $crc & 1; $crc >>= 1; $crc ^= 0x8408 if $lsb }
+        }
+        print $token, pack("v", ~$crc & 0xffff);' "$2" "$4" "$5" \
+        | openssl enc -aes-128-ecb -nopad -K "$3" \
+        | perl -e 'local $/; (my $h = unpack "H*", <STDIN>) =~ tr/0-9a-f/cbdefghijklnrtuv/; print $h'
+}
+
+# Copy the example wrapper to $WORK/user.sh with the given settings, mode 0700:
+# make_wrapper NAME=VALUE... (e.g. cred_username=alice)
+make_wrapper() {
+    local -a edits=(-e "s|^yubikey_db=''|yubikey_db='$SCRIPT'|")
+    local kv
+    for kv in "$@"; do edits+=(-e "s|^${kv%%=*}=[^ ]*|${kv%%=*}='${kv#*=}'|"); done
+    sed "${edits[@]}" "$ROOT/yubikey-db-user.example.sh" >"$WORK/user.sh"
+    chmod 700 "$WORK/user.sh"
+}
+
+# Run the wrapper made by make_wrapper, with no terminal, and record it.
+run_wrapper() {
+    local out rc=0
+    out=$("$WORK/user.sh" </dev/null 2>&1) || rc=$?
+    printf '$ user.sh\n%s%s[exit %d]\n\n' "$out" "${out:+$'\n'}" "$rc"
 }
 
 # Print every row and column of the yubikeys table, so the test sees exactly
@@ -250,6 +307,144 @@ normalize() {
 # Scenarios. Each function runs in the scratch directory with DB set to a
 # fresh database path that does not exist yet.
 # --------------------------------------------------------------------------
+
+# add --update and import --update: a YubiKey already in the database keeps
+# its times and counters when its private ID and AES key are unchanged, and
+# is replaced (counters reset) when they changed. Also import from stdin.
+scenario_update() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    local header=username,public_id,private_id,aes_key,password,active
+    run -d "$DB" init >/dev/null
+
+    # Not in the database yet: added.
+    run -d "$DB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t'
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 7, low = 3, high = 1, created = '2026-07-01 08:00:00', accessed = '2026-10-01 12:00:00';"
+
+    # The same YubiKey with a new password and inactive: counters and times kept.
+    run -d "$DB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 'n3w' --inactive
+    check_crypt "$DB" alice 'n3w'
+    times_sqlite "$DB"
+    # Under another username, stored as hex this time: still the same YubiKey.
+    run -d "$DB" -e hex add --update -u alice.b -P VVCCCCBBCDEF -p 4A6F8E2D1C3B -k ${k1^^} --no-password
+    dump "$DB"
+    # And back to base64: the hex key it finds is the same key.
+    run -d "$DB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 --no-password
+    dump "$DB"
+    # Reprogrammed with a new AES key: replaced, counters and times reset.
+    run -d "$DB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k2 --no-password
+    dump "$DB"
+    times_sqlite "$DB"
+
+    # From standard input: a new key, an unchanged one (with counters), and
+    # one reprogrammed with a new private ID. Only the changed rows report.
+    "$SCRIPT" -d "$DB" add -u bob -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k1 --no-password >/dev/null
+    "$SCRIPT" -d "$DB" add -u carol -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $k1 --no-password >/dev/null
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 5, low = 1 WHERE username IN ('bob', 'carol');"
+    run_lines "$header" "bob,vvccccbbcdeg,4a6f8e2d1c3c,$k1,pw,1" "carol,vvccccbbcdeh,999999999999,$k1,,1" \
+              "dave,vvccccbbcdei,4a6f8e2d1c3e,$k1,,1" -- -d "$DB" import --update -
+    dump "$DB"
+    # Without --update the same rows are refused, and nothing changes.
+    run_lines "bob,vvccccbbcdeg,4a6f8e2d1c3c,$k1,other,0" "erin,vvccccbbcdej,4a6f8e2d1c3f,$k1" -- -d "$DB" import -
+    run_lines "erin,vvccccbbcdej,4a6f8e2d1c3f,$k1" -- -d "$DB" import --dry-run -
+    run -d "$DB" list
+
+    run -d "$DB" add --update --replace -u x
+    run -d "$DB" import --replace --update x.csv
+    run -d "$DB" import --update --from-export x.csv
+    run -d "$DB" import -x
+
+    # An export restored from standard input.
+    "$SCRIPT" -d "$DB" export all.csv >/dev/null 2>&1
+    "$SCRIPT" -d "$WORK/restored.db" init >/dev/null 2>&1
+    run_from all.csv -d "$WORK/restored.db" import --from-export -
+    "$SCRIPT" -d "$WORK/restored.db" export restored.csv >/dev/null 2>&1
+    compare_exports all.csv restored.csv
+}
+
+scenario_verify() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    run -d "$DB" init >/dev/null
+    "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t' >/dev/null
+    "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 -w 's3cr3t' >/dev/null
+    "$SCRIPT" -d "$DB" -e hex add -u bob -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $k2 --no-password >/dev/null
+    "$SCRIPT" -d "$DB" add -u carol -P vvccccbbcdei -p 4a6f8e2d1c3e -k $k1 --no-password --inactive >/dev/null
+    "$SCRIPT" -d "$DB" -H clear add -u dave -P vvccccbbcdej -p 4a6f8e2d1c3f -k $k1 -w '{weird}pw' >/dev/null
+    "$SCRIPT" -d "$DB" -H clear add -u erin -P vvccccbbcdek -p 4a6f8e2d1c40 -k $k1 -w 'plain pw' >/dev/null
+    # The sample OTP from Yubico's libyubikey README, which was not made by otp():
+    # it must decrypt to private ID 8792ebfe26cc, counter 19.
+    "$SCRIPT" -d "$DB" -e hex add -u yubico -P dteffuje -p 8792ebfe26cc -k ecde18dbe76fbd0c33330f1c354871db --no-password >/dev/null
+    run_lines '' dteffujehknhfjbrjnlnldnhcujvddbikngjrtgh -- -d "$DB" verify -u yubico
+
+    # Accepted; the counters are saved, so the same OTP is then a replay.
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 1)" -- -d "$DB" verify -u alice
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 1)" -- -d "$DB" verify -u alice
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 2 9)" -- -d "$DB" verify -u alice
+    # The next OTP in the same session, and the username read from stdin too.
+    run_lines alice 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 2)" -- -d "$DB" verify
+    # Wrong password: rejected, and the counters do not move.
+    run_lines 'wrong' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 4 0)" -- -d "$DB" verify -u alice
+    # Wrong AES key, wrong private ID, another of alice's keys.
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k2 9 0)" -- -d "$DB" verify -u alice
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 111111111111 $k1 9 0)" -- -d "$DB" verify -u alice
+    run_lines 's3cr3t' "$(otp vvccccbbcdeg 4a6f8e2d1c3c $k2 1 0)" -- -d "$DB" verify -u alice
+    dump "$DB"
+
+    # OTP only (key stored as hex); a password entered when none is stored.
+    run_lines '' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 1 0)" -- -d "$DB" verify -u bob
+    run_lines 'extra' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 2 0)" -- -d "$DB" verify -u bob
+    # Disabled; a {clear} password; a plain-text password.
+    run_lines '' "$(otp vvccccbbcdei 4a6f8e2d1c3e $k1 1 0)" -- -d "$DB" verify -u carol
+    run_lines '{weird}pw' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 1 0)" -- -d "$DB" verify -u dave
+    run_lines 'plain pw' "$(otp vvccccbbcdek 4a6f8e2d1c40 $k1 1 0)" -- -d "$DB" verify -u erin
+    # A password format the check cannot read, a NULL counter, a broken key.
+    sqlite3 "$DB" "UPDATE yubikeys SET password = '{SHA}abc', counter = NULL WHERE username = 'dave';
+                   UPDATE yubikeys SET secret = 'not-a-key' WHERE username = 'erin';"
+    run_lines 'anything' "$(otp vvccccbbcdej 4a6f8e2d1c3f $k1 1 0)" -- -d "$DB" verify -u dave
+    run_lines 'plain pw' "$(otp vvccccbbcdek 4a6f8e2d1c40 $k1 2 0)" -- -d "$DB" verify -u erin
+
+    # Unknown user, a key that is not the user's, and a user without that key.
+    run_lines '' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 5 0)" -- -d "$DB" verify -u nobody
+    run_lines '' "$(otp vvccccbbcdeh 4a6f8e2d1c3d $k2 5 0)" -- -d "$DB" verify -u alice
+    run_lines '' "$(otp vvccccbbcdel 4a6f8e2d1c41 $k2 5 0)" -- -d "$DB" verify -u alice
+    # Not an OTP (not echoed back), no input, a bad option, no database.
+    run_lines 's3cr3t' 's3cr3t' -- -d "$DB" verify -u alice
+    run_lines 's3cr3t' "$(otp '' 4a6f8e2d1c3b $k1 5 0)" -- -d "$DB" verify -u alice
+    run -d "$DB" verify -u alice
+    run -d "$DB" verify --bogus
+    run -d "$WORK/none.db" verify -u alice
+    dump "$DB"
+}
+
+# The example wrapper: add, update (counters kept), reprogram (counters
+# reset), and the values it refuses.
+scenario_wrapper() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    local -a rec=(cred_username=test.user cred_publicid=vvccccbbcdef cred_privateid=4a6f8e2d1c3b db_name="$DB")
+    run -d "$DB" init >/dev/null
+    make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=abc123
+    run_wrapper
+    check_crypt "$DB" test.user abc123
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 7, low = 3, accessed = '2026-10-01 12:00:00';"
+    make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=n3w cred_active=0
+    run_wrapper
+    check_crypt "$DB" test.user n3w
+    make_wrapper "${rec[@]}" cred_secret=$k2
+    run_wrapper
+    dump "$DB"
+
+    make_wrapper "${rec[@]}"
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=a,b
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=$k1 'cred_password="quoted"'
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=bad-key
+    chmod 744 "$WORK/user.sh"
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=$k1 db_name="$WORK/none.db"
+    run_wrapper
+    dump "$DB"
+}
 
 scenario_help() {
     run --help
@@ -589,6 +784,55 @@ scenario_pg_restore() {
     times_pg
 }
 
+scenario_pg_update() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run -b pg -d "$PGDB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t'
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 7, low = 3, high = 1, created = '2026-07-01 08:00:00+00', accessed = '2026-10-01 12:00:00+00';"
+    run -b pg -d "$PGDB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 'n3w' --inactive
+    check_crypt_pg alice 'n3w'
+    run -b pg -d "$PGDB" -e hex add --update -u alice.b -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 --no-password
+    dump_pg
+    times_pg
+    run -b pg -d "$PGDB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k2 --no-password
+    dump_pg
+    times_pg
+
+    "$SCRIPT" -b pg -d "$PGDB" add -u bob -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k1 --no-password >/dev/null
+    "$SCRIPT" -b pg -d "$PGDB" add -u carol -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $k1 --no-password >/dev/null
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 5, low = 1 WHERE username IN ('bob', 'carol');"
+    run_lines username,public_id,private_id,aes_key,password,active "bob,vvccccbbcdeg,4a6f8e2d1c3c,$k1,pw,1" \
+              "carol,vvccccbbcdeh,999999999999,$k1,,1" "dave,vvccccbbcdei,4a6f8e2d1c3e,$k1,,1" \
+              -- -b pg -d "$PGDB" import --update -
+    dump_pg
+    run_lines "bob,vvccccbbcdeg,4a6f8e2d1c3c,$k1,other,0" "erin,vvccccbbcdej,4a6f8e2d1c3f,$k1" -- -b pg -d "$PGDB" import -
+    run -b pg -d "$PGDB" list
+
+    # The example wrapper, against PostgreSQL.
+    make_wrapper cred_username=bob cred_publicid=vvccccbbcdeg cred_privateid=4a6f8e2d1c3c cred_secret=$k1 \
+                 cred_password=wrapped db_backend=pg db_name="$PGDB"
+    run_wrapper
+    check_crypt_pg bob wrapped
+}
+
+scenario_pg_verify() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    "$SCRIPT" -b pg -d "$PGDB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t' >/dev/null
+    "$SCRIPT" -b pg -d "$PGDB" add -u carol -P vvccccbbcdei -p 4a6f8e2d1c3e -k $k1 --no-password --inactive >/dev/null
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 1)" -- -b pg -d "$PGDB" verify -u alice
+    run_lines 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 3 1)" -- -b pg -d "$PGDB" verify -u alice
+    run_lines 'wrong' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 4 0)" -- -b pg -d "$PGDB" verify -u alice
+    run_lines '' "$(otp vvccccbbcdei 4a6f8e2d1c3e $k1 1 0)" -- -b pg -d "$PGDB" verify -u carol
+    dump_pg
+    # Radiator's login role cannot run it (it cannot read the table in full).
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    local out rc=0
+    out=$(printf '%s\n' 's3cr3t' "$(otp vvccccbbcdef 4a6f8e2d1c3b $k1 5 0)" \
+            | PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only "$SCRIPT" -b pg -d "$PGDB" verify -u alice 2>&1) || rc=$?
+    printf '$ (as radiator) yubikey-db.sh -b pg -d <T>_db verify -u alice\n%s\n[exit %d]\n\n' "$out" "$rc"
+}
+
 scenario_pg_export() {
     run -b pg -d "$PGDB" init-pg >/dev/null
     export_rows -b pg -d "$PGDB"
@@ -859,12 +1103,14 @@ EOF
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     export restore restore_errors
+     export restore restore_errors update verify wrapper
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
+     pg_update pg_verify
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)
 
-# Scenarios that need a PostgreSQL server.
+# Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
+needs_otp() { [[ $1 == verify || $1 == pg_verify ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
@@ -891,8 +1137,13 @@ if command -v psql >/dev/null; then
     fi
 fi
 
+if command -v openssl >/dev/null && perl -MCrypt::Rijndael -e 1 2>/dev/null; then OTP_OK=1; fi
+
 for name in "${SELECTED[@]}"; do
     declare -F "scenario_$name" >/dev/null || { echo "unknown scenario: $name" >&2; exit 2; }
+    if needs_otp "$name" && [[ $OTP_OK == 0 ]]; then
+        echo "SKIP     $name (needs openssl and the Perl module Crypt::Rijndael)"; skip=$((skip + 1)); continue
+    fi
     if needs_pg "$name" && [[ $PG_OK == 0 ]]; then
         echo "SKIP     $name ($PG_SKIP_REASON)"; skip=$((skip + 1)); continue
     fi

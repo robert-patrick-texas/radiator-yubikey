@@ -50,7 +50,7 @@ yubikey-db.sh: error: no valid rows to import
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db import
-yubikey-db.sh: error: import: CSV file required
+yubikey-db.sh: error: import: CSV file required (or - for standard input)
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db import <WORK>/missing.csv

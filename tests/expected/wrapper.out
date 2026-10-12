@@ -1,0 +1,61 @@
+$ user.sh
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Imported 1 row(s) into <WORK>/yubicred.db
+username   public_id     active  created              accessed  counter
+---------  ------------  ------  -------------------  --------  -------
+test.user  vvccccbbcdef  1       <TIMESTAMP>            0      
+[exit 0]
+
+# crypt check for test.user: match
+
+$ user.sh
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Updated YubiKey vvccccbbcdef for test.user (active=0); counters kept, since its private ID and AES key are unchanged
+Imported 1 row(s) into <WORK>/yubicred.db
+username   public_id     active  created              accessed             counter
+---------  ------------  ------  -------------------  -------------------  -------
+test.user  vvccccbbcdef  0       <TIMESTAMP>  <TIMESTAMP>  7      
+[exit 0]
+
+# crypt check for test.user: match
+
+$ user.sh
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Replaced YubiKey vvccccbbcdef for test.user (active=1); counters reset, since its private ID or AES key changed
+Imported 1 row(s) into <WORK>/yubicred.db
+username   public_id     active  created              accessed  counter
+---------  ------------  ------  -------------------  --------  -------
+test.user  vvccccbbcdef  1       <TIMESTAMP>            0      
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+test.user |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+
+$ user.sh
+user.sh: error: cred_secret is empty; set it at the top of <WORK>/user.sh
+[exit 1]
+
+$ user.sh
+user.sh: error: cred_password cannot contain a comma or a line break
+[exit 1]
+
+$ user.sh
+user.sh: error: cred_password cannot start or end with a space or be in double quotes; use 'yubikey-db.sh add --update' for it
+[exit 1]
+
+$ user.sh
+user.sh: warning: other users can read <WORK>/user.sh, which holds an AES key; run: chmod 700 <WORK>/user.sh
+yubikey-db.sh: warning: line 2: invalid AES key for test.user (expected 32 hex characters)
+Validated /dev/stdin: 0 valid row(s), 1 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ user.sh
+yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+test.user |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+

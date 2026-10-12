@@ -36,7 +36,7 @@ $ yubikey-db.sh -b pg -d <T>_db list nobody
 $ yubikey-db.sh -b pg -d <T>_db import example.csv
 Validated example.csv: 2 valid row(s), 0 invalid row(s)
 ERROR:  duplicate key value violates unique constraint "yubikeys_pkey"
-yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)
+yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace or --update)
 [exit 1]
 
 $ yubikey-db.sh -b pg -d <T>_db list

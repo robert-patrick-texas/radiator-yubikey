@@ -38,7 +38,7 @@ yubikey-db.sh: error: list: too many arguments
 $ yubikey-db.sh -d <WORK>/yubicred.db import example.csv
 Validated example.csv: 2 valid row(s), 0 invalid row(s)
 Runtime error near line 4: UNIQUE constraint failed: yubikeys.userId (19)
-yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)
+yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace or --update)
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list

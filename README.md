@@ -10,6 +10,8 @@ Use it to:
 
 - create the database and its `yubikeys` table
 - add users one at a time, or in bulk from a CSV file
+- update a user's password or YubiKey without resetting its counters
+- check a user's password and OTP against the database, as Radiator would
 - list, enable, disable, and delete users
 - print a matching Radiator configuration block
 
@@ -57,7 +59,7 @@ needs **PostgreSQL 18** or later, which is Ubuntu 26.04's default.
 
 | Where | What |
 |---|---|
-| Machine where you run the script | `bash` 4 or later, `sqlite3`, `perl` |
+| Machine where you run the script | `bash` 4 or later, `sqlite3`, `perl`; for `verify`, the Perl module `Crypt::Rijndael` (`libcrypt-rijndael-perl`) |
 | Radiator server | Radiator 4.x with the Perl modules `DBD::SQLite`, `Auth::Yubikey_Decrypter` (0.05 or later), and `Crypt::Rijndael` |
 | Machine where you program keys | [YubiKey Manager](https://www.yubico.com/support/download/yubikey-manager/) (`ykman`) |
 
@@ -182,7 +184,14 @@ How the import works:
 - Valid rows are loaded in **one transaction**. If any row fails (for
   example, because the YubiKey is already in the database), none are loaded.
 - Add `--replace` to overwrite YubiKeys that are already in the database, for
-  example after reprogramming them.
+  example after reprogramming them. Their counters start again at 0.
+- Add `--update` to add new YubiKeys and update the ones already in the
+  database. A YubiKey whose private ID and AES key are unchanged gets the new
+  username, password and `active` value and **keeps its counters**. One whose
+  private ID or AES key changed (it was reprogrammed) is replaced, and its
+  counters start again at 0. Each updated or replaced row is reported.
+- Use `-` as the file name to read the CSV from standard input, for example
+  from an encrypted file: `gpg -d users.csv.gpg | sudo ./yubikey-db.sh import -`.
 
 See `users.example.csv` for a working example.
 
@@ -205,6 +214,32 @@ sudo ./yubikey-db.sh add -u svc.backup -P vvccccbbcdeh --no-password
 > Values passed with `-k` (AES key) and `-w` (password) can be seen by other
 > users in `ps` and are saved in your shell history. Let the script ask for
 > them, or use a CSV file.
+
+Add `--update` if the YubiKey may already be in the database: it is then
+updated rather than refused, with its counters kept unless its private ID or
+AES key changed (see Option A).
+
+### Option C: Add or update one test user with a script
+
+`yubikey-db-user.example.sh` is an example wrapper for test accounts. You put
+the user's values in variables at the top of a copy of it, and run the copy
+again after each change. It sends them to `import --update -` through a pipe,
+so they never appear in `ps` output or a temporary file. It then shows the
+user's row, and asks you to touch the YubiKey to check the record with
+[`verify`](#step-5-test-a-login).
+
+```bash
+install -m 0700 yubikey-db-user.example.sh ~/yk-user.sh   # your copy will hold an AES key
+nano ~/yk-user.sh            # set cred_username, cred_password, cred_publicid,
+                             # cred_privateid, cred_secret (and db_backend, db_name)
+sudo ~/yk-user.sh            # SQLite; for PostgreSQL run it as a member of yubikey_admin
+shred -u ~/yk-user.sh        # when you no longer need the test account's values
+```
+
+The YubiKey's public ID decides which record is meant. A new YubiKey is
+added, and any other YubiKeys the user has are left as they are. The password
+can't contain a comma, start or end with a space, or be in double quotes,
+because it travels in a CSV row; use `add --update` for such a password.
 
 ## Step 4: Configure Radiator
 
@@ -250,7 +285,37 @@ Restart Radiator after you change its configuration.
 
 ## Step 5: Test a login
 
-Use Radiator's `radpwtst` tool. Touch the YubiKey where the OTP goes:
+First check the record itself, without Radiator. `verify` asks for the
+username, the static password, and an OTP (touch the YubiKey), and checks them
+the way Radiator does with the configuration from Step 4:
+
+```bash
+sudo ./yubikey-db.sh verify
+```
+
+```text
+Username: alice
+Static password/PIN (Enter for none):
+YubiKey OTP (touch the YubiKey): vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet
+Checking alice with YubiKey vvccccbbcdef in /etc/radiator/db/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 3, session 1; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+```
+
+Each line names one check, so a failure shows what to fix: a `WRONG` password,
+an OTP that does not decrypt (the AES key in the database is not the one in
+the YubiKey), a private ID that does not match, or a replayed OTP. It never
+shows the AES key or the private ID. When an OTP is accepted, its counters are
+saved, as Radiator saves them, so it can't be used again. In a script, pipe
+the values in, one per line (`-u` gives the username):
+`printf '%s\n' "$password" "$otp" | ./yubikey-db.sh verify -u alice`.
+
+Then test the whole path through Radiator with its `radpwtst` tool. Touch the
+YubiKey where the OTP goes:
 
 ```bash
 # Two-factor (Require2Factor set)
@@ -287,6 +352,9 @@ protection working.
 | Remove one YubiKey | `sudo ./yubikey-db.sh delete alice vvccccbbcdef` |
 | Remove a user completely | `sudo ./yubikey-db.sh delete alice` |
 | Replace a reprogrammed YubiKey | `sudo ./yubikey-db.sh add --replace -u alice -P vvccccbbcdef` |
+| Change a password (counters kept) | `sudo ./yubikey-db.sh add --update -u alice -P vvccccbbcdef` |
+| Check a user's password and OTP | `sudo ./yubikey-db.sh verify -u alice` |
+| Import from an encrypted file | `gpg -d users.csv.gpg \| sudo ./yubikey-db.sh import -` |
 | Export everything to CSV | `sudo ./yubikey-db.sh export users-export.csv` |
 | Export straight into an encrypted file | `sudo ./yubikey-db.sh export - \| gpg -e -r you@example.com > users.csv.gpg` |
 | Restore an export | `sudo ./yubikey-db.sh import --from-export users-export.csv` |
@@ -377,12 +445,13 @@ Global options go **before** the command, for example
 | Command | Options | Description |
 |---|---|---|
 | `init` | `-o, --owner USER[:GROUP]` | Create the folder, database file, table, and index |
-| `add` | `-u USER`, `-P PUBLIC_ID`, `-p PRIVATE_ID`, `-k AES_KEY`, `-w PASSWORD`, `--no-password`, `--inactive`, `--replace` | Add one user and YubiKey. Asks for any value you leave out. |
-| `import` | `--dry-run`, `--skip-invalid`, `--replace`, `--from-export`, `CSV_FILE` | Bulk-load users from a CSV file, or restore an export (`--from-export`) |
+| `add` | `-u USER`, `-P PUBLIC_ID`, `-p PRIVATE_ID`, `-k AES_KEY`, `-w PASSWORD`, `--no-password`, `--inactive`, `--replace` or `--update` | Add one user and YubiKey. Asks for any value you leave out. |
+| `import` | `--dry-run`, `--skip-invalid`, `--replace` or `--update`, `--from-export`, `CSV_FILE` or `-` | Bulk-load users from a CSV file or standard input, or restore an export (`--from-export`) |
 | `list` | `[USER]` | Show users and keys without their secrets |
 | `enable` | `USER [PUBLIC_ID]` | Set `active = 1` |
 | `disable` | `USER [PUBLIC_ID]` | Set `active = 0` |
 | `delete` | `USER [PUBLIC_ID]` | Delete the user's rows (or one key) |
+| `verify` | `-u USER` | Check a password and OTP the way Radiator does, and save the counters if they're accepted |
 | `export` | `-f, --force`, `FILE` or `-` | Write every record and field to CSV, including AES keys and private IDs |
 | `config` | | Print a sample `<AuthBy SQLYUBIKEY>` block |
 
@@ -406,7 +475,8 @@ The table is `yubikeys`. There is one row per YubiKey.
 | `counter`, `low`, `high` | Counters that Radiator uses to block replayed OTPs |
 
 `--replace` resets a YubiKey's counters to 0. Only use it for a YubiKey that
-has just been reprogrammed.
+has just been reprogrammed. `--update` keeps them, unless the private ID or
+AES key changed.
 
 ## Security notes
 
@@ -419,6 +489,9 @@ has just been reprogrammed.
 - **CSV files hold the same secrets.** Set them to `chmod 600`, don't commit
   them to Git or attach them to tickets, and delete them with `shred -u` after
   importing. The script warns you if a CSV file is readable by all users.
+- **A filled-in copy of `yubikey-db-user.example.sh` holds an AES key.** Keep
+  it at mode `0700`, outside the repository, and delete it with `shred -u`
+  when you're done. It warns you if other users can read it.
 - AES keys and passwords are sent to `sqlite3` through its input, not on its
   command line, so `ps` doesn't show them. The script checks the format of
   every value and quotes it safely.
@@ -443,6 +516,9 @@ has just been reprogrammed.
 | Logins fail and Radiator logs a `CheckSecretId` mismatch | The private ID is wrong, or is stored in a different format. Check it against the `ykman` output. |
 | The first OTP works but the next ones fail | `UpdateQuery` isn't saving counters. Check the folder permissions and the `UpdateQuery` line. |
 | `database is locked` | Radiator is writing at that moment. The script waits up to 5 seconds, so run it again. |
+| `verify` says the OTP does NOT decrypt | The AES key in the database isn't the one programmed into the YubiKey. Load the key from the `ykman` output again with `add --update`. |
+| `verify` says the private ID does NOT match | The private ID in the database isn't the one programmed into the YubiKey. Correct it with `add --update`. |
+| `verify` passes but `radpwtst` fails | The database is right; check the Radiator configuration with `Trace 4`. |
 
 ### Values to confirm on your first deployment
 
@@ -490,6 +566,8 @@ matches what this script creates.
 throwaway SQLite and PostgreSQL databases. It compares each transcript (commands, output, exit codes,
 and the final table contents) with the files in `tests/expected/`. It needs
 only `bash`, `sqlite3`, and `perl`, and must run as a normal user, not root.
+The `verify` scenarios also need `openssl` (to make test OTPs) and the Perl
+module `Crypt::Rijndael`, and are skipped without them.
 
 ```bash
 tests/run-tests.sh                 # run every scenario

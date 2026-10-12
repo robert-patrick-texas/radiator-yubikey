@@ -15,7 +15,7 @@ bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaX
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
 Runtime error near line 3: UNIQUE constraint failed: yubikeys.tokenId (19)
-yubikey-db.sh: error: could not add alice (if this YubiKey is already in the database, use --replace)
+yubikey-db.sh: error: could not add alice (if this YubiKey is already in the database, use --replace or --update)
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add --replace -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password

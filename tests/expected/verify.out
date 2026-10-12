@@ -1,0 +1,212 @@
+$ printf %s\n '' 'dteffujehknhfjbrjnlnldnhcujvddbikngjrtgh' | yubikey-db.sh -d <WORK>/yubicred.db verify -u yubico
+Checking yubico with YubiKey dteffuje in <WORK>/yubicred.db:
+  active:           yes
+  static password:  none (OTP only)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 19, session 17; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 3, session 1; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     FAILED, this OTP is not newer than the last one used (OTP counter 3, session 1; stored counter 3, session 1)
+yubikey-db.sh: error: verify: rejected (replayed OTP)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefdenulfnithcfdnihrgcjnnkdenhurbbh' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     FAILED, this OTP is not newer than the last one used (OTP counter 2, session 9; stored counter 3, session 1)
+yubikey-db.sh: error: verify: rejected (replayed OTP)
+[exit 1]
+
+$ printf %s\n 'alice' 's3cr3t' 'vvccccbbcdefnceicfuvkgcvidtjuintihcnigkfethj' | yubikey-db.sh -d <WORK>/yubicred.db verify
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 3, session 2; stored counter 3, session 1)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 'wrong' 'vvccccbbcdefnihthduiciibuiguudflgnctdhnkfhjt' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  WRONG
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 4, session 0; stored counter 3, session 2)
+yubikey-db.sh: error: verify: rejected (static password)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefdhhtvgickrjntbbtdjvhcbgtbtdvgnji' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              does NOT decrypt with the stored AES key (wrong key, or a mistyped OTP)
+yubikey-db.sh: error: verify: rejected (OTP)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefirufuhftrbbdtckfltjeilvjrtghbrlt' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       does NOT match the stored private ID
+  replay check:     passed (OTP counter 9, session 0; stored counter 3, session 2)
+yubikey-db.sh: error: verify: rejected (private ID)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdegdvgdnndfjntnlbfginufvletcedrtrcd' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdeg in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 2 | 0
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0
+bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0
+carol |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+dave | {clear}{weird}pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+erin | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c40 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+yubico |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 19 | 17 | 0
+
+$ printf %s\n '' 'vvccccbbcdehkcnfkbnghjlkighjkcnjkvvcthictefl' | yubikey-db.sh -d <WORK>/yubicred.db verify -u bob
+Checking bob with YubiKey vvccccbbcdeh in <WORK>/yubicred.db:
+  active:           yes
+  static password:  none (OTP only)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 'extra' 'vvccccbbcdehihecvichrngdnuccjvghrrncntegjbfg' | yubikey-db.sh -d <WORK>/yubicred.db verify -u bob
+Checking bob with YubiKey vvccccbbcdeh in <WORK>/yubicred.db:
+  active:           yes
+  static password:  WRONG (none is stored, but one was entered)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 2, session 0; stored counter 1, session 0)
+yubikey-db.sh: error: verify: rejected (static password)
+[exit 1]
+
+$ printf %s\n '' 'vvccccbbcdeitlghvfcbtuniflruinnftnvhfhkvdjrj' | yubikey-db.sh -d <WORK>/yubicred.db verify -u carol
+Checking carol with YubiKey vvccccbbcdei in <WORK>/yubicred.db:
+  active:           NO (active=0; Radiator accepts only 1)
+  static password:  none (OTP only)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+yubikey-db.sh: error: verify: rejected (disabled)
+[exit 1]
+
+$ printf %s\n '{weird}pw' 'vvccccbbcdejirhifgevuktgnllureccdgdrvvkcdvtl' | yubikey-db.sh -d <WORK>/yubicred.db verify -u dave
+Checking dave with YubiKey vvccccbbcdej in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 'plain pw' 'vvccccbbcdekkkttdknlhtrcjdntbvjhuldjdikldrtf' | yubikey-db.sh -d <WORK>/yubicred.db verify -u erin
+Checking erin with YubiKey vvccccbbcdek in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 'anything' 'vvccccbbcdejirhifgevuktgnllureccdgdrvvkcdvtl' | yubikey-db.sh -d <WORK>/yubicred.db verify -u dave
+Checking dave with YubiKey vvccccbbcdej in <WORK>/yubicred.db:
+  active:           yes
+  static password:  not checked (stored as {SHA}, which this check does not support)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     skipped, as Radiator does when no counter is stored (OTP counter 1, session 0; stored counter none, session 0)
+yubikey-db.sh: warning: the static password was not checked
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 'plain pw' 'vvccccbbcdekftbvejgdfuhnlrgjkvtenbblbbjrcgjg' | yubikey-db.sh -d <WORK>/yubicred.db verify -u erin
+Checking erin with YubiKey vvccccbbcdek in <WORK>/yubicred.db:
+  active:           yes
+  static password:  matches
+  OTP:              not checked (the stored AES key is not 32 hex characters or base64)
+yubikey-db.sh: error: verify: rejected (stored AES key)
+[exit 1]
+
+$ printf %s\n '' 'vvccccbbcdehhggbtfvceguecjddvhbnljvejjbvnlhr' | yubikey-db.sh -d <WORK>/yubicred.db verify -u nobody
+Checking nobody with YubiKey vvccccbbcdeh in <WORK>/yubicred.db:
+yubikey-db.sh: error: verify: rejected (nobody is not in the database; YubiKey vvccccbbcdeh belongs to another user)
+[exit 1]
+
+$ printf %s\n '' 'vvccccbbcdehhggbtfvceguecjddvhbnljvejjbvnlhr' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdeh in <WORK>/yubicred.db:
+yubikey-db.sh: error: verify: rejected (YubiKey vvccccbbcdeh belongs to another user; alice's YubiKeys: vvccccbbcdef vvccccbbcdeg)
+[exit 1]
+
+$ printf %s\n '' 'vvccccbbcdelruvnenrgehrrelehvbhbhkuvfkedvvcd' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+Checking alice with YubiKey vvccccbbcdel in <WORK>/yubicred.db:
+yubikey-db.sh: error: verify: rejected (alice has no YubiKey vvccccbbcdel; their YubiKeys: vvccccbbcdef vvccccbbcdeg)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 's3cr3t' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+yubikey-db.sh: error: verify: that is not a YubiKey OTP (expected 34 to 64 modhex characters, got 6)
+[exit 1]
+
+$ printf %s\n 's3cr3t' 'eetlbkhvjedeikfcdedjtvhlrvcgbgil' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+yubikey-db.sh: error: verify: that is not a YubiKey OTP (expected 34 to 64 modhex characters, got 32)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
+yubikey-db.sh: error: standard input ended before the value for: Static password/PIN (Enter for none)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db verify --bogus
+yubikey-db.sh: error: verify: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/none.db verify -u alice
+yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 2 | 0
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0
+bob |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 1 | 0 | 0
+carol |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+dave | {SHA}abc | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 1 | 0 | 0
+erin | plain pw | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdek | 4a6f8e2d1c40 | not-a-key | 1 | 0 | 0
+yubico |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 19 | 17 | 0
+

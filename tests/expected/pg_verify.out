@@ -1,0 +1,49 @@
+$ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -b pg -d <T>_db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 3, session 1; stored counter 0, session 0)
+Accepted. The OTP's counters were saved, so it cannot be used again.
+[exit 0]
+
+$ printf %s\n 's3cr3t' 'vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet' | yubikey-db.sh -b pg -d <T>_db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     FAILED, this OTP is not newer than the last one used (OTP counter 3, session 1; stored counter 3, session 1)
+yubikey-db.sh: error: verify: rejected (replayed OTP)
+[exit 1]
+
+$ printf %s\n 'wrong' 'vvccccbbcdefnihthduiciibuiguudflgnctdhnkfhjt' | yubikey-db.sh -b pg -d <T>_db verify -u alice
+Checking alice with YubiKey vvccccbbcdef in PostgreSQL database <T>_db:
+  active:           yes
+  static password:  WRONG
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 4, session 0; stored counter 3, session 1)
+yubikey-db.sh: error: verify: rejected (static password)
+[exit 1]
+
+$ printf %s\n '' 'vvccccbbcdeitlghvfcbtuniflruinnftnvhfhkvdjrj' | yubikey-db.sh -b pg -d <T>_db verify -u carol
+Checking carol with YubiKey vvccccbbcdei in PostgreSQL database <T>_db:
+  active:           NO (active=0; Radiator accepts only 1)
+  static password:  none (OTP only)
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 1, session 0; stored counter 0, session 0)
+yubikey-db.sh: error: verify: rejected (disabled)
+[exit 1]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 1 | 0
+carol |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+
+$ (as radiator) yubikey-db.sh -b pg -d <T>_db verify -u alice
+yubikey-db.sh: error: no write access to the yubikeys table in PostgreSQL database <T>_db (is <T>_radiator a member of <T>_admin?)
+[exit 1]
+

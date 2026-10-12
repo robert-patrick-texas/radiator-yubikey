@@ -43,6 +43,28 @@
     and block the migration unless `--skip-invalid` is given.
 - Tests: 8 PostgreSQL, 5 migration, 2 export and 2 restore scenarios (28 in
   total); the ones that need a server are skipped without one.
+- `add --update` and `import --update` (SQLite and PostgreSQL): add new
+  YubiKeys and update the ones already in the database. A YubiKey whose
+  private ID and AES key are unchanged (stored as base64 or hex) gets the new
+  username, password and active value and keeps its counters and times; one
+  that was reprogrammed is replaced and its counters reset. Each updated or
+  replaced row is reported.
+- `import -` reads the CSV from standard input (for example
+  `gpg -d users.csv.gpg | yubikey-db.sh import -`), also with `--from-export`.
+- `verify` command: asks for a username, static password and OTP and checks
+  them the way Radiator does with `Require2Factor` and `CheckSecretId`
+  (active, password, decryption and CRC, private ID, replay), one line per
+  check, never showing the AES key or private ID. An accepted OTP's counters
+  are saved, so it can't be used again. Values can be piped in. Needs
+  `Crypt::Rijndael`.
+- `yubikey-db-user.example.sh`: an example wrapper that adds or updates one
+  test account from variables at the top of the file, sends them to
+  `import --update -` through a pipe, and offers to check the record with
+  `verify`.
+- Tests: `update`, `verify`, `wrapper`, `pg_update` and `pg_verify` scenarios
+  (33 in total). `verify` is also checked against Yubico's published sample
+  OTP. The `verify` scenarios need `openssl` and `Crypt::Rijndael`, and are
+  skipped without them.
 
 ## 1.0.1 - 2026-10-06
 

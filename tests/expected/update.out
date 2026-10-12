@@ -1,0 +1,99 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+Added alice with YubiKey vvccccbbcdef (active=1)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w n3w --inactive
+Updated YubiKey vvccccbbcdef for alice (active=0); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+# crypt check for alice: match
+
+# times in yubicred.db (UTC)
+username | created | accessed
+alice | 2026-07-01T08:00:00 | 2026-10-01T12:00:00
+
+$ yubikey-db.sh -d <WORK>/yubicred.db -e hex add --update -u alice.b -P VVCCCCBBCDEF -p 4A6F8E2D1C3B -k 6B1F0A9D2C7E4F3A8B5D0C1E9F2A7B6D --no-password
+Updated YubiKey vvccccbbcdef for alice.b (active=1, moved from alice); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice.b |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 7 | 3 | 1
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password
+Updated YubiKey vvccccbbcdef for alice (active=1, moved from alice.b); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 7 | 3 | 1
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password
+Replaced YubiKey vvccccbbcdef for alice (active=1); counters reset, since its private ID or AES key changed
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+
+# times in yubicred.db (UTC)
+username | created | accessed
+alice | now | 
+
+$ printf %s\n 'username,public_id,private_id,aes_key,password,active' 'bob,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,pw,1' 'carol,vvccccbbcdeh,999999999999,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1' 'dave,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1' | yubikey-db.sh -d <WORK>/yubicred.db import --update -
+Validated /dev/stdin: 3 valid row(s), 0 invalid row(s)
+Updated YubiKey vvccccbbcdeg for bob (active=1); counters kept, since its private ID and AES key are unchanged
+Replaced YubiKey vvccccbbcdeh for carol (active=1); counters reset, since its private ID or AES key changed
+Imported 3 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+bob | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0
+dave |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+
+$ printf %s\n 'bob,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,other,0' 'erin,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -d <WORK>/yubicred.db import -
+Validated /dev/stdin: 2 valid row(s), 0 invalid row(s)
+Runtime error near line 4: UNIQUE constraint failed: yubikeys.userId (19)
+yubikey-db.sh: error: import failed and was rolled back; no rows imported (an existing YubiKey? use --replace or --update)
+[exit 1]
+
+$ printf %s\n 'erin,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -d <WORK>/yubicred.db import --dry-run -
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Dry run: database not changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+username  public_id     active  created              accessed  counter
+--------  ------------  ------  -------------------  --------  -------
+alice     vvccccbbcdef  1       <TIMESTAMP>            0      
+bob       vvccccbbcdeg  1       <TIMESTAMP>            5      
+carol     vvccccbbcdeh  1       <TIMESTAMP>            0      
+dave      vvccccbbcdei  1       <TIMESTAMP>            0      
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update --replace -u x
+yubikey-db.sh: error: add: use either --replace or --update, not both
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --replace --update x.csv
+yubikey-db.sh: error: import: use either --replace or --update, not both
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --update --from-export x.csv
+yubikey-db.sh: error: import: --update does not apply to --from-export; use --replace, which never moves counters backward
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import -x
+yubikey-db.sh: error: import: unknown option '-x'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/restored.db import --from-export - < all.csv
+Validated /dev/stdin: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into <WORK>/restored.db
+[exit 0]
+
+# all.csv vs restored.csv (times masked): identical
+

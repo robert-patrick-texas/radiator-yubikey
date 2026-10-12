@@ -27,6 +27,7 @@
 #   On the Radiator host              : Perl modules Auth::Yubikey_Decrypter,
 #                                       Crypt::Rijndael, and DBD::SQLite or
 #                                       DBD::Pg (libdbd-pg-perl)
+#   For 'verify'                      : Crypt::Rijndael (libcrypt-rijndael-perl)
 #
 # DATABASES
 #   SQLite (the default) keeps everything in one file on the Radiator host.
@@ -40,16 +41,19 @@
 # COMMANDS
 #   init      Create the database file and the yubikeys table (safe to re-run)
 #   init-pg   PostgreSQL only: create the roles and database, then the table
-#   add       Add one user/YubiKey (values from options, or prompted)
-#   import    Bulk-load users/YubiKeys from a CSV file in a single transaction
-#             (--from-export restores a file written by 'export', with its
-#             passwords, times and counters)
+#   add       Add one user/YubiKey (values from options, or prompted);
+#             --update updates it instead if the YubiKey is already there
+#   import    Bulk-load users/YubiKeys from a CSV file (or - for standard
+#             input) in a single transaction (--from-export restores a file
+#             written by 'export', with its passwords, times and counters)
 #   list      Show users and keys (never shows AES keys or passwords)
 #   enable    Set active=1 for a user (optionally only one of their keys)
 #   disable   Set active=0 for a user (optionally only one of their keys)
 #   delete    Remove a user (optionally only one of their keys)
 #   export    Write every record and field to a CSV file, with AES keys and
 #             private IDs in clear text (the file is created with mode 0600)
+#   verify    Ask for a username, password and OTP, and check them against
+#             the database the way Radiator does; saves the counters if accepted
 #   config    Print a sample Radiator <AuthBy SQLYUBIKEY> clause for this database
 #   Run "yubikey-db.sh help" for every option.
 #
@@ -72,6 +76,7 @@
 #   sudo ./yubikey-db.sh add -u test.user -P cbdefghijkln     # prompts for the rest
 #   sudo ./yubikey-db.sh import --dry-run users.csv           # validate only
 #   sudo ./yubikey-db.sh import users.csv
+#   sudo ./yubikey-db.sh verify                               # test a password + OTP
 #   sudo ./yubikey-db.sh -d /srv/radius/yubi.db list
 #   sudo ./yubikey-db.sh disable test.user
 #   sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin alice
@@ -134,6 +139,8 @@ MODHEX=cbdefghijklnrtuv
 HEXDIGITS=0123456789abcdef
 
 REPLACE=0     # 1 = INSERT OR REPLACE (overwrite an existing YubiKey entry)
+UPSERT=0      # 1 = --update: update a YubiKey already in the database, keeping
+              # its counters unless its private ID or AES key changed
 RESTORE=0     # 1 = import --from-export: restore passwords, times and counters
 # Columns of an export file, in order (export writes them; import --from-export
 # requires them as the header).
@@ -178,13 +185,15 @@ Commands:
         for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
-      [--no-password] [--inactive] [--replace]
+      [--no-password] [--inactive] [--replace | --update]
         Add one user. Missing values are prompted for (the key and password
         are not echoed). Options -k and -w are visible to other users in
         'ps' and shell history, so prefer the prompts or 'import'.
 
-  import [--dry-run] [--skip-invalid] [--replace] [--from-export] CSV_FILE
-        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]).
+  import [--dry-run] [--skip-invalid] [--replace | --update] [--from-export]
+         CSV_FILE|-
+        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]),
+        or from standard input with -.
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
         transaction, so either all of them are loaded or none are.
@@ -198,6 +207,14 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  verify [-u USER]              Check a password and OTP against the database
+        the way Radiator does (with Require2Factor and CheckSecretId): the
+        user must have the OTP's YubiKey, active=1, the same static password,
+        an OTP that decrypts to the stored private ID, and counters ahead of
+        the stored ones. If accepted, the counters are saved, as Radiator
+        would, so the OTP cannot be used again. Values are prompted for, or
+        read one per line from standard input when it is not a terminal:
+        the username (unless -u is given), the password, then the OTP.
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
@@ -208,6 +225,11 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+--update does the same, but keeps the counters (and the created and accessed
+times) when the existing row has the same public ID, private ID and AES key,
+so only the username, password and active flag change. Use it to change a
+password, or when you are not sure whether a YubiKey is already loaded. If
+the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
 PGSERVICE settings. Keep passwords in ~/.pgpass.
@@ -342,7 +364,7 @@ validate_export_record() {
 }
 
 # Check and normalize the YubiKey fields that both import formats share. Sets
-# R_PUB, R_PRIV, R_ACTIVE and R_SECRET, or ERR and returns 1.
+# R_PUB, R_PRIV, R_ACTIVE, R_SECRET and R_KEYHEX, or ERR and returns 1.
 #   $1 username (for messages)  $2 public_id  $3 private_id  $4 aes_key  $5 active
 validate_key_fields() {
     local user=$1 pub=${2,,} priv=${3,,} key=${4,,} active=${5-}
@@ -373,7 +395,38 @@ validate_key_fields() {
     R_PUB=$pub
     R_PRIV=$priv
     R_ACTIVE=$active
+    R_KEYHEX=$key
     R_SECRET=$(encode_secret "$key") || { ERR="could not encode the AES key for $user"; return 1; }
+}
+
+# SQL condition that is true for a row holding the same YubiKey as the record
+# in the R_* globals: the same public ID, private ID and AES key, whether the
+# key is stored as base64 or as hex. $1 = prefix for the column names.
+same_key_sql() {
+    local b64=$R_SECRET
+    if [[ $SECRET_ENCODING != base64 ]]; then
+        b64=$(SECRET_ENCODING=base64 encode_secret "$R_KEYHEX")
+    fi
+    printf '%stokenId = %s AND %suserId = %s AND (trim(%ssecret) = %s OR lower(trim(%ssecret)) = %s)' \
+        "${1-}" "$(sql_quote "$R_PUB")" "${1-}" "$(sql_quote "$R_PRIV")" \
+        "${1-}" "$(sql_quote "$b64")" "${1-}" "$(sql_quote "$R_KEYHEX")"
+}
+
+# For --update: print SELECTs that report what the INSERT that follows will
+# do, when it changes an existing row. A row with the same YubiKey is updated
+# and keeps its counters; a row with its public or private ID but other key
+# values is replaced, and the counters start again at 0. A new YubiKey prints
+# nothing.
+upsert_report_sql() {
+    local same user pub priv
+    same=$(same_key_sql) user=$(sql_quote "$R_USER")
+    pub=$(sql_quote "$R_PUB") priv=$(sql_quote "$R_PRIV")
+    printf "SELECT %s || CASE WHEN username <> %s THEN ', moved from ' || username ELSE '' END || %s\n  FROM yubikeys WHERE %s;\n" \
+        "$(sql_quote "Updated YubiKey $R_PUB for $R_USER (active=$R_ACTIVE")" "$user" \
+        "$(sql_quote "); counters kept, since its private ID and AES key are unchanged")" "$same"
+    printf 'SELECT %s\n WHERE NOT EXISTS (SELECT 1 FROM yubikeys WHERE %s)\n   AND EXISTS (SELECT 1 FROM yubikeys WHERE tokenId = %s OR userId = %s);\n' \
+        "$(sql_quote "Replaced YubiKey $R_PUB for $R_USER (active=$R_ACTIVE); counters reset, since its private ID or AES key changed")" \
+        "$same" "$pub" "$priv"
 }
 
 # Read an export file ($1) as standard CSV (quoted fields may hold commas,
@@ -435,6 +488,110 @@ prompt_value() {
     printf -v "$__var" '%s' "$__val"
 }
 
+# Like prompt_value, but with no terminal the value is read as the next line
+# of standard input, so a script can pipe values in.
+read_value() {
+    if [[ -t 0 ]]; then
+        prompt_value "$@"
+    else
+        IFS= read -r "$1" || [[ -n ${!1} ]] || die "standard input ended before the value for: $2"
+    fi
+}
+
+# Check a password and OTP against the user's row, as Radiator does. Reads
+# from stdin: the password, the OTP, then the rows from db_export_json for
+# the user and the OTP's public ID. Prints one line per check, and writes the
+# verdict to file descriptor 3: "accept COUNTER SESSION [unchecked]" or
+# "reject REASONS". Never prints the AES key or the private ID.
+#   $1 program name  $2 username  $3 the OTP's public ID
+verify_otp() {
+    perl -MJSON::PP -MMIME::Base64 -MCrypt::Rijndael -e '
+        my ($prog, $user, $pub) = @ARGV;
+        chomp(my $pw = <STDIN> // "");
+        chomp(my $otp = <STDIN> // "");
+        my $json = do { local $/; <STDIN> } // "";
+        my $rows = $json =~ /\S/ ? JSON::PP->new->decode($json) : [];   # bytes, like $user and $pw
+        open(my $res, ">&=", 3) or die "$prog: error: cannot report the result\n";
+        sub show { printf "  %-17s %s\n", "$_[0]:", $_[1] }
+
+        my ($r) = grep { $_->{username} eq $user && $_->{tokenid} eq $pub } @$rows;
+        if (!$r) {
+            my @keys = map { $_->{tokenid} } grep { $_->{username} eq $user } @$rows;
+            my $other = grep { $_->{tokenid} eq $pub } @$rows;
+            print $res "reject ", !@keys ? "$user is not in the database" . ($other ? "; YubiKey $pub belongs to another user" : "")
+                : $other ? "YubiKey $pub belongs to another user; ${user}\x27s YubiKeys: @keys"
+                : "$user has no YubiKey $pub; their YubiKeys: @keys", "\n";
+            exit;
+        }
+        my (@fail, $unchecked, $ctr, $use);
+
+        # Radiator treats a missing active value as active.
+        my $active = $r->{active};
+        if (defined $active && "$active" ne "1") {
+            show("active", "NO (active=$active; Radiator accepts only 1)"); push @fail, "disabled";
+        } else {
+            show("active", "yes");
+        }
+
+        my $stored = $r->{password} // "";
+        my $pw_ok;
+        if ($stored eq "") {
+            $pw_ok = $pw eq "";
+            show("static password", $pw_ok ? "none (OTP only)" : "WRONG (none is stored, but one was entered)");
+        } elsif ($stored =~ /^\{(\w+)\}(.*)$/s && lc $1 ne "crypt" && lc $1 ne "clear") {
+            $unchecked = 1;
+            show("static password", "not checked (stored as {$1}, which this check does not support)");
+        } else {
+            $pw_ok = $stored =~ /^\{crypt\}(.*)$/si ? crypt($pw, $1) eq $1
+                   : $stored =~ /^\{clear\}(.*)$/si ? $1 eq $pw
+                   : $stored eq $pw;
+            show("static password", $pw_ok ? "matches" : "WRONG");
+        }
+        push @fail, "static password" if defined $pw_ok && !$pw_ok;
+
+        (my $s = $r->{secret} // "") =~ s/^ +| +$//g;
+        my $key = $s =~ /^[0-9A-Fa-f]{32}$/ ? pack("H*", $s)
+                : $s =~ m{^[A-Za-z0-9+/]{22}==$} ? decode_base64($s) : undef;
+        if (!defined $key) {
+            show("OTP", "not checked (the stored AES key is not 32 hex characters or base64)");
+            push @fail, "stored AES key";
+        } else {
+            (my $hex = substr($otp, -32)) =~ tr/cbdefghijklnrtuv/0123456789abcdef/;
+            my $plain = Crypt::Rijndael->new($key, Crypt::Rijndael::MODE_ECB())->decrypt(pack "H*", $hex);
+            # CRC-16 (ISO 13239) over the whole token leaves 0xf0b8 when it is intact.
+            my $crc = 0xffff;
+            for my $b (unpack "C*", $plain) {
+                $crc ^= $b;
+                for (1 .. 8) { my $lsb = $crc & 1; $crc >>= 1; $crc ^= 0x8408 if $lsb }
+            }
+            my $uid;
+            ($uid, $ctr, undef, undef, $use) = unpack "H12 v v C C", $plain;
+            if ($crc != 0xf0b8) {
+                show("OTP", "does NOT decrypt with the stored AES key (wrong key, or a mistyped OTP)");
+                push @fail, "OTP";
+            } else {
+                show("OTP", "decrypts with the stored AES key");
+                if ($uid eq lc($r->{userid} // "")) {
+                    show("private ID", "matches");
+                } else {
+                    show("private ID", "does NOT match the stored private ID"); push @fail, "private ID";
+                }
+                my ($dc, $dl) = ($r->{counter}, $r->{low} // 0);
+                my $seen = "OTP counter $ctr, session $use; stored counter " . ($dc // "none") . ", session $dl";
+                if (!defined $dc) {
+                    show("replay check", "skipped, as Radiator does when no counter is stored ($seen)");
+                } elsif ($ctr > $dc || ($ctr == $dc && $use > $dl)) {
+                    show("replay check", "passed ($seen)");
+                } else {
+                    show("replay check", "FAILED, this OTP is not newer than the last one used ($seen)");
+                    push @fail, "replayed OTP";
+                }
+            }
+        }
+        print $res @fail ? "reject " . join(", ", @fail) : "accept $ctr $use" . ($unchecked ? " unchecked" : ""), "\n";
+    ' "$PROG" "$@"
+}
+
 # --------------------------------------------------------------------------
 # Database backend interface
 #
@@ -450,13 +607,17 @@ prompt_value() {
 #   db_init [OPTIONS]    create the yubikeys table, and for SQLite the database
 #                        file (safe to re-run)
 #   db_insert_sql        print SQL that inserts the record in the R_* globals,
-#                        replacing clashing rows when REPLACE=1
+#                        replacing clashing rows when REPLACE=1 or UPSERT=1
+#                        (UPSERT=1 keeps the counters of a row with the same
+#                        YubiKey, and first prints upsert_report_sql)
 #   db_list [WHERE]      print users and keys, optionally filtered by WHERE
 #   db_change SQL        run one UPDATE or DELETE and print how many rows it
 #                        changed
-#   db_export_json       print every row as a JSON array of objects with the
-#                        keys username, password, active, created, accessed
-#                        (UTC text), tokenid, userid, secret, counter, low, high
+#   db_export_json [WHERE]
+#                        print every row, or those matching WHERE, as a JSON
+#                        array of objects with the keys username, password,
+#                        active, created, accessed (UTC text), tokenid,
+#                        userid, secret, counter, low, high
 #   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause
 # --------------------------------------------------------------------------
 
@@ -465,10 +626,10 @@ db_run()             { "${DB_BACKEND}_run"; }
 db_ensure_readable() { "${DB_BACKEND}_ensure_readable"; }
 db_ensure_writable() { "${DB_BACKEND}_ensure_writable"; }
 db_init()            { "${DB_BACKEND}_init" "$@"; }
-db_insert_sql()      { "${DB_BACKEND}_insert_sql"; }
+db_insert_sql()      { if [[ $UPSERT == 1 ]]; then upsert_report_sql; fi; "${DB_BACKEND}_insert_sql"; }
 db_list()            { "${DB_BACKEND}_list" "$@"; }
 db_change()          { "${DB_BACKEND}_change" "$@"; }
-db_export_json()     { "${DB_BACKEND}_export_json"; }
+db_export_json()     { "${DB_BACKEND}_export_json" "$@"; }
 db_config()          { "${DB_BACKEND}_config" "$@"; }
 
 # --------------------------------------------------------------------------
@@ -583,6 +744,14 @@ sqlite_insert_sql() {
         printf '    SELECT %s AS counter, %s AS low, %s AS high, %s AS accessed\n' "$counter" "$low" "$high" "$accessed"
         printf '    UNION ALL SELECT coalesce(counter, 0), coalesce(low, 0), coalesce(high, 0), accessed FROM yubikeys WHERE tokenId = %s OR userId = %s\n' "$pub" "$priv"
         printf '    ORDER BY counter DESC, low DESC, accessed DESC LIMIT 1) AS m;\n'
+    elif [[ $UPSERT == 1 ]]; then
+        # Keep the times and counters of a row with the same YubiKey. Rows that
+        # clash on the public or private ID are replaced, counters reset.
+        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high)\n'
+        printf "SELECT %s, %s, %s, coalesce(o.created, CURRENT_TIMESTAMP), coalesce(o.accessed, ''), %s, %s, %s,\n" \
+            "$user" "$pw" "$R_ACTIVE" "$pub" "$priv" "$secret"
+        printf '       coalesce(o.counter, 0), coalesce(o.low, 0), coalesce(o.high, 0)\n'
+        printf '  FROM (SELECT 1) LEFT JOIN yubikeys o ON %s;\n' "$(same_key_sql o.)"
     else
         printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);\n" \
             "$verb" "$user" "$pw" "$R_ACTIVE" "$created" "$accessed" "$pub" "$priv" "$secret" "$counter" "$low" "$high"
@@ -600,12 +769,12 @@ sqlite_list() {
 
 # Times are stored as UTC text and exported as they are.
 sqlite_export_json() {
-    sqlite_run <<'EOF'
-.mode json
-SELECT username, password, active, created, accessed, tokenId AS tokenid, userId AS userid,
-       secret, counter, low, high
-  FROM yubikeys ORDER BY username, tokenId;
-EOF
+    {
+        printf '.mode json\n'
+        printf 'SELECT username, password, active, created, accessed, tokenId AS tokenid, userId AS userid,\n'
+        printf '       secret, counter, low, high\n'
+        printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
+    } | sqlite_run
 }
 
 sqlite_change() {
@@ -875,6 +1044,18 @@ pg_insert_sql() {
         printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, %s, best.accessed, %s, %s, %s, best.counter, best.low, best.high\n' \
             "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" "$created" "$pub" "$priv" "$(sql_quote "$R_SECRET")"
         printf '  FROM best WHERE (SELECT count(*) FROM replaced) >= 0;\n'
+    elif [[ $UPSERT == 1 ]]; then
+        # Keep the times and counters of a row with the same YubiKey (read
+        # before the DELETE, as in the restore above). Rows that clash on the
+        # public or private ID are replaced, counters reset.
+        printf 'WITH old AS (SELECT created, accessed, counter, low, high FROM yubikeys WHERE %s),\n' "$(same_key_sql)"
+        printf '     replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' \
+            "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")"
+        printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, coalesce(old.created, CURRENT_TIMESTAMP), old.accessed, %s, %s, %s,\n' \
+            "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" \
+            "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
+        printf '       coalesce(old.counter, 0), coalesce(old.low, 0), coalesce(old.high, 0)\n'
+        printf '  FROM (SELECT 1) AS one LEFT JOIN old ON true WHERE (SELECT count(*) FROM replaced) >= 0;\n'
     elif [[ $REPLACE == 1 ]]; then
         printf 'WITH replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' \
             "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")"
@@ -896,7 +1077,7 @@ EOF
 }
 
 pg_export_json() {
-    pg_run <<'EOF'
+    pg_run <<EOF
 SELECT coalesce(json_agg(json_build_object(
            'username', username, 'password', password, 'active', active,
            'created', to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
@@ -904,7 +1085,7 @@ SELECT coalesce(json_agg(json_build_object(
            'tokenid', tokenId, 'userid', userId, 'secret', secret,
            'counter', counter, 'low', low, 'high', high)
          ORDER BY username, tokenId), '[]')
-  FROM yubikeys;
+  FROM yubikeys ${1-};
 EOF
 }
 
@@ -975,9 +1156,11 @@ cmd_add() {
             --no-password)    pw=; pw_set=1; shift ;;
             --inactive)       active=0; shift ;;
             --replace)        REPLACE=1; shift ;;
+            --update)         UPSERT=1; shift ;;
             *) die "add: unknown option '$1'" ;;
         esac
     done
+    [[ $REPLACE == 0 || $UPSERT == 0 ]] || die "add: use either --replace or --update, not both"
     db_ensure_writable
 
     [[ -n $user ]] || prompt_value user "Username"
@@ -996,10 +1179,11 @@ cmd_add() {
     fi
 
     validate_record "$user" "$pub" "$priv" "$key" "$pw" "$active" || die "$ERR"
-    if ! db_insert_sql | db_run; then
-        die "could not add $R_USER (if this YubiKey is already in the database, use --replace)"
+    local out
+    if ! out=$(db_insert_sql | db_run); then
+        die "could not add $R_USER (if this YubiKey is already in the database, use --replace or --update)"
     fi
-    info "Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE)"
+    info "${out:-Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE)}"
 }
 
 # Append the INSERT for the validated record (R_* globals) to TMPFILE, unless
@@ -1025,17 +1209,22 @@ cmd_import() {
             --dry-run)      dry_run=1; shift ;;
             --skip-invalid) skip_invalid=1; shift ;;
             --replace)      REPLACE=1; shift ;;
+            --update)       UPSERT=1; shift ;;
             --from-export)  RESTORE=1; shift ;;
-            -*)             die "import: unknown option '$1'" ;;
+            -?*)            die "import: unknown option '$1'" ;;
             *)              [[ -z $file ]] || die "import: only one CSV file allowed"; file=$1; shift ;;
         esac
     done
-    [[ -n $file ]] || die "import: CSV file required"
+    [[ -n $file ]] || die "import: CSV file required (or - for standard input)"
+    [[ $REPLACE == 0 || $UPSERT == 0 ]] || die "import: use either --replace or --update, not both"
+    [[ $RESTORE == 0 || $UPSERT == 0 ]] \
+        || die "import: --update does not apply to --from-export; use --replace, which never moves counters backward"
+    if [[ $file == - ]]; then file=/dev/stdin; fi
     [[ -r $file ]] || die "cannot read $file"
     if [[ $dry_run == 0 ]]; then db_ensure_writable; fi
 
     # Warn if other users can read the CSV, since it contains AES keys.
-    if [[ -n $(find "$file" -maxdepth 0 -perm /o=r 2>/dev/null) ]]; then
+    if [[ $file != /dev/stdin && -n $(find "$file" -maxdepth 0 -perm /o=r 2>/dev/null) ]]; then
         warn "$file is world-readable and contains AES keys; consider: chmod 600 '$file'"
     fi
 
@@ -1097,13 +1286,63 @@ cmd_import() {
     if [[ $ok == 0 ]]; then die "no valid rows to import"; fi
     if [[ $dry_run == 1 ]]; then info "Dry run: database not changed"; return; fi
 
-    if ! db_run <"$TMPFILE"; then
-        die "import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)"
+    # --update reports each row it changes; print that only once committed.
+    local out hint="--replace or --update"
+    if [[ $RESTORE == 1 ]]; then hint=--replace; fi
+    if ! out=$(db_run <"$TMPFILE"); then
+        die "import failed and was rolled back; no rows imported (an existing YubiKey? use $hint)"
     fi
+    if [[ -n $out ]]; then info "$out"; fi
     info "Imported $ok row(s) into $DB_DESC"
     if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
         info "Counters were kept from the database wherever it was ahead of the export."
     fi
+}
+
+# Check a username, static password and OTP the way Radiator's AuthBy
+# SQLYUBIKEY does with Require2Factor and CheckSecretId (see verify_otp). If
+# they are accepted, save the OTP's counters and the access time, as
+# Radiator's UpdateQuery would, so the same OTP is not accepted again. The
+# UPDATE only applies while the counters are still behind, so an OTP that
+# Radiator accepts in the meantime still counts as a replay.
+cmd_verify() {
+    local user='' pw='' otp='' pub rows result counter session note n
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -u|--user) user=${2?}; shift 2 ;;
+            *) die "verify: unknown option '$1'" ;;
+        esac
+    done
+    perl -MCrypt::Rijndael -e 1 2>/dev/null \
+        || die "verify needs the Perl module Crypt::Rijndael (install the libcrypt-rijndael-perl package)"
+    db_ensure_writable
+
+    [[ -n $user ]] || read_value user "Username"
+    read_value pw "Static password/PIN (Enter for none)" secret
+    read_value otp "YubiKey OTP (touch the YubiKey)"
+    otp=${otp,,}
+    otp=${otp//[[:space:]]/}
+    # The OTP is the public ID (2-32 modhex characters) and 32 characters of
+    # encrypted token. It is not printed: it may be a password typed by mistake.
+    [[ $otp =~ ^([cbdefghijklnrtuv]{2}){17,32}$ ]] \
+        || die "verify: that is not a YubiKey OTP (expected 34 to 64 modhex characters, got ${#otp})"
+    pub=${otp:0:${#otp}-32}
+
+    rows=$(db_export_json "WHERE username = $(sql_quote "$user") OR tokenId = $(sql_quote "$pub")") \
+        || die "verify: cannot read $DB_DESC"
+    info "Checking $user with YubiKey $pub in $DB_DESC:"
+    exec 4>&1
+    result=$(printf '%s\n%s\n%s' "$pw" "$otp" "$rows" | verify_otp "$user" "$pub" 3>&1 1>&4) \
+        || die "verify: the check failed to run"
+    [[ $result == accept\ * ]] || die "verify: rejected (${result#reject })"
+
+    read -r _ counter session note <<<"$result"
+    n=$(db_change "UPDATE yubikeys SET accessed = CURRENT_TIMESTAMP, counter = $counter, low = $session
+ WHERE username = $(sql_quote "$user") AND tokenId = $(sql_quote "$pub")
+   AND (counter IS NULL OR counter < $counter OR (counter = $counter AND coalesce(low, 0) < $session));")
+    [[ $n -gt 0 ]] || die "verify: rejected (replayed OTP: a newer one was used while this one was checked)"
+    if [[ -n $note ]]; then warn "the static password was not checked"; fi
+    info "Accepted. The OTP's counters were saved, so it cannot be used again."
 }
 
 cmd_list() {
@@ -1222,5 +1461,6 @@ case $cmd in
     list)                   cmd_list "$@" ;;
     enable|disable|delete)  cmd_modify "$cmd" "$@" ;;
     export)                 cmd_export "$@" ;;
+    verify)                 cmd_verify "$@" ;;
     *)                      die "unknown command '$cmd' (see '$PROG help')" ;;
 esac
