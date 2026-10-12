@@ -287,8 +287,37 @@ protection working.
 | Remove one YubiKey | `sudo ./yubikey-db.sh delete alice vvccccbbcdef` |
 | Remove a user completely | `sudo ./yubikey-db.sh delete alice` |
 | Replace a reprogrammed YubiKey | `sudo ./yubikey-db.sh add --replace -u alice -P vvccccbbcdef` |
+| Export everything to CSV | `sudo ./yubikey-db.sh export users-export.csv` |
+| Export straight into an encrypted file | `sudo ./yubikey-db.sh export - \| gpg -e -r you@example.com > users.csv.gpg` |
 
-`list` never shows AES keys or passwords.
+`list` never shows AES keys or passwords. `export` does: see
+[Exporting to CSV](#exporting-to-csv).
+
+### Exporting to CSV
+
+`export` writes every record and field, from SQLite or PostgreSQL (`-b pg`):
+
+```csv
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,{crypt}$6$...,1,2026-07-01 08:00:00,2026-10-01 12:00:00,40,7,0
+```
+
+- `aes_key` is 32 hex characters (the format `ykman` prints), whether the
+  database stores it as base64 or hex. `private_id` is as stored.
+- `password` is as stored: `{crypt}` hashes stay hashed, plain-text passwords
+  are in plain text.
+- `created` and `accessed` are UTC. `counter`, `low` and `high` are the replay
+  counters.
+- Fields that contain a comma, a quote or a line break are quoted, with quotes
+  doubled.
+- The first six columns are in `import` order, but `import` doesn't accept
+  this file as it is: it takes at most six columns, and it would hash a
+  `{crypt}` value again.
+
+The file holds every AES key and private ID in clear text. `export` creates it
+with mode `0600`, never replaces an existing file unless you add `--force`, and
+leaves no partial file if it fails. Use `export -` to write to standard output,
+for example to encrypt the export without writing it to disk unencrypted.
 
 ## Command reference
 
@@ -321,6 +350,7 @@ Global options go **before** the command, for example
 | `enable` | `USER [PUBLIC_ID]` | Set `active = 1` |
 | `disable` | `USER [PUBLIC_ID]` | Set `active = 0` |
 | `delete` | `USER [PUBLIC_ID]` | Delete the user's rows (or one key) |
+| `export` | `-f, --force`, `FILE` or `-` | Write every record and field to CSV, including AES keys and private IDs |
 | `config` | | Print a sample `<AuthBy SQLYUBIKEY>` block |
 
 The script exits with `0` on success and `1` on any error, so you can use it
@@ -350,6 +380,9 @@ has just been reprogrammed.
 - **The database holds every user's AES key.** Anyone who can read the file
   can copy those YubiKeys. Keep the file at `0640` or stricter, readable only
   by the Radiator account and root. Include it in encrypted backups only.
+- **Export files hold every secret in clear text**, AES keys and private IDs
+  included. Encrypt them (`export - | gpg -e ...`), or delete them with
+  `shred -u` as soon as you're done.
 - **CSV files hold the same secrets.** Set them to `chmod 600`, don't commit
   them to Git or attach them to tickets, and delete them with `shred -u` after
   importing. The script warns you if a CSV file is readable by all users.

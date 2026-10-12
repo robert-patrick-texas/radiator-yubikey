@@ -239,7 +239,7 @@ normalize() {
         -e "s|$WORK|<WORK>|g" \
         -e "s|$ROOT|<ROOT>|g" \
         -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/<TIMESTAMP>/g' \
-        -e 's/\{crypt\}\$6\$[^ |]*/{crypt}$6$<HASH>/g' \
+        -e 's/\{crypt\}\$6\$[^ |,]*/{crypt}$6$<HASH>/g' \
         -e 's/(if Radiator does not run as) [^ ]+$/\1 <USER>/' \
         -e "s/$PGT/<T>/g" \
         -e 's/connection to server .* failed:/connection to server <SERVER> failed:/' \
@@ -431,6 +431,60 @@ scenario_config() {
     run config
     run -d /srv/radius/yubi.db -e hex config
     run_env DB_FILE=/opt/yk.db -- config
+}
+
+# Rows for the export scenarios: keys stored as base64 and as hex, a
+# {crypt} password, a clear password with a comma and a quote, an inactive
+# key, and a key that has been used (counters and accessed set).
+export_rows() {
+    local -a b=("$@")    # backend options, e.g. -b pg -d DB
+    csv example.csv <"$ROOT/users.example.csv"
+    "$SCRIPT" "${b[@]}" import example.csv >/dev/null
+    "$SCRIPT" "${b[@]}" -e hex -H clear add -u comma.user -P vvccccbbcdef -p cccccccccccb \
+        -k 00112233445566778899AABBCCDDEEFF -w 'a,b"c' --inactive </dev/null >/dev/null
+}
+
+scenario_export() {
+    run -d "$DB" export out.csv
+    run -d "$DB" init >/dev/null
+    run -d "$DB" export empty.csv
+    cat empty.csv; echo
+
+    export_rows -d "$DB"
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 40, low = 7, high = 1, accessed = '2026-10-01 12:00:00' WHERE username = 'test.user';"
+    run -d "$DB" export out.csv
+    stat -c '# out.csv mode %a' out.csv
+    cat out.csv; echo
+    check_crypt "$DB" test.user abc123
+
+    run -d "$DB" export out.csv
+    run -d "$DB" export --force out.csv
+    run -d "$DB" export -
+    run -d "$DB" export
+    run -d "$DB" export a.csv b.csv
+    run -d "$DB" export --bogus x.csv
+    run -d "$DB" export "$WORK"
+    run -d "$DB" export "$WORK/missing/x.csv"
+    local -a leftovers=(.yubikey-export.*)
+    [[ -e ${leftovers[0]} ]] || leftovers=()
+    printf '# temporary files left: %d\n\n' "${#leftovers[@]}"
+
+    # A stored key that is neither hex nor base64 is exported as it is.
+    sqlite3 "$DB" "UPDATE yubikeys SET secret = 'not-a-key' WHERE username = 'test.user2';"
+    run -d "$DB" export -
+}
+
+scenario_pg_export() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    export_rows -b pg -d "$PGDB"
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 40, low = 7, high = 1, accessed = '2026-10-01 12:00:00+00' WHERE username = 'test.user';"
+    run -b pg -d "$PGDB" export out.csv
+    stat -c '# out.csv mode %a' out.csv
+    cat out.csv; echo
+    run -b pg -d "$PGDB" export -
+    # Radiator's login role cannot export.
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -b pg -d "$PGDB" export radiator.csv
 }
 
 # PostgreSQL behavior that needs no server.
@@ -690,7 +744,8 @@ EOF
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator
+     export
+     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)
 
 # Scenarios that need a PostgreSQL server.

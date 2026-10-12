@@ -46,6 +46,8 @@
 #   enable    Set active=1 for a user (optionally only one of their keys)
 #   disable   Set active=0 for a user (optionally only one of their keys)
 #   delete    Remove a user (optionally only one of their keys)
+#   export    Write every record and field to a CSV file, with AES keys and
+#             private IDs in clear text (the file is created with mode 0600)
 #   config    Print a sample Radiator <AuthBy SQLYUBIKEY> clause for this database
 #   Run "yubikey-db.sh help" for every option.
 #
@@ -130,6 +132,8 @@ MODHEX=cbdefghijklnrtuv
 HEXDIGITS=0123456789abcdef
 
 REPLACE=0     # 1 = INSERT OR REPLACE (overwrite an existing YubiKey entry)
+# Columns of an export file, in order.
+EXPORT_COLUMNS=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
 TMPFILE=      # temp SQL file used by 'import'; removed on exit
 trap 'if [[ -n $TMPFILE ]]; then rm -f -- "$TMPFILE"; fi' EXIT
 
@@ -185,6 +189,12 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  export [-f|--force] FILE|-    Write every record and field to a CSV file
+        (mode 0600), or to standard output with -. Columns: username,
+        public_id, private_id, aes_key, password, active, created, accessed,
+        counter, low, high. AES keys are 32 hex characters and private IDs are
+        in clear text; passwords are as stored ({crypt} hashes stay hashed).
+        An existing FILE is replaced only with --force.
   config                        Print a sample Radiator AuthBy clause
 
 --replace overwrites any existing row with the same public ID or private ID,
@@ -239,6 +249,32 @@ hash_password() {
                 unless defined $h && $h =~ /^\$6\$/;
             print "{crypt}$h";'
     fi
+}
+
+# Turn the JSON rows from db_export_json (stdin) into CSV on stdout, and write
+# the number of rows to file descriptor 3. AES keys are converted to 32 hex
+# characters, whichever encoding they are stored in. Fields with a comma,
+# quote or line break are quoted, with quotes doubled.
+csv_from_json() {
+    perl -MJSON::PP -MMIME::Base64 -e '
+        my ($prog, $header) = @ARGV;
+        local $/;
+        my $json = <STDIN>;
+        my $rows = defined $json && $json =~ /\S/ ? JSON::PP->new->utf8->decode($json) : [];
+        binmode STDOUT, ":encoding(UTF-8)";
+        sub csv { my $v = shift // ""; $v = "$v"; $v =~ /[",\r\n]/ ? "\"" . ($v =~ s/"/""/gr) . "\"" : $v }
+        print "$header\n";
+        for my $r (@$rows) {
+            (my $s = $r->{secret} // "") =~ s/^ +| +$//g;
+            my $key = $s =~ /^[0-9A-Fa-f]{32}$/ ? lc $s
+                    : $s =~ m{^[A-Za-z0-9+/]{22}==$} ? unpack("H*", decode_base64($s))
+                    : do { warn "$prog: warning: the AES key of $r->{username} ($r->{tokenid}) is not hex or base64; exported as stored\n"; $r->{secret} };
+            print join(",", map { csv($_) } $r->{username}, $r->{tokenid}, $r->{userid}, $key, $r->{password},
+                       $r->{active}, $r->{created}, $r->{accessed}, $r->{counter}, $r->{low}, $r->{high}), "\n";
+        }
+        open(my $count, ">&=", 3) or die "$prog: error: cannot report the row count\n";
+        print $count scalar(@$rows), "\n";
+    ' "$PROG" "$EXPORT_COLUMNS"
 }
 
 # Validate and normalize one user record. On success, sets the R_* globals.
@@ -316,6 +352,9 @@ prompt_value() {
 #   db_list [WHERE]      print users and keys, optionally filtered by WHERE
 #   db_change SQL        run one UPDATE or DELETE and print how many rows it
 #                        changed
+#   db_export_json       print every row as a JSON array of objects with the
+#                        keys username, password, active, created, accessed
+#                        (UTC text), tokenid, userid, secret, counter, low, high
 #   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause
 # --------------------------------------------------------------------------
 
@@ -327,6 +366,7 @@ db_init()            { "${DB_BACKEND}_init" "$@"; }
 db_insert_sql()      { "${DB_BACKEND}_insert_sql"; }
 db_list()            { "${DB_BACKEND}_list" "$@"; }
 db_change()          { "${DB_BACKEND}_change" "$@"; }
+db_export_json()     { "${DB_BACKEND}_export_json"; }
 db_config()          { "${DB_BACKEND}_config" "$@"; }
 
 # --------------------------------------------------------------------------
@@ -434,6 +474,16 @@ sqlite_list() {
         printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter\n'
         printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
     } | sqlite_run
+}
+
+# Times are stored as UTC text and exported as they are.
+sqlite_export_json() {
+    sqlite_run <<'EOF'
+.mode json
+SELECT username, password, active, created, accessed, tokenId AS tokenid, userId AS userid,
+       secret, counter, low, high
+  FROM yubikeys ORDER BY username, tokenId;
+EOF
 }
 
 sqlite_change() {
@@ -703,6 +753,19 @@ SELECT username, tokenId AS public_id, active,
 EOF
 }
 
+pg_export_json() {
+    pg_run <<'EOF'
+SELECT coalesce(json_agg(json_build_object(
+           'username', username, 'password', password, 'active', active,
+           'created', to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+           'accessed', to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+           'tokenid', tokenId, 'userid', userId, 'secret', secret,
+           'counter', counter, 'low', low, 'high', high)
+         ORDER BY username, tokenId), '[]')
+  FROM yubikeys;
+EOF
+}
+
 pg_change() {
     printf 'WITH changed AS (%s RETURNING 1) SELECT count(*) FROM changed;\n' "${1%;}" | pg_run
 }
@@ -881,6 +944,49 @@ cmd_list() {
     db_list "$where"
 }
 
+# Write every row to a CSV file created with mode 0600, or to stdout with "-".
+# The file is written under a temporary name in the same directory and then
+# renamed, so a failed export leaves no partial file behind.
+cmd_export() {
+    local file='' force=0
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -f|--force) force=1; shift ;;
+            -?*)        die "export: unknown option '$1'" ;;
+            *)          [[ -z $file ]] || die "export: only one output file allowed"; file=$1; shift ;;
+        esac
+    done
+    [[ -n $file ]] || die "export: output file required (use - for standard output)"
+    db_ensure_readable
+
+    local count
+    if [[ $file == - ]]; then
+        exec 4>&1
+        count=$(db_export_json | csv_from_json 3>&1 1>&4) || die "export failed"
+        warn "exported $count row(s) to standard output, with every AES key and private ID in clear text"
+        return
+    fi
+
+    [[ ! -d $file ]] || die "export: $file is a directory"
+    if [[ $force == 0 && ( -e $file || -L $file ) ]]; then
+        die "export: $file already exists (use --force to replace it)"
+    fi
+    local dir
+    dir=$(dirname -- "$file")
+    [[ -d $dir && -w $dir ]] || die "export: cannot write to the directory $dir"
+    TMPFILE=$(mktemp "$dir/.yubikey-export.XXXXXX")    # mode 0600; removed on exit
+    count=$(db_export_json | csv_from_json 3>&1 >"$TMPFILE") || die "export failed; $file was not written"
+    if [[ $force == 1 ]]; then
+        mv -f -- "$TMPFILE" "$file"
+    else
+        mv -n -- "$TMPFILE" "$file" 2>/dev/null || true
+        [[ ! -e $TMPFILE ]] || die "export: $file already exists (use --force to replace it)"
+    fi
+    TMPFILE=
+    info "Exported $count row(s) to $file (mode 0600)"
+    warn "$file contains every AES key and private ID in clear text; keep it private and delete it with 'shred -u' when done"
+}
+
 # enable / disable / delete share the same USER [PUBLIC_ID] targeting.
 cmd_modify() {
     local action=$1; shift
@@ -945,5 +1051,6 @@ case $cmd in
     import)                 cmd_import "$@" ;;
     list)                   cmd_list "$@" ;;
     enable|disable|delete)  cmd_modify "$cmd" "$@" ;;
+    export)                 cmd_export "$@" ;;
     *)                      die "unknown command '$cmd' (see '$PROG help')" ;;
 esac

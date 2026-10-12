@@ -41,6 +41,12 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  export [-f|--force] FILE|-    Write every record and field to a CSV file
+        (mode 0600), or to standard output with -. Columns: username,
+        public_id, private_id, aes_key, password, active, created, accessed,
+        counter, low, high. AES keys are 32 hex characters and private IDs are
+        in clear text; passwords are as stored ({crypt} hashes stay hashed).
+        An existing FILE is replaced only with --force.
   config                        Print a sample Radiator AuthBy clause
 
 --replace overwrites any existing row with the same public ID or private ID,
@@ -97,6 +103,12 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  export [-f|--force] FILE|-    Write every record and field to a CSV file
+        (mode 0600), or to standard output with -. Columns: username,
+        public_id, private_id, aes_key, password, active, created, accessed,
+        counter, low, high. AES keys are 32 hex characters and private IDs are
+        in clear text; passwords are as stored ({crypt} hashes stay hashed).
+        An existing FILE is replaced only with --force.
   config                        Print a sample Radiator AuthBy clause
 
 --replace overwrites any existing row with the same public ID or private ID,

@@ -1,0 +1,72 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db export out.csv
+yubikey-db.sh: error: database <WORK>/yubicred.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export empty.csv
+Exported 0 row(s) to empty.csv (mode 0600)
+yubikey-db.sh: warning: empty.csv contains every AES key and private ID in clear text; keep it private and delete it with 'shred -u' when done
+[exit 0]
+
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export out.csv
+Exported 3 row(s) to out.csv (mode 0600)
+yubikey-db.sh: warning: out.csv contains every AES key and private ID in clear text; keep it private and delete it with 'shred -u' when done
+[exit 0]
+
+# out.csv mode 600
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+comma.user,vvccccbbcdef,cccccccccccb,00112233445566778899aabbccddeeff,"a,b""c",0,<TIMESTAMP>,,0,0,0
+test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,40,7,1
+test.user2,cbdefghijklr,0a1b2c3d4e5f,0123456789abcdef0123456789abcdef,,1,<TIMESTAMP>,,0,0,0
+
+# crypt check for test.user: match
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export out.csv
+yubikey-db.sh: error: export: out.csv already exists (use --force to replace it)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export --force out.csv
+Exported 3 row(s) to out.csv (mode 0600)
+yubikey-db.sh: warning: out.csv contains every AES key and private ID in clear text; keep it private and delete it with 'shred -u' when done
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export -
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+comma.user,vvccccbbcdef,cccccccccccb,00112233445566778899aabbccddeeff,"a,b""c",0,<TIMESTAMP>,,0,0,0
+test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,40,7,1
+test.user2,cbdefghijklr,0a1b2c3d4e5f,0123456789abcdef0123456789abcdef,,1,<TIMESTAMP>,,0,0,0
+yubikey-db.sh: warning: exported 3 row(s) to standard output, with every AES key and private ID in clear text
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export
+yubikey-db.sh: error: export: output file required (use - for standard output)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export a.csv b.csv
+yubikey-db.sh: error: export: only one output file allowed
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export --bogus x.csv
+yubikey-db.sh: error: export: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export <WORK>
+yubikey-db.sh: error: export: <WORK> is a directory
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export <WORK>/missing/x.csv
+yubikey-db.sh: error: export: cannot write to the directory <WORK>/missing
+[exit 1]
+
+# temporary files left: 0
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export -
+yubikey-db.sh: warning: the AES key of test.user2 (cbdefghijklr) is not hex or base64; exported as stored
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+comma.user,vvccccbbcdef,cccccccccccb,00112233445566778899aabbccddeeff,"a,b""c",0,<TIMESTAMP>,,0,0,0
+test.user,cbdefghijkln,456789abcdef,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,{crypt}$6$<HASH>,1,<TIMESTAMP>,<TIMESTAMP>,40,7,1
+test.user2,cbdefghijklr,0a1b2c3d4e5f,not-a-key,,1,<TIMESTAMP>,,0,0,0
+yubikey-db.sh: warning: exported 3 row(s) to standard output, with every AES key and private ID in clear text
+[exit 0]
+
