@@ -434,7 +434,8 @@ tests/run-tests.sh --update        # accept a deliberate change in behavior
 After `--update`, review the changes to `tests/expected/` with `git diff`
 before committing them. The test values are not real keys.
 
-The `pg_*` scenarios test the PostgreSQL backend. They need `psql` and a
+The `pg_*` scenarios test the PostgreSQL backend, and the `migrate_*`
+scenarios test `yubikey-db-migrate.sh`. Both need `psql` and a
 PostgreSQL 18 or later server that you can reach as a role with `CREATEDB` and
 `CREATEROLE`. One-time setup on a test machine:
 

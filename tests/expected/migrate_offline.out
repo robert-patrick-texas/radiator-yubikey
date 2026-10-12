@@ -1,0 +1,45 @@
+$ yubikey-db-migrate.sh --version
+yubikey-db-migrate.sh 1.0.1
+[exit 0]
+
+$ yubikey-db-migrate.sh 
+Usage: yubikey-db-migrate.sh [options] SQLITE_FILE
+
+Copy the users and YubiKeys from a yubikey-db.sh SQLite database into its
+PostgreSQL database, in one transaction, verified row by row.
+
+Options:
+  -d, --db NAME                 PostgreSQL database (default: yubikey)
+  -m, --mode MODE               new (default): the PostgreSQL table must be empty
+                                sync: add missing keys and move counters forward
+  -e, --secret-encoding ENC     How AES keys are stored in PostgreSQL:
+                                base64 (default) | hex (match yubikey-db.sh -e)
+  -n, --dry-run                 Do everything, then roll back: nothing changes
+      --skip-invalid            Migrate the valid rows even if some are invalid
+  -h, --help                    Show this help
+  -V, --version                 Show the version
+
+PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
+PGSERVICE settings. Keep passwords in ~/.pgpass.
+[exit 1]
+
+$ yubikey-db-migrate.sh --mode copy src.db
+yubikey-db-migrate.sh: error: --mode must be new or sync
+[exit 1]
+
+$ yubikey-db-migrate.sh -e rot13 src.db
+yubikey-db-migrate.sh: error: --secret-encoding must be base64 or hex
+[exit 1]
+
+$ yubikey-db-migrate.sh --bogus src.db
+yubikey-db-migrate.sh: error: unknown option '--bogus' (see 'yubikey-db-migrate.sh --help')
+[exit 1]
+
+$ yubikey-db-migrate.sh a.db b.db
+yubikey-db-migrate.sh: error: only one SQLite file allowed
+[exit 1]
+
+$ yubikey-db-migrate.sh <WORK>/missing.db
+yubikey-db-migrate.sh: error: cannot read <WORK>/missing.db
+[exit 1]
+

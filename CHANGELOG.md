@@ -18,8 +18,22 @@
   - `config` prints a `dbi:Pg` clause, using `to_timestamp(%5)` because
     Radiator's default `current_timestamp()` is not valid in PostgreSQL.
   - Errors are terse, so a duplicate key never prints the private ID.
-- Tests: 7 PostgreSQL scenarios (18 in total), skipped when no server is
-  reachable.
+- `yubikey-db-migrate.sh`: copies the users and keys from the SQLite database
+  into PostgreSQL in one transaction.
+  - Reads a consistent snapshot (`sqlite3 .backup`), so Radiator can keep
+    running on SQLite; the snapshot is shredded on exit.
+  - Copies counters, so previously used OTPs stay rejected, and normalizes
+    rows from the old example statements (`active='true'`, hex keys, modhex
+    private IDs, literal `current_timestamp`), reporting each change.
+  - Verifies every row against an independent SHA-256 fingerprint of the
+    snapshot and commits only if all match; `--dry-run` checks everything
+    and rolls back.
+  - `--mode sync`, for cutover, adds missing keys and moves counters forward
+    only, never backward; rows that differ are listed and left unchanged.
+  - Invalid rows are listed by user and public ID (never key or private ID)
+    and block the migration unless `--skip-invalid` is given.
+- Tests: 7 PostgreSQL and 5 migration scenarios (23 in total); the ones that
+  need a server are skipped without one.
 
 ## 1.0.1 - 2026-10-06
 

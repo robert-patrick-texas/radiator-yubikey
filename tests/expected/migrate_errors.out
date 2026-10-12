@@ -1,0 +1,39 @@
+$ yubikey-db-migrate.sh -d <T>_db src.db
+yubikey-db-migrate.sh: error: cannot use PostgreSQL database <T>_db: connection to server <SERVER> failed: FATAL:  database "<T>_db" does not exist
+[exit 1]
+
+$ yubikey-db-migrate.sh -d <T>_empty src.db
+yubikey-db-migrate.sh: error: PostgreSQL database <T>_empty has no yubikeys table; run 'yubikey-db.sh -b pg init-pg' first
+[exit 1]
+
+$ yubikey-db-migrate.sh -d <T>_db text.db
+yubikey-db-migrate.sh: error: text.db is not a readable SQLite database
+[exit 1]
+
+$ yubikey-db-migrate.sh -d <T>_db other.db
+yubikey-db-migrate.sh: error: other.db has no yubikeys table with the columns yubikey-db.sh uses
+[exit 1]
+
+$ PGHOST=127.0.0.1 PGUSER=<T>_radiator PGPASSWORD=test-only yubikey-db-migrate.sh -d <T>_db src.db
+yubikey-db-migrate.sh: error: <T>_radiator cannot write to the yubikeys table in PostgreSQL database <T>_db or create temporary tables (is it a member of <T>_admin?)
+[exit 1]
+
+$ SQLITE3=<WORK>/sqlite3-tamper yubikey-db-migrate.sh -d <T>_db src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+Read 4 row(s) from the snapshot: 4 valid, 0 invalid
+Inserted 4 row(s), with their counters
+changed: 1 active value(s) like 'true' set to 1 (Radiator accepts only 1, so these keys could not log in before)
+changed: 1 empty (NULL) active value(s) set to 1 (Radiator already treated them as active)
+changed: 2 AES key(s) re-encoded as base64
+changed: 1 private ID(s) converted from modhex to hex
+changed: 1 invalid created time(s) replaced with the current time
+MISMATCH: source row 3 (user olduser, public ID vvccccbbcdef): stored values differ from the source
+yubikey-db-migrate.sh: error: verification failed; the changes were rolled back and PostgreSQL database <T>_db was not changed
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username | public_id | active | created | accessed | counter 
+----------+-----------+--------+---------+----------+---------
+[exit 0]
+

@@ -1,0 +1,81 @@
+$ yubikey-db-migrate.sh -d <T>_db --dry-run src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+Dry run: all changes will be rolled back
+Read 4 row(s) from the snapshot: 4 valid, 0 invalid
+Inserted 4 row(s), with their counters
+changed: 1 active value(s) like 'true' set to 1 (Radiator accepts only 1, so these keys could not log in before)
+changed: 1 empty (NULL) active value(s) set to 1 (Radiator already treated them as active)
+changed: 2 AES key(s) re-encoded as base64
+changed: 1 private ID(s) converted from modhex to hex
+changed: 1 invalid created time(s) replaced with the current time
+Verified: 4 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Dry run complete: everything checked out, and the changes were rolled back.
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username | public_id | active | created | accessed | counter 
+----------+-----------+--------+---------+----------+---------
+[exit 0]
+
+$ yubikey-db-migrate.sh -d <T>_db src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+Read 4 row(s) from the snapshot: 4 valid, 0 invalid
+Inserted 4 row(s), with their counters
+changed: 1 active value(s) like 'true' set to 1 (Radiator accepts only 1, so these keys could not log in before)
+changed: 1 empty (NULL) active value(s) set to 1 (Radiator already treated them as active)
+changed: 2 AES key(s) re-encoded as base64
+changed: 1 private ID(s) converted from modhex to hex
+changed: 1 invalid created time(s) replaced with the current time
+Verified: 4 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Committed.
+If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db-migrate.sh --mode sync src.db
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 40 | 7 | 0
+nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0
+
+# times in <T>_db (UTC)
+username | created | accessed
+nulluser | 2026-08-01T08:00:00 | 
+olduser | now | 2026-09-01T10:00:00
+test.user | 2026-07-01T08:00:00 | 2026-10-01T12:00:00
+test.user2 | 2026-07-01T08:00:00 | 
+
+# crypt check for test.user: match
+
+# SQLite source unchanged: yes
+
+$ yubikey-db-migrate.sh -d <T>_db src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+Nothing migrated: the yubikeys table in PostgreSQL already has 4 row(s); use --mode sync
+[exit 1]
+
+$ yubikey-db-migrate.sh -d <T>_db -e hex src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as hex
+Read 4 row(s) from the snapshot: 4 valid, 0 invalid
+Inserted 4 row(s), with their counters
+changed: 1 active value(s) like 'true' set to 1 (Radiator accepts only 1, so these keys could not log in before)
+changed: 1 empty (NULL) active value(s) set to 1 (Radiator already treated them as active)
+changed: 2 AES key(s) re-encoded as hex
+changed: 1 private ID(s) converted from modhex to hex
+changed: 1 invalid created time(s) replaced with the current time
+Verified: 4 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Committed.
+If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db-migrate.sh --mode sync src.db
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | 0123456789abcdef0123456789abcdef | 0 | 0 | 0
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | 40 | 7 | 0
+nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0
+olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | 00112233445566778899aabbccddeeff | 12 | 3 | 0
+

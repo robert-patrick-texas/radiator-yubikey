@@ -1,0 +1,47 @@
+$ yubikey-db-migrate.sh -d <T>_db src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+invalid: source row 2 (user , public ID vvccccbbcdeg): username is empty
+invalid: source row 3 (user bell?, public ID vvccccbbcdeh): username contains control characters
+invalid: source row 4 (user badpub, public ID abc): public ID is not modhex (2-32 characters from cbdefghijklnrtuv)
+invalid: source row 5 (user badpriv, public ID vvccccbbcdei): private ID is not 12 hex or 12 modhex characters
+invalid: source row 6 (user badkey, public ID vvccccbbcdej): AES key is not 32 hex or 24 base64 characters
+invalid: source row 7 (user badactive, public ID vvccccbbcdek): active value 'maybe' is not 1/0, true/false, yes/no or empty
+invalid: source row 8 (user badcounter, public ID vvccccbbcdel): counter, low or high is not a whole number
+invalid: source row 9 (user dup1, public ID vvccccbbcden): private ID is used by more than one source row (rows 9, 10)
+invalid: source row 10 (user dup2, public ID vvccccbbcder): private ID is used by more than one source row (rows 9, 10)
+Read 11 row(s) from the snapshot: 2 valid, 9 invalid
+Nothing migrated: fix the rows above in SQLite, or re-run with --skip-invalid.
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username | public_id | active | created | accessed | counter 
+----------+-----------+--------+---------+----------+---------
+[exit 0]
+
+$ yubikey-db-migrate.sh -d <T>_db --skip-invalid src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+invalid: source row 2 (user , public ID vvccccbbcdeg): username is empty
+invalid: source row 3 (user bell?, public ID vvccccbbcdeh): username contains control characters
+invalid: source row 4 (user badpub, public ID abc): public ID is not modhex (2-32 characters from cbdefghijklnrtuv)
+invalid: source row 5 (user badpriv, public ID vvccccbbcdei): private ID is not 12 hex or 12 modhex characters
+invalid: source row 6 (user badkey, public ID vvccccbbcdej): AES key is not 32 hex or 24 base64 characters
+invalid: source row 7 (user badactive, public ID vvccccbbcdek): active value 'maybe' is not 1/0, true/false, yes/no or empty
+invalid: source row 8 (user badcounter, public ID vvccccbbcdel): counter, low or high is not a whole number
+invalid: source row 9 (user dup1, public ID vvccccbbcden): private ID is used by more than one source row (rows 9, 10)
+invalid: source row 10 (user dup2, public ID vvccccbbcder): private ID is used by more than one source row (rows 9, 10)
+Read 11 row(s) from the snapshot: 2 valid, 9 invalid
+Inserted 2 row(s), with their counters
+changed: 2 AES key(s) re-encoded as base64
+changed: 1 invalid accessed time(s) cleared
+Verified: 2 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Committed.
+If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db-migrate.sh --mode sync src.db
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+good |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+badtime |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdet | 4a6f8e2d1c43 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+

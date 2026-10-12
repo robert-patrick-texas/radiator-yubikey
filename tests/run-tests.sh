@@ -20,7 +20,8 @@
 # Needs: bash 4+, sqlite3, perl. Run as a normal user, not root (one scenario
 # checks permission errors, which root bypasses).
 #
-# The pg_* scenarios also need psql and a PostgreSQL 18 (or later) server that
+# The pg_* and migrate_* scenarios (except *_offline) also need psql and a
+# PostgreSQL 18 (or later) server that
 # this user can reach with the default libpq settings, as a role with CREATEDB
 # and CREATEROLE, for example:
 #     sudo -u postgres createuser --createdb --createrole "$USER"
@@ -34,6 +35,7 @@ set -uo pipefail
 TESTS_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname -- "$TESTS_DIR")
 SCRIPT=${YUBIKEY_DB_SH:-$ROOT/yubikey-db.sh}   # override to test another copy
+MIGRATE=$ROOT/yubikey-db-migrate.sh
 EXPECTED=$TESTS_DIR/expected
 UPDATE=0
 TMPROOT=       # per-run temp directory, removed on exit
@@ -53,6 +55,19 @@ trap cleanup EXIT
 # Helpers used by the scenarios. Each writes to stdout, which is captured as
 # the scenario's transcript.
 # --------------------------------------------------------------------------
+
+# Run yubikey-db-migrate.sh the same way: run_migrate [VAR=x ...] -- ARGS...
+# (the -- is needed only with environment assignments)
+run_migrate() {
+    local -a envs=()
+    if [[ " $* " == *" -- "* ]]; then
+        while [[ $1 != -- ]]; do envs+=("$1"); shift; done
+        shift
+    fi
+    local out rc=0
+    out=$(env "${envs[@]}" "$MIGRATE" "$@" </dev/null 2>&1) || rc=$?
+    printf '$ %syubikey-db-migrate.sh %s\n%s%s[exit %d]\n\n' "${envs[*]:+${envs[*]} }" "$*" "$out" "${out:+$'\n'}" "$rc"
+}
 
 # Run yubikey-db.sh with stdin from /dev/null (so it never prompts) and record
 # the command, its merged stdout/stderr, and its exit code.
@@ -131,7 +146,8 @@ dump_pg() {
     printf '# yubikeys table in %s\n' "$PGDB"
     pgtable "SELECT username, password, active, pg_typeof(active) AS active_type,
                     to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
-                    accessed, tokenId, userId, secret, counter, low, high
+                    to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS accessed,
+                    tokenId, userId, secret, counter, low, high
                FROM yubikeys ORDER BY userId;"
     echo
 }
@@ -165,6 +181,38 @@ schema_pg() {
     pgtable "SELECT r.rolname AS member FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
               WHERE m.roleid = '${PGT}_admin'::regrole AND r.rolname LIKE '${PGT}%' ORDER BY 1;"
     echo
+}
+
+# created and accessed in UTC, in a format the timestamp placeholder does not
+# replace, so the values themselves are checked. A created time set during
+# the run shows as "now".
+times_pg() {
+    printf '# times in %s (UTC)\n' "$PGDB"
+    pgtable "SELECT username,
+                    CASE WHEN created > now() - interval '1 hour' THEN 'now'
+                         ELSE to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') END AS created,
+                    to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS') AS accessed
+               FROM yubikeys ORDER BY username;"
+    echo
+}
+
+# Build src.db in the scratch directory as an existing SQLite installation:
+# rows added by yubikey-db.sh (one already used, with counters), plus rows in
+# the format of the old example statements.
+make_source() {
+    "$SCRIPT" -d "$WORK/src.db" init >/dev/null 2>&1
+    csv example.csv <"$ROOT/users.example.csv"
+    "$SCRIPT" -d "$WORK/src.db" import example.csv >/dev/null
+    sqlite3 "$WORK/src.db" <<'EOF'
+UPDATE yubikeys SET created = '2026-07-01 08:00:00';
+UPDATE yubikeys SET counter = 40, low = 7, accessed = '2026-10-01 12:00:00' WHERE username = 'test.user';
+-- old example format: text active, literal created, hex key, modhex private ID, plaintext PIN
+INSERT INTO yubikeys VALUES ('olduser', 'plainpin', 'true', 'current_timestamp', '2026-09-01 10:00:00',
+    'vvccccbbcdef', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0);
+-- NULL active and counters
+INSERT INTO yubikeys VALUES ('nulluser', '', NULL, '2026-08-01 08:00:00', '',
+    'vvccccbbcdeg', 'cccccccccccd', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', NULL, NULL, NULL);
+EOF
 }
 
 # Run SQL as the Radiator role over TCP, the way Radiator connects from
@@ -522,15 +570,131 @@ scenario_pg_radiator() {
     run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -b pg -d "$PGDB" disable test.user
 }
 
+# Migration checks that need no PostgreSQL server.
+scenario_migrate_offline() {
+    run_migrate --version
+    run_migrate
+    run_migrate --mode copy src.db
+    run_migrate -e rot13 src.db
+    run_migrate --bogus src.db
+    run_migrate a.db b.db
+    run_migrate "$WORK/missing.db"
+}
+
+scenario_migrate_new() {
+    make_source
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    sha256sum src.db >src.sum
+
+    run_migrate -d "$PGDB" --dry-run src.db
+    run -b pg -d "$PGDB" list
+    run_migrate -d "$PGDB" src.db
+    dump_pg
+    times_pg
+    check_crypt_pg test.user abc123
+    printf '# SQLite source unchanged: %s\n\n' "$(sha256sum -c --quiet src.sum >/dev/null 2>&1 && echo yes || echo NO)"
+
+    # A second first-time migration is refused.
+    run_migrate -d "$PGDB" src.db
+
+    # AES keys stored as hex instead.
+    pgq "$PGDB" "DELETE FROM yubikeys;"
+    run_migrate -d "$PGDB" -e hex src.db
+    dump_pg
+}
+
+# Cutover: after the first copy, SQLite and PostgreSQL both change, then sync.
+scenario_migrate_sync() {
+    make_source
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run_migrate -d "$PGDB" src.db >/dev/null
+
+    # SQLite: test.user logs in again (counter ahead), and a key is added.
+    sqlite3 src.db "UPDATE yubikeys SET counter = 41, low = 2, accessed = '2026-10-12 09:00:00' WHERE username = 'test.user';
+        INSERT INTO yubikeys VALUES ('newuser', '', 1, '2026-10-11 08:00:00', '', 'vvccccbbcdeh', 'cccccccccccf', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0);"
+    # PostgreSQL: olduser logs in via Radiator (counter ahead of SQLite), an
+    # admin changes test.user2's password, and a key exists only here.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 15, low = 1, accessed = '2026-10-12 10:00:00+00' WHERE username = 'olduser';
+        UPDATE yubikeys SET password = 'changed-in-pg' WHERE username = 'test.user2';
+        INSERT INTO yubikeys (username, tokenId, userId, secret) VALUES ('pgonly', 'vvccccbbcdei', '999999999999', 'ABEiM0RVZneImaq7zN3u/w==');"
+
+    run_migrate -d "$PGDB" --mode sync --dry-run src.db
+    run_migrate -d "$PGDB" --mode sync src.db
+    dump_pg
+    times_pg
+    # Running it again changes nothing.
+    run_migrate -d "$PGDB" --mode sync src.db
+
+    # A SQLite key whose public ID belongs to a different key in PostgreSQL.
+    sqlite3 src.db "INSERT INTO yubikeys VALUES ('clash', '', 1, '2026-08-01 08:00:00', '', 'vvccccbbcdei', '777777777777', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0);"
+    run_migrate -d "$PGDB" --mode sync src.db
+    run_migrate -d "$PGDB" --mode sync --skip-invalid src.db
+}
+
+scenario_migrate_invalid() {
+    "$SCRIPT" -d "$WORK/src.db" init >/dev/null 2>&1
+    sqlite3 src.db <<'EOF'
+INSERT INTO yubikeys VALUES ('good', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdef', '4a6f8e2d1c3b', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeg', '4a6f8e2d1c3c', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('bell' || char(7), '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeh', '4a6f8e2d1c3d', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badpub', '', 1, '2026-07-01 08:00:00', '', 'abc', '4a6f8e2d1c3e', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badpriv', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdei', 'xyz', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badkey', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdej', '4a6f8e2d1c40', 'not-a-key', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badactive', '', 'maybe', '2026-07-01 08:00:00', '', 'vvccccbbcdek', '4a6f8e2d1c41', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badcounter', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdel', '4a6f8e2d1c42', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 'x', 0, 0);
+-- the same private ID twice once lowercased
+INSERT INTO yubikeys VALUES ('dup1', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcden', 'cccccccccccb', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('dup2', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcder', 'CCCCCCCCCCCB', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+-- a bad accessed time is cleared, not rejected
+INSERT INTO yubikeys VALUES ('badtime', '', 1, '2026-07-01 08:00:00', 'yesterday', 'vvccccbbcdet', '4a6f8e2d1c43', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+EOF
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run_migrate -d "$PGDB" src.db
+    run -b pg -d "$PGDB" list
+    run_migrate -d "$PGDB" --skip-invalid src.db
+    dump_pg
+}
+
+scenario_migrate_errors() {
+    make_source
+    printf 'not a database\n' >text.db
+    sqlite3 other.db "CREATE TABLE users (name text);"
+
+    run_migrate -d "${PGT}_db" src.db
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    pgq postgres "CREATE DATABASE ${PGT}_empty;"
+    run_migrate -d "${PGT}_empty" src.db
+    run_migrate -d "$PGDB" text.db
+    run_migrate -d "$PGDB" other.db
+
+    # Radiator's login role cannot migrate.
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    run_migrate PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -d "$PGDB" src.db
+
+    # If the fingerprint read disagrees with the copied data, nothing is
+    # committed. A stand-in sqlite3 alters one password in the JSON read only.
+    cat >sqlite3-tamper <<EOF
+#!/bin/sh
+case " \$* " in
+    *" -json "*) $(command -v sqlite3) "\$@" | sed 's/"plainpin"/"tampered"/' ;;
+    *)           exec $(command -v sqlite3) "\$@" ;;
+esac
+EOF
+    chmod +x sqlite3-tamper
+    run_migrate SQLITE3="$WORK/sqlite3-tamper" -- -d "$PGDB" src.db
+    run -b pg -d "$PGDB" list
+}
+
 # --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator)
+     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator
+     migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)
 
 # Scenarios that need a PostgreSQL server.
-needs_pg() { [[ $1 == pg_* && $1 != pg_offline ]]; }
+needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
