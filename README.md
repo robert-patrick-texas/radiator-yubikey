@@ -1,6 +1,6 @@
 # Radiator YubiKey Database Tools
 
-Version 1.0.1 · [Guide](docs/guide.md) · [Changelog](CHANGELOG.md)
+Version 1.0.1 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md)
 
 Offline YubiKey one-time-password (OTP) logins for
 [Radiator](https://radiatorsoftware.com/) RADIUS, with the YubiKeys in a local
@@ -28,7 +28,9 @@ in a container, installing Radiator, programming YubiKeys, SQLite and
 PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, security, troubleshooting, and a reference.
-`yubikey-db-guide.html` is the same guide as a single page for offline use.
+The same guide is published as a web page at
+<https://robert-patrick-texas.github.io/radiator-yubikey/>, and
+`yubikey-db-guide.html` is that page as a single file for offline use.
 
 ## Quick start: SQLite
 
