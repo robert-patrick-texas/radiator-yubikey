@@ -4,7 +4,7 @@
 #                         yubikey-db.sh manages into its PostgreSQL database.
 #
 # VERSION
-#   1.0.1
+#   1.1.0
 #
 # HOW IT WORKS
 #   1. Takes a consistent snapshot of the SQLite file (sqlite3 .backup) into a
@@ -53,7 +53,7 @@ set -euo pipefail
 umask 077   # the snapshot holds AES keys
 
 PROG=${0##*/}
-VERSION=1.0.1
+VERSION=1.1.0
 SQLITE3=${SQLITE3:-sqlite3}
 PSQL=${PSQL:-psql}
 MODE=new
