@@ -4,14 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="description" content="How to build and maintain the local SQLite YubiKey database used by Radiator RADIUS for offline YubiKey OTP authentication.">
-<title>Radiator YubiKey Database Guide</title>
+<meta name="description" content="How to set up offline YubiKey OTP
+logins on Radiator RADIUS with SQLite or PostgreSQL on Linux, and add,
+verify and maintain accounts with yubikey-db.sh.">
+<title>YubiKey OTP on Radiator with SQLite or PostgreSQL</title>
 <!--
+  GENERATED from docs/guide.md by docs/build-guide.sh. Edit docs/guide.md, not this file.
   Self-contained page: no external fonts, scripts, images or CDNs, so it can be
   copied to any web server (including air-gapped networks) as a single file.
-  The small inline script only adds "Copy" buttons and table-of-contents
-  highlighting; the page is fully usable if a Content-Security-Policy blocks it.
-  Source: README.md shipped with yubikey-db.sh. Keep the two in sync.
+  The small inline script only adds "Copy" buttons, scrolling tables and
+  table-of-contents highlighting; the page is fully usable without it.
 -->
 <style>
 :root {
@@ -111,14 +113,14 @@ nav.toc { padding-top: 32px; font-size: 14px; }
   nav.toc { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: 32px 0 32px; }
 }
 nav.toc h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); border: 0; padding: 0; }
-nav.toc ol { list-style: none; margin: 0; padding: 0; }
+nav.toc ul { list-style: none; margin: 0; padding: 0; }
 nav.toc li { margin: 0; }
 nav.toc a { display: block; padding: 5px 10px; border-left: 2px solid var(--border); color: var(--text-muted); text-decoration: none; }
 nav.toc a:hover { color: var(--text); border-left-color: var(--text-muted); }
 nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
 @media (max-width: 999px) {
   nav.toc { border-bottom: 1px solid var(--border); padding-bottom: 24px; }
-  nav.toc ol { columns: 2 220px; column-gap: 16px; }
+  nav.toc ul { columns: 2 220px; column-gap: 16px; }
 }
 
 main { min-width: 0; padding: 8px 0 64px; }
@@ -213,6 +215,25 @@ td.wrap code { white-space: normal; overflow-wrap: normal; }
 .card h4 { margin: 0 0 4px; font-size: 15px; }
 .card p { margin: 0; font-size: 14.5px; color: var(--text-muted); }
 
+/* GitHub-style alerts, as pandoc writes them: <div class="note"><div class="title">...</div>...</div> */
+main .note, main .tip, main .important, main .warning, main .caution {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--note-border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--note-bg);
+  max-width: 78ch;
+}
+main .note > :last-child, main .tip > :last-child, main .important > :last-child,
+main .warning > :last-child, main .caution > :last-child { margin-bottom: 0; }
+main div.title p { margin: 0 0 2px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+main .warning, main .important { background: var(--warn-bg); border-color: var(--warn-border); }
+main .warning div.title p, main .important div.title p { color: var(--warn); }
+main .caution { background: var(--danger-bg); border-color: var(--danger-border); }
+main .caution div.title p { color: var(--danger); }
+main ol > li > pre, main ol > li > .codeblock { margin-top: 8px; }
+
 footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
 .top-link { font-size: 13px; }
 
@@ -234,14 +255,17 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border
 
 <header class="hero">
   <div class="inner">
-    <p class="eyebrow">Radiator RADIUS · YubiKey OTP · Offline</p>
-    <h1>Radiator YubiKey Database Guide</h1>
-    <p class="lede"><code>yubikey-db.sh</code> builds and maintains the local SQLite database that Radiator RADIUS uses to check YubiKey one-time passwords (OTPs) <strong>offline</strong>, without contacting Yubico's cloud (YubiCloud).</p>
+    <p class="eyebrow">Radiator RADIUS · YubiKey OTP · SQLite or PostgreSQL</p>
+    <h1>YubiKey OTP on Radiator with SQLite or PostgreSQL</h1>
+    <p class="lede">How to set up offline YubiKey OTP logins on Radiator
+RADIUS with SQLite or PostgreSQL on Linux, and add, verify and maintain
+accounts with yubikey-db.sh.</p>
     <div class="meta">
-      <span class="chip">Radiator 4.x · AuthBy SQLYUBIKEY</span>
-      <span class="chip">SQLite</span>
+      <span class="chip">Tested with Radiator 4.30</span>
+      <span class="chip">Ubuntu 26.04 LTS</span>
+      <span class="chip">PostgreSQL 18</span>
       <span class="chip">No cloud dependency</span>
-      <span class="chip">Document version 1.0.1 · October 2026</span>
+      <span class="chip">Scripts version 1.0.1</span>
     </div>
   </div>
 </header>
@@ -249,375 +273,1497 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border
 <div class="layout">
   <nav class="toc" aria-label="Contents">
     <h2>Contents</h2>
-    <ol>
-      <li><a href="#overview">Overview</a></li>
-      <li><a href="#how-it-works">How offline authentication works</a></li>
-      <li><a href="#prerequisites">Prerequisites</a></li>
-      <li><a href="#quick-start">Quick start</a></li>
-      <li><a href="#step-1">Step 1: Program the YubiKeys</a></li>
-      <li><a href="#step-2">Step 2: Create the database</a></li>
-      <li><a href="#step-3">Step 3: Load users</a></li>
-      <li><a href="#step-4">Step 4: Configure Radiator</a></li>
-      <li><a href="#step-5">Step 5: Test a login</a></li>
-      <li><a href="#day-to-day">Day-to-day management</a></li>
-      <li><a href="#reference">Command reference</a></li>
-      <li><a href="#database">Database layout</a></li>
-      <li><a href="#security">Security notes</a></li>
-      <li><a href="#troubleshooting">Troubleshooting</a></li>
-      <li><a href="#upgrading">Upgrading old databases</a></li>
-      <li><a href="#references">References</a></li>
-    </ol>
+<ul>
+<li><a href="#how-it-works" id="toc-how-it-works">How it works</a></li>
+<li><a href="#what-you-need" id="toc-what-you-need">What you
+need</a></li>
+<li><a href="#try-it-in-a-lab-container"
+id="toc-try-it-in-a-lab-container">Try it in a lab container</a></li>
+<li><a href="#install-on-the-servers"
+id="toc-install-on-the-servers">Install on the servers</a></li>
+<li><a href="#program-the-yubikeys"
+id="toc-program-the-yubikeys">Program the YubiKeys</a></li>
+<li><a href="#create-the-database" id="toc-create-the-database">Create
+the database</a></li>
+<li><a href="#configure-and-start-radiator"
+id="toc-configure-and-start-radiator">Configure and start
+Radiator</a></li>
+<li><a href="#add-accounts" id="toc-add-accounts">Add accounts</a></li>
+<li><a href="#verify-credentials" id="toc-verify-credentials">Verify
+credentials</a></li>
+<li><a href="#maintain-accounts" id="toc-maintain-accounts">Maintain
+accounts</a></li>
+<li><a href="#move-from-sqlite-to-postgresql"
+id="toc-move-from-sqlite-to-postgresql">Move from SQLite to
+PostgreSQL</a></li>
+<li><a href="#security" id="toc-security">Security</a></li>
+<li><a href="#troubleshooting"
+id="toc-troubleshooting">Troubleshooting</a></li>
+<li><a href="#reference" id="toc-reference">Reference</a></li>
+<li><a href="#testing" id="toc-testing">Testing</a></li>
+<li><a href="#references" id="toc-references">References</a></li>
+</ul>
   </nav>
 
   <main id="content">
-
-<section id="overview">
-  <h2>Overview</h2>
-  <p>Use <code>yubikey-db.sh</code> to:</p>
-  <ul>
-    <li>create the database and its <code>yubikeys</code> table</li>
-    <li>add users one at a time, or in bulk from a CSV file</li>
-    <li>list, enable, disable, and delete users</li>
-    <li>print a matching Radiator configuration block</li>
-  </ul>
-  <div class="cards">
-    <div class="card"><h4>yubikey-db.sh</h4><p>The management script. Run it on, or next to, the Radiator server.</p></div>
-    <div class="card"><h4>users.example.csv</h4><p>A sample bulk-import file that contains test values only.</p></div>
-    <div class="card"><h4>This guide</h4><p>Setup, day-to-day use, and troubleshooting.</p></div>
-  </div>
+<p>A how-to guide for offline YubiKey one-time-password (OTP) logins on
+<a href="https://radiatorsoftware.com/">Radiator</a> RADIUS, with the
+YubiKeys kept in a local SQLite database or a shared PostgreSQL
+database, managed with the scripts in this repository. It covers a lab
+you can build in a container, a server installation, adding accounts,
+checking credentials, day-to-day maintenance, and moving from SQLite to
+PostgreSQL.</p>
+<p>Every procedure in this guide was run as written with
+<strong>Radiator 4.30</strong> on <strong>Ubuntu 26.04 LTS</strong> with
+<strong>PostgreSQL 18</strong>, and <code>tests/radiator/run.sh</code>
+repeats the checks (see <a href="#testing">Testing</a>).</p>
+<section id="how-it-works" class="level2">
+<h2>How it works</h2>
+<p>Each time someone touches a YubiKey, it types a 44-character OTP. The
+first 12 characters are the YubiKey's <strong>public ID</strong>. The
+other 32 are a token encrypted with an <strong>AES key</strong> stored
+in the YubiKey. The token holds the YubiKey's <strong>private
+ID</strong> and two counters that go up with every OTP.</p>
+<p>Radiator's <code>&lt;AuthBy SQLYUBIKEY&gt;</code> checks a login like
+this:</p>
+<ol type="1">
+<li>It splits what the user typed into the static password (PIN), the
+public ID and the token. Both <code>1234:vvccccbbcdef...</code> and
+<code>1234vvccccbbcdef...</code> work.</li>
+<li>It looks up the row for that <strong>username and public ID</strong>
+in the database.</li>
+<li>It decrypts the token with the AES key from that row and checks its
+CRC.</li>
+<li>It checks that the private ID in the token matches the row
+(<code>CheckSecretId</code>).</li>
+<li>It rejects the OTP unless its counters are ahead of the ones saved
+in the row, so a captured OTP can't be used twice, and then saves the
+new counters.</li>
+</ol>
+<p>Nothing is sent to Yubico. The catch is that Radiator must know each
+YubiKey's AES key, and Yubico keeps the factory key secret, so
+<strong>every YubiKey is reprogrammed with an AES key you
+generate</strong>, and that key is loaded into the database.</p>
+<section id="the-scripts" class="level3">
+<h3>The scripts</h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>yubikey-db.sh</code></td>
+<td>Creates the database, adds, updates, lists, disables and deletes
+users and YubiKeys, checks a password and OTP (<code>verify</code>),
+exports and restores, and prints the Radiator configuration. SQLite by
+default, PostgreSQL with <code>-b pg</code>.</td>
+</tr>
+<tr>
+<td><code>yubikey-db-migrate.sh</code></td>
+<td>Copies everything from the SQLite database into PostgreSQL, verified
+row by row, and keeps counters in step during a cutover.</td>
+</tr>
+<tr>
+<td><code>yubikey-db-user.example.sh</code></td>
+<td>An example wrapper that adds or updates one test account from
+variables at the top of the file.</td>
+</tr>
+<tr>
+<td><code>radiator.example.conf</code></td>
+<td>A Radiator configuration for YubiKey logins, to replace the
+package's sample.</td>
+</tr>
+<tr>
+<td><code>users.example.csv</code></td>
+<td>A sample bulk-import file (test values only).</td>
+</tr>
+<tr>
+<td><code>tests/make-otp.sh</code></td>
+<td>Makes the OTP a YubiKey with given values would type, for tests
+without a YubiKey.</td>
+</tr>
+<tr>
+<td><code>tests/radiator/</code></td>
+<td>Builds a container with Radiator and runs real logins against both
+databases.</td>
+</tr>
+</tbody>
+</table>
 </section>
-
-<section id="how-it-works">
-  <h2>How offline YubiKey authentication works</h2>
-  <p>Each time someone touches a YubiKey, it types a 44-character one-time password. The first 12 characters are the key's <strong>public ID</strong>. The remaining 32 are encrypted with an <strong>AES key</strong> that is stored on the YubiKey.</p>
-  <p>Radiator's <code>&lt;AuthBy SQLYUBIKEY&gt;</code> module:</p>
-  <ol class="flow">
-    <li>looks up the user and public ID in the SQLite database</li>
-    <li>decrypts the OTP with the AES key stored for that YubiKey</li>
-    <li>compares the YubiKey's use counters with the saved values, so a captured OTP can't be replayed, and then saves the new counters</li>
-  </ol>
-  <div class="callout note">
-    <span class="label">Key point</span>
-    <p>Nothing leaves the Radiator server. The catch is that Radiator must know each YubiKey's AES key. Yubico keeps the factory-programmed key secret, so <strong>every YubiKey must be reprogrammed with a key you generate</strong>, and that key must be loaded into this database.</p>
-  </div>
+<section id="sqlite-or-postgresql" class="level3">
+<h3>SQLite or PostgreSQL?</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>SQLite</th>
+<th>PostgreSQL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Where the keys are</td>
+<td>One file on the Radiator server</td>
+<td>A database that several Radiator servers can share</td>
+</tr>
+<tr>
+<td>Several Radiator servers</td>
+<td>Each has its own file and its own counters, so an OTP used on one
+server is still accepted on another</td>
+<td>One set of counters, so an OTP works only once anywhere</td>
+</tr>
+<tr>
+<td>Who can change what</td>
+<td>Anyone who can write the file</td>
+<td>Radiator's login can read keys and update only counters; admins are
+members of an admin role</td>
+</tr>
+<tr>
+<td>To run</td>
+<td>Nothing more</td>
+<td>A PostgreSQL 18 server, on the Radiator server or elsewhere (over
+TLS)</td>
+</tr>
+</tbody>
+</table>
+<p>Start with SQLite for one Radiator server. Use PostgreSQL when more
+than one Radiator server checks the same YubiKeys. You can move later
+(see <a href="#move-from-sqlite-to-postgresql">Move from SQLite to
+PostgreSQL</a>).</p>
 </section>
-
-<section id="prerequisites">
-  <h2>Prerequisites</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Where</th><th>What</th></tr></thead>
-    <tbody>
-      <tr><td>Machine where you run the script</td><td><code>bash</code> 4 or later, <code>sqlite3</code>, <code>perl</code></td></tr>
-      <tr><td>Radiator server</td><td class="wrap">Radiator 4.x with the Perl modules <code>DBD::SQLite</code>, <code>Auth::Yubikey_Decrypter</code> (0.05 or later), and <code>Crypt::Rijndael</code></td></tr>
-      <tr><td>Machine where you program keys</td><td>YubiKey Manager (<code>ykman</code>)</td></tr>
-    </tbody>
-  </table></div>
-  <p>To install the tools on Debian or Ubuntu:</p>
-<pre><code>sudo apt install sqlite3 perl</code></pre>
-  <p>To check that Radiator's Perl modules are installed:</p>
-<pre><code>perl -MDBD::SQLite -MAuth::Yubikey_Decrypter -MCrypt::Rijndael -e 'print "ok\n"'</code></pre>
 </section>
-
-<section id="quick-start">
-  <h2>Quick start</h2>
-<pre><code><span class="c"># 1. Create the database so the Radiator service account can write to it</span>
-sudo ./yubikey-db.sh init --owner radiator:radiator
-
-<span class="c"># 2. Load users from a CSV file (check the file first, then import it)</span>
-sudo ./yubikey-db.sh import --dry-run users.csv
-sudo ./yubikey-db.sh import users.csv
-
-<span class="c"># 3. Print the Radiator config block and paste it into radius.cfg</span>
-./yubikey-db.sh config
-
-<span class="c"># 4. Confirm the users are loaded</span>
-sudo ./yubikey-db.sh list</code></pre>
-  <p>The database is created at <code>/etc/radiator/db/yubicred.db</code> unless you set a different path with <code>-d</code> (see <a href="#global-options">Global options</a>).</p>
+<section id="what-you-need" class="level2">
+<h2>What you need</h2>
+<ul>
+<li><strong>Radiator packages from Radiator Software</strong>, for
+Ubuntu 26.04. This guide uses <code>radiator_4.30-1_all.deb</code> and
+<code>radiator-radius-utilxs_2.4-4.resolute_amd64.deb</code>. The
+<code>radiator</code> package needs no license file; a
+<code>radiator-locked</code> package needs
+<code>/etc/radiator/license.conf</code> from Radiator Software.</li>
+<li><strong>Ubuntu 26.04 LTS</strong> for the Radiator server and, for
+PostgreSQL, a <strong>PostgreSQL 18</strong> server (Ubuntu 26.04's
+default).</li>
+<li><strong>YubiKeys</strong> with a free OTP slot, and <a
+href="https://www.yubico.com/support/download/yubikey-manager/">YubiKey
+Manager</a> (<code>ykman</code>) on a trusted workstation to program
+them.</li>
+<li>For the lab and the automated test: <strong>Docker</strong>, usable
+without <code>sudo</code> (membership of the <code>docker</code>
+group).</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Machine</th>
+<th>Packages</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Radiator server</td>
+<td>The Radiator packages, <code>libauth-yubikey-decrypter-perl</code>,
+<code>libcrypt-rijndael-perl</code>, and
+<code>libdbd-sqlite3-perl</code> + <code>sqlite3</code> (SQLite) or
+<code>libdbd-pg-perl</code> + <code>postgresql-client</code>
+(PostgreSQL)</td>
+</tr>
+<tr>
+<td>Where you run the scripts (usually the Radiator server)</td>
+<td><code>bash</code>, <code>perl</code>, <code>sqlite3</code> or
+<code>postgresql-client</code>; <code>libcrypt-rijndael-perl</code> for
+<code>verify</code></td>
+</tr>
+<tr>
+<td>PostgreSQL server (if separate)</td>
+<td><code>postgresql</code></td>
+</tr>
+<tr>
+<td>Workstation that programs keys</td>
+<td><code>ykman</code></td>
+</tr>
+</tbody>
+</table>
 </section>
-
-<section id="step-1">
-  <h2>Step 1: Program the YubiKeys</h2>
-  <p>Do this once for each YubiKey, on a trusted workstation. The command overwrites OTP slot 1 or 2, which is the slot that types an OTP when the key is touched briefly.</p>
-  <div class="callout warn">
-    <span class="label">Warning</span>
-    <p>Slot 1's factory configuration can't be restored. After you reprogram it, the key no longer works with services that check OTPs through YubiCloud.</p>
-  </div>
-<pre><code>ykman otp yubico 2 --serial-public-id --generate-private-id --generate-key</code></pre>
-  <p><code>ykman</code> shows three values. Record them for this user:</p>
-  <div class="table-wrap"><table class="wide">
-    <thead><tr><th>ykman output</th><th>CSV column</th><th>Format</th></tr></thead>
-    <tbody>
-      <tr><td>Public ID</td><td><code>public_id</code></td><td>12 modhex characters (only <code>cbdefghijklnrtuv</code>)</td></tr>
-      <tr><td>Private ID</td><td><code>private_id</code></td><td>12 hex characters</td></tr>
-      <tr><td>Secret key</td><td><code>aes_key</code></td><td>32 hex characters</td></tr>
-    </tbody>
-  </table></div>
-  <div class="callout danger">
-    <span class="label">Do not</span>
-    <p>Do not add <code>--upload</code>. That option sends the key to Yubico.</p>
-  </div>
-  <p>To use a public ID that you choose instead of one based on the serial number, replace <code>--serial-public-id</code> with <code>--public-id &lt;modhex&gt;</code>.</p>
+<section id="try-it-in-a-lab-container" class="level2">
+<h2>Try it in a lab container</h2>
+<p>A lab shows the whole setup working before you touch a server, and
+needs no YubiKey: <code>tests/make-otp.sh</code> makes OTPs for test
+keys. The container is Ubuntu 26.04 with Radiator, SQLite and PostgreSQL
+18.</p>
+<section id="build-the-lab-image" class="level3">
+<h3>Build the lab image</h3>
+<p>Put the two Radiator packages in a directory of their own, then build
+the image from the repository's
+<code>tests/radiator/Dockerfile</code>:</p>
+<pre class="bash"><code>git clone https://github.com/robert-patrick-texas/radiator-yubikey.git
+cd radiator-yubikey
+mkdir -p ~/radiator-packages        # copy radiator_*.deb and radiator-radius-utilxs_*.deb here
+docker build -t radiator-yubikey-lab -f tests/radiator/Dockerfile ~/radiator-packages</code></pre>
+<p>Start a container with the repository mounted read-only at
+<code>/opt/yubikey-db</code>. You work as root inside it, so the
+commands below have no <code>sudo</code>:</p>
+<pre class="bash"><code>docker run -it --rm --name yk-lab -v &quot;$PWD:/opt/yubikey-db:ro&quot; -w /opt/yubikey-db radiator-yubikey-lab bash</code></pre>
 </section>
-
-<section id="step-2">
-  <h2>Step 2: Create the database</h2>
-<pre><code>sudo ./yubikey-db.sh init --owner radiator:radiator</code></pre>
-  <ul>
-    <li><code>init</code> is safe to run again. It doesn't change an existing table or its data.</li>
-    <li><code>--owner</code> should be the account that the Radiator service runs as. Radiator writes to the database after every login to save the counters that block replayed OTPs. SQLite also creates a temporary journal file next to the database, so Radiator needs write access to the <strong>folder</strong> as well as the file. If Radiator runs as <code>root</code>, you can leave out <code>--owner</code>.</li>
-    <li>New files are created with mode <code>0640</code> and new folders with <code>0750</code>.</li>
-  </ul>
+<section id="sqlite-in-the-lab" class="level3">
+<h3>SQLite in the lab</h3>
+<p>Create the database, add a test user, and install the Radiator
+configuration (sections 6 to 8 explain each step):</p>
+<pre class="bash"><code>./yubikey-db.sh init --owner radiator:radiator
+./yubikey-db.sh add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w 1234
+./yubikey-db.sh config &gt; /etc/radiator/conf.d/yubikey.conf
+install -m 0640 -o root -g radiator radiator.example.conf /etc/radiator/radiator.conf</code></pre>
+<p>Start Radiator as the <code>radiator</code> user, the way its systemd
+unit does:</p>
+<pre class="bash"><code>sudo -u radiator /opt/radiator/radiator/radiusd -foreground -no_pid_file -config_file /etc/radiator/radiator.conf &amp;
+sleep 2</code></pre>
+<p>Log in with an OTP for alice's test key (counter 1), then try the
+same OTP again:</p>
+<pre class="bash"><code>OTP=$(tests/make-otp.sh vvccccbbcdef 4a6f8e2d1c3b 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d 1)
+/opt/radiator/radiator/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -user alice -password &quot;1234:$OTP&quot;
+/opt/radiator/radiator/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -user alice -password &quot;1234:$OTP&quot;
+tail -2 /var/log/radiator/authentication.log</code></pre>
+<p>The first login prints <code>OK</code>; the second prints
+<code>Rejected: Request Denied</code>, and the log gives the reason,
+<code>Replay attack detected</code>. Check the next OTP without
+Radiator, and look at the saved counters:</p>
+<pre class="bash"><code>printf &#39;%s\n&#39; 1234 &quot;$(tests/make-otp.sh vvccccbbcdef 4a6f8e2d1c3b 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d 2)&quot; | ./yubikey-db.sh verify -u alice
+./yubikey-db.sh list</code></pre>
 </section>
-
-<section id="step-3">
-  <h2>Step 3: Load users</h2>
-
-  <h3 id="csv-import">Option A: Bulk import from a CSV file</h3>
-  <p>Create a CSV file with these columns:</p>
-<pre><code>username,public_id,private_id,aes_key,password,active
-alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,1234,1
-bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,yes</code></pre>
-  <div class="table-wrap"><table class="wide">
-    <thead><tr><th>Column</th><th>Required</th><th>Notes</th></tr></thead>
-    <tbody>
-      <tr><td><code>username</code></td><td>Yes</td><td>The RADIUS login name. Allowed characters: letters, digits, and <code>. _ @ + -</code></td></tr>
-      <tr><td><code>public_id</code></td><td>Yes</td><td>YubiKey public ID: 12 modhex characters. Radiator accepts no other length.</td></tr>
-      <tr><td><code>private_id</code></td><td>Yes</td><td>12 hex characters. 12 modhex characters are also accepted and converted to hex.</td></tr>
-      <tr><td><code>aes_key</code></td><td>Yes</td><td>32 hex characters. Spaces and colons are removed.</td></tr>
-      <tr><td><code>password</code></td><td>No</td><td>Static password or PIN for two-factor logins. Leave it empty if users log in with the OTP only.</td></tr>
-      <tr><td><code>active</code></td><td>No</td><td><code>1</code>/<code>0</code>, <code>true</code>/<code>false</code>, or <code>yes</code>/<code>no</code>. The default is <code>1</code>.</td></tr>
-    </tbody>
-  </table></div>
-  <p>CSV rules:</p>
-  <ul>
-    <li>The header row is optional.</li>
-    <li>Blank lines and lines that start with <code>#</code> are skipped.</li>
-    <li>Windows (CRLF) line endings are accepted.</li>
-    <li>Spaces around fields and double quotes around a field are removed.</li>
-    <li><strong>Fields can't contain commas</strong>, including passwords.</li>
-    <li>One user can have several YubiKeys: add one row per key.</li>
-  </ul>
-  <p>Import steps:</p>
-<pre><code>chmod 600 users.csv                                <span class="c"># the file contains secret keys</span>
-sudo ./yubikey-db.sh import --dry-run users.csv    <span class="c"># check every row; makes no changes</span>
-sudo ./yubikey-db.sh import users.csv              <span class="c"># load the users</span>
-shred -u users.csv                                 <span class="c"># securely delete the file when done</span></code></pre>
-  <p>How the import works:</p>
-  <ul>
-    <li>Every row is checked first: field formats, plus duplicate public IDs or private IDs within the file. Problems are reported with their line numbers.</li>
-    <li>If any row is invalid, <strong>nothing is imported</strong>. Fix the file, or add <code>--skip-invalid</code> to load only the valid rows.</li>
-    <li>Valid rows are loaded in <strong>one transaction</strong>. If any row fails (for example, because the YubiKey is already in the database), none are loaded.</li>
-    <li>Add <code>--replace</code> to overwrite YubiKeys that are already in the database, for example after reprogramming them.</li>
-  </ul>
-  <p>See <code>users.example.csv</code> for a working example.</p>
-
-  <h3 id="single-add">Option B: Add one user</h3>
-  <p>If you run <code>add</code> with no values, it asks for each one. The private ID, AES key, and password aren't shown as you type:</p>
-<pre><code>sudo ./yubikey-db.sh add</code></pre>
-  <p>You can also pass the values as options:</p>
-<pre><code>sudo ./yubikey-db.sh add -u alice -P vvccccbbcdef        <span class="c"># asks for the private ID, key, and password</span>
-sudo ./yubikey-db.sh add -u svc.backup -P vvccccbbcdeh --no-password</code></pre>
-  <div class="callout warn">
-    <span class="label">Caution</span>
-    <p>Values passed with <code>-k</code> (AES key) and <code>-w</code> (password) can be seen by other users in <code>ps</code> and are saved in your shell history. Let the script ask for them, or use a CSV file.</p>
-  </div>
+<section id="postgresql-in-the-lab" class="level3">
+<h3>PostgreSQL in the lab</h3>
+<p>Start PostgreSQL, create its roles and database (root is the lab's
+admin), copy alice over from SQLite, and point Radiator at
+PostgreSQL:</p>
+<pre class="bash"><code>pg_ctlcluster 18 main start
+sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin root
+./yubikey-db-migrate.sh /etc/radiator/db/yubicred.db
+./yubikey-db.sh -b pg config &gt; /etc/radiator/conf.d/yubikey.conf
+pkill -f radiusd; sleep 1
+sudo -u radiator /opt/radiator/radiator/radiusd -foreground -no_pid_file -config_file /etc/radiator/radiator.conf &amp;
+sleep 2</code></pre>
+<p>The counters came along, so the OTP that <code>verify</code> used
+(counter 2) is rejected, and the next one is accepted:</p>
+<pre class="bash"><code>for n in 2 3; do
+    /opt/radiator/radiator/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -user alice \
+        -password &quot;1234:$(tests/make-otp.sh vvccccbbcdef 4a6f8e2d1c3b 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d $n)&quot;
+done
+./yubikey-db.sh -b pg list</code></pre>
 </section>
-
-<section id="step-4">
-  <h2>Step 4: Configure Radiator</h2>
-  <p>Print a config block that already contains your database path:</p>
-<pre><code>./yubikey-db.sh config
-<span class="c"># or, for a database in another location:</span>
-./yubikey-db.sh -d /srv/radius/yubi.db config</code></pre>
-  <p>Paste the output into <code>radius.cfg</code> and reference it from your <code>&lt;Handler&gt;</code> with <code>AuthBy YubiKeyLocal</code>. The block it prints:</p>
-<pre><code>&lt;AuthBy SQLYUBIKEY&gt;
+<section id="with-a-real-yubikey" class="level3">
+<h3>With a real YubiKey</h3>
+<p>Program a spare YubiKey as in <a href="#program-the-yubikeys">Program
+the YubiKeys</a>, add it (the script asks for the private ID, AES key
+and PIN), then touch the YubiKey when asked:</p>
+<pre class="bash"><code>./yubikey-db.sh -b pg add -u you -P &lt;public ID from ykman&gt;
+./yubikey-db.sh -b pg verify -u you</code></pre>
+<p>For a login through Radiator, read the OTP into a variable first,
+because the YubiKey presses Enter after the OTP:</p>
+<pre class="bash"><code>read -rsp &#39;PIN: &#39; PIN; echo; read -rp &#39;Touch the YubiKey: &#39; OTP
+/opt/radiator/radiator/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -user you -password &quot;$PIN:$OTP&quot;</code></pre>
+<p>Leave the container with <code>exit</code>; <code>--rm</code> deletes
+it.</p>
+</section>
+<section id="the-automated-test" class="level3">
+<h3>The automated test</h3>
+<p><code>tests/radiator/run.sh</code> builds the same image and runs 78
+checks of real Radiator logins in a throwaway container: SQLite with and
+without <code>Require2Factor</code>, PostgreSQL over the local socket
+and over TLS, the example wrapper, and a cutover from SQLite to
+PostgreSQL while Radiator runs. For each login it checks Radiator's
+answer and the reason it logs, and that <code>verify</code> agrees:</p>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages</code></pre>
+<p>It prints one <code>PASS</code> or <code>FAIL</code> line per check
+and ends with <code>Radiator 4.30-1: 78 passed, 0 failed</code>. Run it
+again with each new Radiator version.</p>
+</section>
+</section>
+<section id="install-on-the-servers" class="level2">
+<h2>Install on the servers</h2>
+<section id="radiator-server" class="level3">
+<h3>Radiator server</h3>
+<p>Install Radiator, the Perl modules its YubiKey support needs, and the
+database driver you use:</p>
+<pre class="bash"><code>sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb \
+                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl
+sudo apt install libdbd-sqlite3-perl sqlite3          # SQLite
+sudo apt install libdbd-pg-perl postgresql-client     # PostgreSQL</code></pre>
+<p>The package creates the <code>radiator</code> user, installs Radiator
+in <code>/opt/radiator/radiator</code> (its tools, such as
+<code>radpwtst</code>, aren't on the <code>PATH</code>), and adds the
+<code>radiator.service</code> systemd unit, which runs Radiator as
+<code>radiator</code> with <code>/etc/radiator/radiator.conf</code>.
+Check the modules:</p>
+<pre class="bash"><code>perl -MAuth::Yubikey_Decrypter -MCrypt::Rijndael -MDBD::SQLite -e &#39;print &quot;ok\n&quot;&#39;   # or -MDBD::Pg</code></pre>
+</section>
+<section id="the-scripts-1" class="level3">
+<h3>The scripts</h3>
+<p>Put the scripts where admins can run them, for example
+<code>/opt/yubikey-db</code>:</p>
+<pre class="bash"><code>sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/yubikey-db
+cd /opt/yubikey-db</code></pre>
+<p>The examples in this guide run from that directory. With SQLite, run
+the scripts with <code>sudo</code>, because the database belongs to
+<code>radiator</code>. With PostgreSQL, run them as yourself, as a
+member of the admin role (set up in <a
+href="#create-the-database">Create the database</a>);
+<code>export DB_BACKEND=pg</code> in your <code>~/.profile</code> saves
+typing <code>-b pg</code> every time.</p>
+</section>
+<section id="postgresql-server" class="level3">
+<h3>PostgreSQL server</h3>
+<p>On the server that will hold the database (the Radiator server
+itself, or a separate one):</p>
+<pre class="bash"><code>sudo apt install postgresql</code></pre>
+</section>
+</section>
+<section id="program-the-yubikeys" class="level2">
+<h2>Program the YubiKeys</h2>
+<p>Do this once for each YubiKey, on a trusted workstation. The command
+overwrites OTP slot 2, which types an OTP on a long touch (slot 1 is the
+short touch).</p>
+<div class="warning">
+<div class="title">
+<p>Warning</p>
+</div>
+<p>Slot 1's factory configuration can't be restored. After you reprogram
+it, the key no longer works with services that check OTPs through
+YubiCloud. Use slot 2 unless you're sure.</p>
+</div>
+<pre class="bash"><code>ykman otp yubico 2 --serial-public-id --generate-private-id --generate-key</code></pre>
+<p><code>ykman</code> shows three values. Record them for this user:</p>
+<table>
+<thead>
+<tr>
+<th>ykman output</th>
+<th><code>yubikey-db.sh</code> option</th>
+<th>CSV column</th>
+<th>Format</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Public ID</td>
+<td><code>-P</code></td>
+<td><code>public_id</code></td>
+<td>12 modhex characters (only <code>cbdefghijklnrtuv</code>)</td>
+</tr>
+<tr>
+<td>Private ID</td>
+<td><code>-p</code></td>
+<td><code>private_id</code></td>
+<td>12 hex characters</td>
+</tr>
+<tr>
+<td>Secret key</td>
+<td><code>-k</code></td>
+<td><code>aes_key</code></td>
+<td>32 hex characters</td>
+</tr>
+</tbody>
+</table>
+<div class="caution">
+<div class="title">
+<p>Caution</p>
+</div>
+<p>Do <strong>not</strong> add <code>--upload</code>: it sends the key
+to Yubico.</p>
+</div>
+<p>To choose the public ID yourself, replace
+<code>--serial-public-id</code> with
+<code>--public-id &lt;12 modhex characters&gt;</code>. Radiator accepts
+only 12-character public IDs.</p>
+</section>
+<section id="create-the-database" class="level2">
+<h2>Create the database</h2>
+<section id="sqlite" class="level3">
+<h3>SQLite</h3>
+<pre class="bash"><code>sudo ./yubikey-db.sh init --owner radiator:radiator</code></pre>
+<p>This creates <code>/etc/radiator/db/yubicred.db</code> (use
+<code>-d FILE</code> for another path). Radiator writes to the database
+after every login, and SQLite writes a journal file next to it, so
+<code>--owner</code> gives the <code>radiator</code> user the file
+<strong>and</strong> its folder. <code>init</code> is safe to run
+again.</p>
+</section>
+<section id="postgresql-on-the-radiator-server" class="level3">
+<h3>PostgreSQL on the Radiator server</h3>
+<p>Create the roles and the database as the <code>postgres</code>
+superuser, and make yourself an admin:</p>
+<pre class="bash"><code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin &quot;$USER&quot;</code></pre>
+<p>This creates:</p>
+<ul>
+<li>the database <code>yubikey</code> (<code>-d NAME</code> for another
+name), with the <code>yubikeys</code> table;</li>
+<li>the role <code>yubikey_admin</code>, which owns them;
+<code>--admin LOGIN</code> makes a login a member, and you can repeat
+it;</li>
+<li>the role <code>radiator</code>, Radiator's login. It can read the
+lookup columns and update only the counters and the access time.</li>
+</ul>
+<p>Radiator connects over the local socket, where Ubuntu's PostgreSQL
+uses peer authentication: the <code>radiator</code> OS user logs in as
+the <code>radiator</code> role with no password. Admins log in the same
+way as themselves.</p>
+</section>
+<section id="postgresql-on-a-separate-server" class="level3">
+<h3>PostgreSQL on a separate server</h3>
+<p>Radiator then connects over the network, with TLS and a password.
+Below, the database server is <code>db.example.com</code>, the Radiator
+server <code>192.0.2.21</code>, and the admin <code>opsadmin</code>
+works on the Radiator server.</p>
+<p><strong>On the database server:</strong></p>
+<ol type="1">
+<li><p>Install a TLS certificate for the name Radiator connects to. Use
+your own CA if you have one. For a lab, make a CA and a certificate:</p>
+<pre class="bash"><code>openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj &quot;/CN=YubiKey DB CA&quot; -keyout ca.key -out ca.crt
+openssl req -newkey rsa:3072 -nodes -subj &quot;/CN=db.example.com&quot; -addext &quot;subjectAltName=DNS:db.example.com&quot; \
+        -keyout server.key -out server.csr
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 -copy_extensions copy -out server.crt
+sudo install -m 0644 -o postgres -g postgres server.crt /etc/postgresql/18/main/server.crt
+sudo install -m 0600 -o postgres -g postgres server.key /etc/postgresql/18/main/server.key</code></pre>
+<p>Keep <code>ca.key</code> offline. Radiator's server needs only
+<code>ca.crt</code>.</p></li>
+<li><p>Make PostgreSQL listen on the network with that certificate:</p>
+<pre class="bash"><code>sudo tee /etc/postgresql/18/main/conf.d/yubikey.conf &gt;/dev/null &lt;&lt;&#39;EOF&#39;
+listen_addresses = &#39;*&#39;
+ssl = on
+ssl_cert_file = &#39;/etc/postgresql/18/main/server.crt&#39;
+ssl_key_file = &#39;/etc/postgresql/18/main/server.key&#39;
+EOF</code></pre></li>
+<li><p>Allow <code>radiator</code> and <code>opsadmin</code> from the
+Radiator server, over TLS only. Add these lines to
+<code>/etc/postgresql/18/main/pg_hba.conf</code> <strong>above</strong>
+the first line that starts with <code>host</code>:</p>
+<pre class="text"><code>hostssl  yubikey  radiator  192.0.2.21/32  scram-sha-256
+hostssl  yubikey  opsadmin  192.0.2.21/32  scram-sha-256</code></pre>
+<p>Then <code>sudo systemctl restart postgresql</code>, and open TCP
+port 5432 to <code>192.0.2.21</code> in any firewall.</p></li>
+<li><p>Create the roles and the database, set Radiator's password (it
+asks for it), and give the admin a password:</p>
+<pre class="bash"><code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin opsadmin --set-password
+sudo -u postgres psql -c &#39;\password opsadmin&#39;</code></pre>
+<p>This needs the scripts on the database server too, only for this
+step.</p></li>
+</ol>
+<p><strong>On the Radiator server</strong>, as
+<code>opsadmin</code>:</p>
+<ol type="1">
+<li><p>Install the CA certificate where Radiator and the admins can read
+it:</p>
+<pre class="bash"><code>sudo install -m 0644 ca.crt /etc/radiator/pg-ca.crt</code></pre></li>
+<li><p>Tell <code>psql</code> and the scripts where the database is, and
+store the password (<code>~/.pgpass</code> must be mode
+<code>0600</code>):</p>
+<pre class="bash"><code>cat &gt;&gt; ~/.profile &lt;&lt;&#39;EOF&#39;
+export PGHOST=db.example.com PGUSER=opsadmin PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt
+export DB_BACKEND=pg
+EOF
+(umask 077; echo &#39;db.example.com:5432:yubikey:opsadmin:YOUR-PASSWORD&#39; &gt;&gt; ~/.pgpass)
+. ~/.profile
+./yubikey-db.sh list</code></pre>
+<p><code>list</code> shows an empty table when everything works.
+<code>verify-full</code> checks that the server's certificate is for
+<code>db.example.com</code> and signed by your CA.</p></li>
+</ol>
+<p>With these settings, <code>./yubikey-db.sh config</code> writes the
+same connection into Radiator's configuration: <code>host</code>,
+<code>port</code>, <code>sslmode=verify-full</code> and
+<code>sslrootcert</code>. You add Radiator's password in the next
+section.</p>
+</section>
+</section>
+<section id="configure-and-start-radiator" class="level2">
+<h2>Configure and start Radiator</h2>
+<section id="install-the-configuration" class="level3">
+<h3>Install the configuration</h3>
+<p>The Radiator package's sample
+<code>/etc/radiator/radiator.conf</code> is for a first test only.</p>
+<div class="caution">
+<div class="title">
+<p>Caution</p>
+</div>
+<p>The sample <code>radiator.conf</code> <strong>accepts every login
+from 127.0.0.1</strong> without a password check, and accepts requests
+from <strong>any</strong> client that uses the secret
+<code>mysecret</code>. If you add the YubiKey clause to it, a test with
+<code>radpwtst</code> on the server succeeds without ever reaching the
+database. Replace it.</p>
+</div>
+<p>Install <code>radiator.example.conf</code> in its place, then set
+your RADIUS clients:</p>
+<pre class="bash"><code>sudo cp -p /etc/radiator/radiator.conf /etc/radiator/radiator.conf.orig
+sudo install -m 0640 -o root -g radiator radiator.example.conf /etc/radiator/radiator.conf
+sudoedit /etc/radiator/radiator.conf</code></pre>
+<p>In the editor, change the <code>Secret</code> of
+<code>&lt;Client 127.0.0.1&gt;</code> (used for tests on the server),
+and replace the <code>&lt;Client 192.0.2.10&gt;</code> example with one
+block per RADIUS client (VPN gateway, switch, wireless controller), each
+with its own long random secret.</p>
+<p>Write the YubiKey clause from <code>yubikey-db.sh config</code> to
+<code>/etc/radiator/conf.d/yubikey.conf</code>, which
+<code>radiator.conf</code> includes. Create the file first, so it is
+readable only by root and <code>radiator</code>; <code>tee</code> keeps
+that owner and mode:</p>
+<pre class="bash"><code>sudo touch /etc/radiator/conf.d/yubikey.conf
+sudo chown root:radiator /etc/radiator/conf.d/yubikey.conf
+sudo chmod 0640 /etc/radiator/conf.d/yubikey.conf
+./yubikey-db.sh config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null          # SQLite
+./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null    # PostgreSQL</code></pre>
+<p>For PostgreSQL on a separate server, also put Radiator's password on
+the <code>DBAuth</code> line
+(<code>sudoedit /etc/radiator/conf.d/yubikey.conf</code>). This is why
+the file must not be readable by other users.</p>
+<p>The clause it writes, for SQLite:</p>
+<pre class="apache"><code>&lt;AuthBy SQLYUBIKEY&gt;
     Identifier   YubiKeyLocal
     DBSource     dbi:SQLite:dbname=/etc/radiator/db/yubicred.db
     DBUsername
     DBAuth
     AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
-    UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+    UpdateQuery  update yubikeys set accessed=datetime(%5,&#39;unixepoch&#39;), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
     Require2Factor
     CheckSecretId
 &lt;/AuthBy&gt;</code></pre>
-  <p>What the settings do:</p>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Setting</th><th>Purpose</th></tr></thead>
-    <tbody>
-      <tr><td><code>AuthSelect</code></td><td>Finds a row by <strong>both</strong> the username and the YubiKey's public ID. This lets one user have several YubiKeys and stops one user's YubiKey from working for another user.</td></tr>
-      <tr><td><code>UpdateQuery</code></td><td>Saves the counters after each login. It takes the time from Radiator's <code>%5</code> value (the time in seconds) because SQLite doesn't support <code>current_timestamp()</code>.</td></tr>
-      <tr><td><code>Require2Factor</code></td><td>Makes every login the static password followed by the OTP, with or without a colon: <code>1234:vvccccbbcdef…</code> or <code>1234vvccccbbcdef…</code>. A user with <strong>no</strong> stored password is then always rejected. <strong>Remove this line</strong> if users log in with the OTP only. Without it, Radiator accepts the OTP alone <strong>even for users who have a password</strong>, and checks a password only when one is typed in front of the OTP.</td></tr>
-      <tr><td><code>CheckSecretId</code></td><td>Also checks the private ID inside the OTP against the database.</td></tr>
-    </tbody>
-  </table></div>
-  <p>Restart Radiator after you change its configuration.</p>
+<ul>
+<li><code>AuthSelect</code> finds the row by both the username and the
+public ID, so a user can have several YubiKeys and one user's YubiKey
+can't log in as another user.</li>
+<li><code>UpdateQuery</code> saves the counters after each login. For
+PostgreSQL it uses <code>to_timestamp(%5)</code>, because Radiator's
+default <code>current_timestamp()</code> isn't valid there.</li>
+<li><code>CheckSecretId</code> checks the private ID inside the OTP
+against the database.</li>
+<li><code>Require2Factor</code>: see below.</li>
+</ul>
 </section>
-
-<section id="step-5">
-  <h2>Step 5: Test a login</h2>
-  <p>Use Radiator's <code>radpwtst</code> tool. Touch the YubiKey where the OTP goes:</p>
-<pre><code><span class="c"># Two-factor (Require2Factor set)</span>
-radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
-         -user alice -password '1234:&lt;touch YubiKey here&gt;'
-
-<span class="c"># OTP only</span>
-radpwtst -s 127.0.0.1 -secret &lt;shared-secret&gt; -noacct \
-         -user alice -password '&lt;touch YubiKey here&gt;'</code></pre>
-  <p>Then check that the counters were updated:</p>
-<pre><code>sudo ./yubikey-db.sh list alice      <span class="c"># "accessed" and "counter" should now be filled in</span></code></pre>
-  <p>Enter the <strong>same</strong> OTP a second time. It must be rejected; that's the replay protection working.</p>
-  <div class="callout note">
-    <span class="label">Trace 4 logs secrets</span>
-    <p><code>Trace 4</code> writes every user's AES key and password hash to Radiator's log (the <code>AuthSQLYUBIKEY read:</code> lines). Use it only on a test server with test keys, and delete the log afterwards.</p>
-  </div>
+<section id="choose-pin-and-otp-or-otp-only" class="level3">
+<h3>Choose: PIN and OTP, or OTP only</h3>
+<table>
+<thead>
+<tr>
+<th><code>Require2Factor</code></th>
+<th>Users with a PIN</th>
+<th>Users without a PIN</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Set (as <code>config</code> writes it)</td>
+<td>Must type <code>PIN:OTP</code> or <code>PINOTP</code></td>
+<td><strong>Always rejected</strong></td>
+</tr>
+<tr>
+<td>Removed</td>
+<td>May type just the OTP: the PIN is checked only if they type one</td>
+<td>Type just the OTP</td>
+</tr>
+</tbody>
+</table>
+<p>Keep <code>Require2Factor</code> and give every user a PIN, unless
+you've decided on OTP-only logins for everyone. Without it, the PIN is
+<strong>optional</strong> even for users who have one. If you remove it,
+also use <code>verify --no-require2factor</code> (and
+<code>require2factor=no</code> in the example wrapper), so their checks
+match Radiator.</p>
 </section>
-
-<section id="day-to-day">
-  <h2>Day-to-day management</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Task</th><th>Command</th></tr></thead>
-    <tbody>
-      <tr><td>List all users and keys</td><td><code>sudo ./yubikey-db.sh list</code></td></tr>
-      <tr><td>Show one user</td><td><code>sudo ./yubikey-db.sh list alice</code></td></tr>
-      <tr><td>Suspend a user (all of their keys)</td><td><code>sudo ./yubikey-db.sh disable alice</code></td></tr>
-      <tr><td>Suspend one lost YubiKey</td><td><code>sudo ./yubikey-db.sh disable alice vvccccbbcdef</code></td></tr>
-      <tr><td>Turn a user back on</td><td><code>sudo ./yubikey-db.sh enable alice</code></td></tr>
-      <tr><td>Remove one YubiKey</td><td><code>sudo ./yubikey-db.sh delete alice vvccccbbcdef</code></td></tr>
-      <tr><td>Remove a user completely</td><td><code>sudo ./yubikey-db.sh delete alice</code></td></tr>
-      <tr><td>Replace a reprogrammed YubiKey</td><td><code>sudo ./yubikey-db.sh add --replace -u alice -P vvccccbbcdef</code></td></tr>
-    </tbody>
-  </table></div>
-  <p><code>list</code> never shows AES keys or passwords.</p>
+<section id="check-and-start" class="level3">
+<h3>Check and start</h3>
+<p>Check the configuration as the <code>radiator</code> user, then look
+at the end of the log:</p>
+<pre class="bash"><code>sudo -u radiator /opt/radiator/radiator/radiusd -c -foreground -no_pid_file -config_file /etc/radiator/radiator.conf
+sudo tail -n 5 /var/log/radiator/radiator.log</code></pre>
+<p>Fix anything reported as <code>ERR</code> or <code>WARNING</code>;
+<code>radiusd -c</code> exits with 0 even then.</p>
+<div class="important">
+<div class="title">
+<p>Important</p>
+</div>
+<p>Run <code>radiusd</code> checks as <code>radiator</code>, never as
+root. Run as root, it creates
+<code>/var/log/radiator/radiator.log</code> owned by root, and the
+service can then no longer write its log
+(<code>Log could not append ... Permission denied</code>). If that
+happened,
+<code>sudo chown radiator:radiator /var/log/radiator/*</code>.</p>
+</div>
+<p>Start Radiator now and at every boot, and check it's running:</p>
+<pre class="bash"><code>sudo systemctl enable --now radiator
+systemctl status radiator</code></pre>
+<p>After each change to the configuration,
+<code>sudo systemctl restart radiator</code>. If a firewall runs on the
+server, allow RADIUS from each client, for example
+<code>sudo ufw allow from 192.0.2.10 to any port 1812 proto udp</code>.</p>
+<p>Radiator logs to <code>/var/log/radiator/radiator.log</code>, and
+each login, with the reason for a reject, to
+<code>/var/log/radiator/authentication.log</code>. Only root and
+<code>radiator</code> can read them, so use <code>sudo</code> to read
+them.</p>
 </section>
-
-<section id="reference">
-  <h2>Command reference</h2>
-<pre><code>yubikey-db.sh [global options] &lt;command&gt; [command options]</code></pre>
-
-  <h3 id="global-options">Global options</h3>
-  <div class="table-wrap"><table class="wide">
-    <thead><tr><th>Option</th><th>Environment variable</th><th>Default</th><th>Meaning</th></tr></thead>
-    <tbody>
-      <tr><td><code>-d, --db FILE</code></td><td><code>DB_FILE</code></td><td><code>/etc/radiator/db/yubicred.db</code></td><td>Database file</td></tr>
-      <tr><td><code>-e, --secret-encoding ENC</code></td><td><code>SECRET_ENCODING</code></td><td><code>base64</code></td><td>How the AES key is stored: <code>base64</code> or <code>hex</code></td></tr>
-      <tr><td><code>-H, --password-hash MODE</code></td><td><code>PASSWORD_HASH</code></td><td><code>crypt</code></td><td>How passwords are stored: <code>crypt</code> (SHA-512 hash) or <code>clear</code> (plain text)</td></tr>
-      <tr><td><code>-h, --help</code></td><td></td><td></td><td>Show help</td></tr>
-      <tr><td></td><td><code>SQLITE3</code></td><td><code>sqlite3</code></td><td>Path to the <code>sqlite3</code> program</td></tr>
-    </tbody>
-  </table></div>
-  <p>Global options go <strong>before</strong> the command, for example <code>./yubikey-db.sh -d /tmp/test.db list</code>.</p>
-
-  <h3 id="commands">Commands</h3>
-  <div class="table-wrap"><table class="wide">
-    <thead><tr><th>Command</th><th>Options</th><th>Description</th></tr></thead>
-    <tbody>
-      <tr><td><code>init</code></td><td><code>-o, --owner USER[:GROUP]</code></td><td>Create the folder, database file, table, and index</td></tr>
-      <tr><td><code>add</code></td><td><code>-u USER</code>, <code>-P PUBLIC_ID</code>, <code>-p PRIVATE_ID</code>, <code>-k AES_KEY</code>, <code>-w PASSWORD</code>, <code>--no-password</code>, <code>--inactive</code>, <code>--replace</code></td><td>Add one user and YubiKey. Asks for any value you leave out.</td></tr>
-      <tr><td><code>import</code></td><td><code>--dry-run</code>, <code>--skip-invalid</code>, <code>--replace</code>, <code>CSV_FILE</code></td><td>Bulk-load users from a CSV file</td></tr>
-      <tr><td><code>list</code></td><td><code>[USER]</code></td><td>Show users and keys without their secrets</td></tr>
-      <tr><td><code>enable</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Set <code>active = 1</code></td></tr>
-      <tr><td><code>disable</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Set <code>active = 0</code></td></tr>
-      <tr><td><code>delete</code></td><td><code>USER [PUBLIC_ID]</code></td><td>Delete the user's rows (or one key)</td></tr>
-      <tr><td><code>config</code></td><td></td><td>Print a sample <code>&lt;AuthBy SQLYUBIKEY&gt;</code> block</td></tr>
-    </tbody>
-  </table></div>
-  <p>The script exits with <code>0</code> on success and <code>1</code> on any error, so you can use it in other scripts and automation.</p>
 </section>
-
-<section id="database">
-  <h2>Database layout</h2>
-  <p>The table is <code>yubikeys</code>. There is one row per YubiKey.</p>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Column</th><th>Contents</th></tr></thead>
-    <tbody>
-      <tr><td><code>username</code></td><td>RADIUS login name. Indexed. Not unique, because one user can have several YubiKeys.</td></tr>
-      <tr><td><code>password</code></td><td>Static password or PIN: <code>{crypt}$6$...</code>, plain text, or empty</td></tr>
-      <tr><td><code>active</code></td><td><code>1</code> = allowed, <code>0</code> = disabled. Radiator disables a key only when this is <code>0</code> or empty; any other value, even the text <code>false</code>, lets it log in.</td></tr>
-      <tr><td><code>created</code></td><td>When the row was added (UTC)</td></tr>
-      <tr><td><code>accessed</code></td><td>Time of the last successful login (UTC). Empty until the first login.</td></tr>
-      <tr><td><code>tokenId</code></td><td>YubiKey public ID in modhex. Unique.</td></tr>
-      <tr><td><code>userId</code></td><td>YubiKey private ID in hex. Unique. This is the primary key.</td></tr>
-      <tr><td><code>secret</code></td><td>AES key, in base64 by default</td></tr>
-      <tr><td><code>counter</code>, <code>low</code>, <code>high</code></td><td>Counters that Radiator uses to block replayed OTPs</td></tr>
-    </tbody>
-  </table></div>
-  <p><code>--replace</code> resets a YubiKey's counters to 0. Only use it for a YubiKey that has just been reprogrammed.</p>
+<section id="add-accounts" class="level2">
+<h2>Add accounts</h2>
+<p>A row in the database is one YubiKey of one user. A user can have
+several YubiKeys. Each command below is for SQLite; add
+<code>-b pg</code> (or set <code>DB_BACKEND=pg</code>) for PostgreSQL,
+and leave out <code>sudo</code> there.</p>
+<section id="one-account" class="level3">
+<h3>One account</h3>
+<p><code>add</code> asks for each value you leave out; the private ID,
+AES key and PIN aren't shown as you type:</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh add                              # asks for everything
+sudo ./yubikey-db.sh add -u alice -P vvccccbbcdef     # asks for the private ID, key and PIN
+sudo ./yubikey-db.sh add -u kiosk -P vvccccbbcdeh --no-password</code></pre>
+<p>PINs are stored as salted SHA-512 <code>{crypt}</code> hashes.
+Options <code>-k</code> (AES key) and <code>-w</code> (PIN) also exist,
+but other users can see them in <code>ps</code> and they stay in your
+shell history, so let the script ask instead.</p>
+<p>If the YubiKey may already be in the database, add
+<code>--update</code> (see <a href="#update-and-replace">Update and
+replace</a>).</p>
 </section>
-
-<section id="security">
-  <h2>Security notes</h2>
-  <ul>
-    <li><strong>The database holds every user's AES key.</strong> Anyone who can read the file can copy those YubiKeys. Keep the file at <code>0640</code> or stricter, readable only by the Radiator account and root. Include it in encrypted backups only.</li>
-    <li><strong>CSV files hold the same secrets.</strong> Set them to <code>chmod 600</code>, don't commit them to Git or attach them to tickets, and delete them with <code>shred -u</code> after importing. The script warns you if a CSV file is readable by all users.</li>
-    <li>AES keys and passwords are sent to <code>sqlite3</code> through its input, not on its command line, so <code>ps</code> doesn't show them. The script checks the format of every value and quotes it safely.</li>
-    <li>Passwords are stored as salted SHA-512 <code>{crypt}</code> hashes by default. Only use <code>-H clear</code> if something else needs to read the plain-text password.</li>
-    <li>To revoke a lost YubiKey, use <code>disable</code> or <code>delete</code> straight away. Logins are checked against this database only, so there's nothing to revoke in a cloud service.</li>
-  </ul>
+<section id="many-accounts-from-a-csv-file" class="level3">
+<h3>Many accounts from a CSV file</h3>
+<pre class="csv"><code>username,public_id,private_id,aes_key,password,active
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,1234,1
+bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,5678,yes</code></pre>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Required</th>
+<th>Format</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>username</code></td>
+<td>Yes</td>
+<td>The RADIUS login name: letters, digits and
+<code>. _ @ + -</code></td>
+</tr>
+<tr>
+<td><code>public_id</code></td>
+<td>Yes</td>
+<td>12 modhex characters</td>
+</tr>
+<tr>
+<td><code>private_id</code></td>
+<td>Yes</td>
+<td>12 hex characters (12 modhex characters are converted to hex)</td>
+</tr>
+<tr>
+<td><code>aes_key</code></td>
+<td>Yes</td>
+<td>32 hex characters; spaces and colons are removed</td>
+</tr>
+<tr>
+<td><code>password</code></td>
+<td>No</td>
+<td>The PIN; empty for none</td>
+</tr>
+<tr>
+<td><code>active</code></td>
+<td>No</td>
+<td><code>1</code>/<code>0</code>, <code>true</code>/<code>false</code>,
+<code>yes</code>/<code>no</code>; default <code>1</code></td>
+</tr>
+</tbody>
+</table>
+<p>The header row is optional; blank lines and lines starting with
+<code>#</code> are skipped; Windows line endings are accepted; spaces
+and double quotes around a field are removed; <strong>fields can't
+contain commas</strong>.</p>
+<pre class="bash"><code>chmod 600 users.csv                                  # it holds AES keys
+sudo ./yubikey-db.sh import --dry-run users.csv      # check every row; changes nothing
+sudo ./yubikey-db.sh import users.csv
+shred -u users.csv</code></pre>
+<p>Every row is checked first, and if any is invalid, nothing is
+imported (<code>--skip-invalid</code> loads the valid rows). Valid rows
+are loaded in one transaction: all of them or none. Use <code>-</code>
+to read the CSV from standard input, for example from an encrypted file:
+<code>gpg -d users.csv.gpg | sudo ./yubikey-db.sh import -</code>.</p>
 </section>
-
-<section id="troubleshooting">
-  <h2>Troubleshooting</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th>Symptom</th><th>Cause and fix</th></tr></thead>
-    <tbody>
-      <tr><td><code>sqlite3 not found</code></td><td>Install <code>sqlite3</code>, or set <code>SQLITE3=/path/to/sqlite3</code>.</td></tr>
-      <tr><td class="wrap"><code>no write access to ... (run with sudo?)</code></td><td>Run the script with <code>sudo</code>, or as the account that owns the database.</td></tr>
-      <tr><td class="wrap"><code>UNIQUE constraint failed: yubikeys.tokenId</code> (or <code>userId</code>)</td><td>That YubiKey is already in the database. Add <code>--replace</code> if it was reprogrammed.</td></tr>
-      <tr><td class="wrap"><code>import failed and was rolled back</code></td><td>No rows were loaded. Fix the cause shown above the message and run the import again.</td></tr>
-      <tr><td class="wrap"><code>nothing imported; fix the rows above</code></td><td>One or more CSV rows are invalid. Fix them, or add <code>--skip-invalid</code>.</td></tr>
-      <tr><td>A disabled user can still log in, and <code>active</code> shows <code>false</code></td><td>The row was created with the old example commands; Radiator treats the text <code>false</code> as active. Run <code>disable</code> for the user, or see <a href="#upgrading">Upgrading old databases</a>.</td></tr>
-      <tr><td>A user with no static password is always rejected</td><td><code>Require2Factor</code> is set, and Radiator then rejects an empty stored password. Give the user a password, or remove <code>Require2Factor</code>.</td></tr>
-      <tr><td class="wrap">Logins fail and Radiator logs <code>attempt to write a readonly database</code></td><td>Radiator can't write to the file <strong>or its folder</strong>. Run <code>init --owner &lt;radiator-user&gt;</code> again.</td></tr>
-      <tr><td>Logins fail and Radiator logs <code>Bad Yubikey password</code></td><td>The AES key in the database isn't the one in the YubiKey. Check with <code>verify</code>, and load the key again with <code>add --update</code>.</td></tr>
-      <tr><td>Logins fail and Radiator logs <code>Bad Yubikey Secret-Id</code></td><td>The private ID in the database isn't the one in the YubiKey (<code>CheckSecretId</code>). Check it against the <code>ykman</code> output.</td></tr>
-      <tr><td>Radiator logs <code>Replay attack detected</code></td><td>That OTP, or a newer one from the same YubiKey, was already used. Touch the YubiKey again for a new OTP.</td></tr>
-      <tr><td>The first OTP works but the next ones fail</td><td><code>UpdateQuery</code> isn't saving counters. Check the folder permissions and the <code>UpdateQuery</code> line.</td></tr>
-      <tr><td><code>database is locked</code></td><td>Radiator is writing at that moment. The script waits up to 5 seconds, so run it again.</td></tr>
-    </tbody>
-  </table></div>
-
-  <h3 id="confirm">Confirmed with Radiator 4.30</h3>
-  <p>These were open questions in the Radiator reference manual. Radiator 4.30's source code and a test run against it (<code>tests/radiator/run.sh</code>) settle them:</p>
-  <ol>
-    <li><strong>AES key format.</strong> Radiator reads a <code>secret</code> of 32 hex characters as hex and anything else as base64, so the default (<code>base64</code>) and <code>-e hex</code> both work.</li>
-    <li><strong>Quoting of <code>%3</code> and <code>%7</code>.</strong> Radiator quotes the public ID, so the SQL reads <code>tokenId='vvccccbbcdef'</code>.</li>
-    <li><strong>Two-factor login format.</strong> <code>1234:OTP</code> and <code>1234OTP</code> both work.</li>
-    <li><strong>Public ID length.</strong> Radiator takes exactly 12 characters of public ID from a login, so <code>add</code> and <code>import</code> accept no other length.</li>
-    <li><strong><code>active</code>.</strong> Only <code>0</code> or an empty value disables a key.</li>
-  </ol>
-  <p>With a different Radiator version, run that test against it before you load users in bulk.</p>
+<section id="a-test-account-from-a-script" class="level3">
+<h3>A test account from a script</h3>
+<p><code>yubikey-db-user.example.sh</code> adds or updates one account
+from variables at the top of a copy of it, which suits test accounts you
+set up again and again. It sends the values to
+<code>import --update -</code> through a pipe, so they never appear in
+<code>ps</code> or a temporary file, shows the account, and then asks
+you to touch the YubiKey to run <code>verify</code>.</p>
+<pre class="bash"><code>install -m 0700 yubikey-db-user.example.sh ~/yk-user.sh   # your copy will hold an AES key
+nano ~/yk-user.sh       # set cred_username, cred_password, cred_publicid, cred_privateid, cred_secret,
+                        # and db_backend, db_name and require2factor if not the defaults
+sudo ~/yk-user.sh       # SQLite; for PostgreSQL run it as yourself
+shred -u ~/yk-user.sh   # when done</code></pre>
+<p>The YubiKey's public ID decides which record is meant; other YubiKeys
+of the user are left alone. The PIN can't contain a comma, start or end
+with a space, or be in double quotes.</p>
 </section>
-
-<section id="upgrading">
-  <h2>Upgrading a database built with the old example commands</h2>
-  <p>The original example commands created rows with these problems:</p>
-  <ul>
-    <li><code>"current_timestamp"</code> in double quotes stored the literal text <code>current_timestamp</code> in <code>created</code>, not the date and time.</li>
-    <li><code>active="true"</code> stored the text <code>true</code>, and <code>false</code> the text <code>false</code>. Radiator treats both as active, so a key set to <code>false</code> was <strong>not</strong> disabled.</li>
-  </ul>
-  <p>To fix the existing rows:</p>
-<pre><code>sudo sqlite3 /etc/radiator/db/yubicred.db &lt;&lt;'SQL'
-UPDATE yubikeys SET active = 1 WHERE active = 'true';
-UPDATE yubikeys SET active = 0 WHERE active = 'false';
-UPDATE yubikeys SET created = CURRENT_TIMESTAMP WHERE created = 'current_timestamp';
+</section>
+<section id="verify-credentials" class="level2">
+<h2>Verify credentials</h2>
+<section id="check-the-database-verify" class="level3">
+<h3>Check the database: <code>verify</code></h3>
+<p><code>verify</code> asks for a username, PIN and OTP and checks them
+the way Radiator 4.30 does, without Radiator, so it separates "the
+database is wrong" from "Radiator is misconfigured":</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh verify</code></pre>
+<pre class="text"><code>Username: alice
+Static password/PIN (Enter for none):
+YubiKey OTP (touch the YubiKey): vvccccbbcdefvbvkiggllhvureilrdbnvklrcfivibet
+Checking alice with YubiKey vvccccbbcdef in /etc/radiator/db/yubicred.db (Require2Factor on):
+  active:           yes
+  static password:  matches
+  OTP:              decrypts with the stored AES key
+  private ID:       matches
+  replay check:     passed (OTP counter 3, session 1; stored counter 0, session 0)
+Accepted. The OTP&#39;s counters were saved, so it cannot be used again.</code></pre>
+<p>Each line is one check, so a failure says what to fix: a
+<code>WRONG</code> PIN, an OTP that doesn't decrypt (the database has a
+different AES key from the YubiKey), a private ID that doesn't match, or
+a replayed OTP. It never shows the AES key or private ID. An accepted
+OTP's counters are saved, as Radiator saves them.</p>
+<ul>
+<li><code>-u USER</code> gives the username.
+<code>--no-require2factor</code> matches a Radiator without
+<code>Require2Factor</code>.</li>
+<li>Without a terminal, it reads the username (unless <code>-u</code> is
+given), the PIN and the OTP from standard input, one per line:
+<code>printf '%s\n' "$pin" "$otp" | ./yubikey-db.sh verify -u alice</code>.</li>
+<li>It exits with 0 if Radiator would accept the login, 1 if not.</li>
+</ul>
+</section>
+<section id="check-the-whole-path-radpwtst" class="level3">
+<h3>Check the whole path: <code>radpwtst</code></h3>
+<p><code>radpwtst</code> sends a real RADIUS request, so it also tests
+Radiator's configuration. On the Radiator server, with the secret of
+<code>&lt;Client 127.0.0.1&gt;</code>:</p>
+<pre class="bash"><code>read -rsp &#39;PIN: &#39; PIN; echo; read -rp &#39;Touch the YubiKey: &#39; OTP
+/opt/radiator/radiator/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -user alice -password &quot;$PIN:$OTP&quot;
+sudo tail -n 1 /var/log/radiator/authentication.log</code></pre>
+<p>It prints <code>OK</code>, or <code>Rejected: Request Denied</code>
+with the reason in the log. Send the same OTP again: it must be rejected
+with <code>Replay attack detected</code>. Without a YubiKey, make the
+OTP of a test key with <code>tests/make-otp.sh</code> (see the lab).
+<code>-auth_port 1812</code> matters: <code>radpwtst</code> uses port
+1645 by default.</p>
+<p>Finally, log in through a real RADIUS client: users type their PIN
+and then touch the YubiKey, in the password field.</p>
+</section>
+</section>
+<section id="maintain-accounts" class="level2">
+<h2>Maintain accounts</h2>
+<p>Add <code>-b pg</code> for PostgreSQL. <code>list</code> never shows
+AES keys or PINs.</p>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List all users and YubiKeys</td>
+<td><code>sudo ./yubikey-db.sh list</code></td>
+</tr>
+<tr>
+<td>Show one user</td>
+<td><code>sudo ./yubikey-db.sh list alice</code></td>
+</tr>
+<tr>
+<td>Check a user's PIN and OTP</td>
+<td><code>sudo ./yubikey-db.sh verify -u alice</code></td>
+</tr>
+<tr>
+<td>Change a PIN (counters kept)</td>
+<td><code>sudo ./yubikey-db.sh add --update -u alice -P vvccccbbcdef</code></td>
+</tr>
+<tr>
+<td>Give a user another YubiKey</td>
+<td><code>sudo ./yubikey-db.sh add -u alice -P vvccccbbcdeg</code></td>
+</tr>
+<tr>
+<td>Suspend a user (all their YubiKeys)</td>
+<td><code>sudo ./yubikey-db.sh disable alice</code></td>
+</tr>
+<tr>
+<td>Suspend one lost YubiKey</td>
+<td><code>sudo ./yubikey-db.sh disable alice vvccccbbcdef</code></td>
+</tr>
+<tr>
+<td>Turn a user back on</td>
+<td><code>sudo ./yubikey-db.sh enable alice</code></td>
+</tr>
+<tr>
+<td>Remove one YubiKey</td>
+<td><code>sudo ./yubikey-db.sh delete alice vvccccbbcdef</code></td>
+</tr>
+<tr>
+<td>Remove a user</td>
+<td><code>sudo ./yubikey-db.sh delete alice</code></td>
+</tr>
+<tr>
+<td>Back up everything, encrypted</td>
+<td><code>sudo ./yubikey-db.sh export - | gpg -e -r backup@example.com &gt; yubikeys.csv.gpg</code></td>
+</tr>
+<tr>
+<td>Restore a backup</td>
+<td><code>gpg -d yubikeys.csv.gpg | sudo ./yubikey-db.sh import --from-export -</code></td>
+</tr>
+</tbody>
+</table>
+<section id="update-and-replace" class="level3">
+<h3>Update and replace</h3>
+<p><code>add</code> and <code>import</code> refuse a YubiKey that is
+already in the database. Two options change that:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>--update</code></th>
+<th><code>--replace</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Same YubiKey (same public ID, private ID and AES key)</td>
+<td>Username, PIN and <code>active</code> updated; <strong>counters and
+times kept</strong></td>
+<td>Replaced; counters reset to 0</td>
+</tr>
+<tr>
+<td>Reprogrammed YubiKey (same public ID, new private ID or AES
+key)</td>
+<td>Replaced; counters reset to 0</td>
+<td>Replaced; counters reset to 0</td>
+</tr>
+<tr>
+<td>New YubiKey</td>
+<td>Added</td>
+<td>Added</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>--update</code> to change a PIN or move a YubiKey to
+another user: resetting the counters would let OTPs that were already
+used be accepted again. Use <code>--replace</code> only after
+programming the <strong>same</strong> values into a YubiKey again (for
+example into a replacement YubiKey), because the YubiKey's own counters
+then start again from 0. Each updated or replaced row is reported.</p>
+</section>
+<section id="a-lost-or-stolen-yubikey" class="level3">
+<h3>A lost or stolen YubiKey</h3>
+<ol type="1">
+<li>Disable it at once:
+<code>sudo ./yubikey-db.sh disable alice vvccccbbcdef</code>. Logins are
+checked only against this database, so nothing needs revoking at
+Yubico.</li>
+<li>When it won't come back, delete it:
+<code>sudo ./yubikey-db.sh delete alice vvccccbbcdef</code>.</li>
+<li>Program a new YubiKey and add it.</li>
+</ol>
+</section>
+<section id="backups" class="level3">
+<h3>Backups</h3>
+<p><code>export</code> writes every row and field to CSV, with AES keys
+as 32 hex characters, and <code>import --from-export</code> loads it
+into either database.</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh export - | gpg -e -r backup@example.com &gt; yubikeys-$(date +%F).csv.gpg
+gpg -d yubikeys-2026-10-12.csv.gpg | sudo ./yubikey-db.sh import --from-export --dry-run -
+gpg -d yubikeys-2026-10-12.csv.gpg | sudo ./yubikey-db.sh import --from-export --replace -</code></pre>
+<p>A restore brings back PINs (as stored), times and counters. With
+<code>--replace</code> it overwrites existing rows but <strong>never
+moves counters backward</strong>, so an old backup can't make used OTPs
+valid again. <code>export FILE</code> writes a file with mode
+<code>0600</code> instead, and refuses to overwrite one unless you add
+<code>--force</code>.</p>
+<p>You can also back up the database itself: for SQLite,
+<code>sudo sqlite3 /etc/radiator/db/yubicred.db ".backup '/root/yubicred-backup.db'"</code>
+takes a consistent copy while Radiator runs; for PostgreSQL, use
+<code>pg_dump</code>. Every backup holds every AES key: keep it
+encrypted.</p>
+</section>
+<section id="a-database-from-the-old-example-commands" class="level3">
+<h3>A database from the old example commands</h3>
+<p>The example statements that circulated before these scripts stored
+<code>created</code> as the text <code>current_timestamp</code>, and
+<code>active</code> as the text <code>true</code> or <code>false</code>.
+Radiator treats <strong>both</strong> texts as active, so a YubiKey set
+to <code>false</code> was never disabled. Fix those rows:</p>
+<pre class="bash"><code>sudo sqlite3 /etc/radiator/db/yubicred.db &lt;&lt;&#39;SQL&#39;
+UPDATE yubikeys SET active = 1 WHERE active = &#39;true&#39;;
+UPDATE yubikeys SET active = 0 WHERE active = &#39;false&#39;;
+UPDATE yubikeys SET created = CURRENT_TIMESTAMP WHERE created = &#39;current_timestamp&#39;;
 SQL</code></pre>
-  <p>The old commands also stored the AES key in hex, the private ID in modhex, and passwords in plain text. The cleanest fix is to export your source data to the CSV format above and re-import it with <code>--replace</code>, so that every row matches what this script creates.</p>
+<p>They also stored AES keys as hex, private IDs as modhex, and PINs in
+plain text. Radiator reads hex keys and plain-text PINs, but with
+<code>CheckSecretId</code> it rejects every login of a YubiKey whose
+private ID is stored as modhex. <code>export</code> and then
+<code>import --from-export --replace</code> rewrite every row in the
+format these scripts use (a modhex private ID becomes hex) and keep the
+counters; so does a move to PostgreSQL, which also reports each
+change.</p>
 </section>
-
-<section id="references">
-  <h2>References</h2>
-  <ul>
-    <li><a href="https://files.radiatorsoftware.com/radiator/ref/AuthBySQLYUBIKEY.html">Radiator reference: <code>&lt;AuthBy SQLYUBIKEY&gt;</code></a></li>
-    <li><a href="https://files.radiatorsoftware.com/radiator/ref/AuthSelect_AuthBySQLYUBIKEY.html">Radiator reference: <code>AuthSelect</code> for SQLYUBIKEY</a></li>
-    <li>The Radiator distribution's <code>goodies/yubikey.cfg</code> and <code>goodies/yubikey.txt</code></li>
-    <li><a href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey Manager CLI (<code>ykman</code>) documentation</a></li>
-  </ul>
-  <p class="top-link"><a href="#content">Back to top ↑</a></p>
-  <footer>
-    Radiator YubiKey Database Guide · Document version 1.0.1 · October 2026 · Goes with <code>yubikey-db.sh</code> and <code>users.example.csv</code>.
-  </footer>
 </section>
-
+<section id="move-from-sqlite-to-postgresql" class="level2">
+<h2>Move from SQLite to PostgreSQL</h2>
+<p><code>yubikey-db-migrate.sh</code> copies every user and YubiKey,
+<strong>with their counters</strong>, from the SQLite database into an
+empty PostgreSQL database, in one transaction. It reads a consistent
+snapshot, so Radiator keeps running on SQLite meanwhile, and commits
+only after checking every copied row against an independent SHA-256
+fingerprint of the snapshot. Rows from the old example commands are
+normalized and each change is reported (for example, an
+<code>active</code> of <code>false</code> becomes 0, and the report
+warns that those YubiKeys could log in before).</p>
+<p>The account that runs it must be a member of
+<code>yubikey_admin</code> and able to read the SQLite file, for example
+by joining the <code>radiator</code> group
+(<code>sudo usermod -aG radiator "$USER"</code>, then log in again).</p>
+<ol type="1">
+<li>Create the PostgreSQL database (see <a
+href="#create-the-database">Create the database</a>):
+<code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"</code>.</li>
+<li>Rehearse:
+<code>./yubikey-db-migrate.sh --dry-run /etc/radiator/db/yubicred.db</code>.
+It does everything, then rolls back.</li>
+<li>Copy:
+<code>./yubikey-db-migrate.sh /etc/radiator/db/yubicred.db</code>.</li>
+<li>Point Radiator at PostgreSQL:
+<code>./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null</code>,
+then <code>sudo systemctl restart radiator</code>.</li>
+<li>Straight away, catch up with the logins made on SQLite since step 3:
+<code>./yubikey-db-migrate.sh --mode sync /etc/radiator/db/yubicred.db</code>.
+It moves counters forward where SQLite is ahead and adds YubiKeys added
+meanwhile. It never moves a counter backward, never deletes, and lists
+(without changing) rows that differ in username, PIN,
+<code>active</code> or key.</li>
+</ol>
+<p>Without step 5, an OTP used on SQLite after the copy could be used
+once more on PostgreSQL. Keep the SQLite file afterwards, unchanged, for
+a rollback.</p>
+<p><strong>To roll back</strong> to SQLite, first copy PostgreSQL's
+counters (and any users added there) into SQLite, then switch:</p>
+<pre class="bash"><code>./yubikey-db.sh -b pg export - | sudo ./yubikey-db.sh import --from-export --replace -
+./yubikey-db.sh config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null
+sudo systemctl restart radiator</code></pre>
+</section>
+<section id="security" class="level2">
+<h2>Security</h2>
+<ul>
+<li><strong>The database holds every user's AES key.</strong> Anyone who
+can read it can copy the YubiKeys. The SQLite file is mode
+<code>0640</code>, readable by root and <code>radiator</code> only. In
+PostgreSQL, only <code>yubikey_admin</code> members and the
+<code>radiator</code> role can read the table.</li>
+<li><strong>Exports, CSV files and backups hold every AES key in clear
+text.</strong> Encrypt them (<code>export - | gpg -e ...</code>), keep
+CSV files at mode <code>0600</code>, never commit them or attach them to
+tickets, and delete them with <code>shred -u</code>. The script warns
+about a CSV file that all users can read.</li>
+<li><strong>A filled-in copy of <code>yubikey-db-user.example.sh</code>
+holds an AES key.</strong> Keep it at mode <code>0700</code>, outside
+the repository, and <code>shred -u</code> it when done.</li>
+<li><strong>Replace the package's sample
+<code>radiator.conf</code></strong> (it accepts every login from
+127.0.0.1) and give every RADIUS client its own long random secret.</li>
+<li><strong><code>Trace 4</code> writes every user's AES key and PIN
+hash to Radiator's log</strong> (the <code>AuthSQLYUBIKEY read:</code>
+lines). Use it only on a test server with test keys, and delete the log
+afterwards. <code>radiator.example.conf</code> uses
+<code>Trace 3</code>.</li>
+<li><strong>Keep <code>Require2Factor</code></strong> unless you mean
+OTP-only logins for everyone: without it, the PIN is optional.</li>
+<li><strong><code>/etc/radiator/conf.d/yubikey.conf</code> holds
+Radiator's database password</strong> for a remote PostgreSQL: mode
+<code>0640</code>, owner <code>root:radiator</code>.
+<code>~/.pgpass</code> must be mode <code>0600</code>.</li>
+<li><strong>Remote PostgreSQL</strong>: <code>hostssl</code> lines for
+single addresses in <code>pg_hba.conf</code>, <code>scram-sha-256</code>
+passwords, and <code>sslmode=verify-full</code> on the clients, so a
+server without your CA's certificate is refused.</li>
+<li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
+<code>psql</code> through their input, never on a command line, and
+quote every value. PINs are stored as salted SHA-512
+<code>{crypt}</code> hashes (<code>-H clear</code> stores plain text, if
+something else must read it).</li>
+</ul>
+</section>
+<section id="troubleshooting" class="level2">
+<h2>Troubleshooting</h2>
+<p>Start with <code>verify</code> for the user: if it accepts the login
+and Radiator doesn't, the problem is in Radiator's configuration or the
+network.</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause and fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>radpwtst</code> prints <code>No reply</code></td>
+<td>Radiator isn't running (<code>systemctl status radiator</code>), the
+port is wrong (<code>radpwtst</code> defaults to 1645: add
+<code>-auth_port 1812</code>), the client's address isn't in a
+<code>&lt;Client&gt;</code> block, or the secret is wrong. A wrong
+secret is dropped without a log line.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Replay attack detected</code></td>
+<td>That OTP, or a newer one from the YubiKey, was already used. Touch
+the YubiKey again.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Bad static password</code></td>
+<td>Wrong PIN, no PIN typed with <code>Require2Factor</code> set, or the
+user has no stored PIN while <code>Require2Factor</code> is set
+(Radiator always rejects an empty stored PIN).</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Bad Yubikey password</code></td>
+<td>The OTP doesn't decrypt with the stored AES key. Check with
+<code>verify</code>, and load the key from the <code>ykman</code> output
+again with <code>add --update</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Bad Yubikey Secret-Id</code></td>
+<td>The stored private ID isn't the YubiKey's. Load it again with
+<code>add --update</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Yubikey is not active</code></td>
+<td>The YubiKey is disabled: <code>enable</code> it.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Yubikey secret not found in database</code></td>
+<td>No row has that username and public ID, the public ID isn't 12
+characters, or Radiator can't reach the database (look for
+<code>Could not connect</code> above it in
+<code>radiator.log</code>).</td>
+</tr>
+<tr>
+<td>Radiator logs <code>Could not connect to SQL database</code></td>
+<td>Check <code>DBSource</code>, <code>DBAuth</code>, the network and
+<code>pg_hba.conf</code>. Radiator then stops trying for 600 seconds, so
+after fixing it, <code>sudo systemctl restart radiator</code>.</td>
+</tr>
+<tr>
+<td>A disabled user can still log in, and <code>active</code> shows
+<code>false</code></td>
+<td>The row came from the old example commands; Radiator treats the text
+<code>false</code> as active. Run <code>disable</code>.</td>
+</tr>
+<tr>
+<td><code>Log could not append ... Permission denied</code></td>
+<td><code>radiusd</code> was run as root once.
+<code>sudo chown radiator:radiator /var/log/radiator/*</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>attempt to write a readonly database</code></td>
+<td><code>radiator</code> can't write the SQLite file <strong>or its
+folder</strong>. Run
+<code>sudo ./yubikey-db.sh init --owner radiator:radiator</code>
+again.</td>
+</tr>
+<tr>
+<td>The first OTP works, the next ones fail</td>
+<td>Counters aren't being saved: check the folder permissions (SQLite)
+and the <code>UpdateQuery</code> line.</td>
+</tr>
+<tr>
+<td><code>UNIQUE constraint failed</code> or
+<code>duplicate key</code></td>
+<td>The YubiKey is already in the database: use <code>--update</code>
+(or <code>--replace</code> after reprogramming).</td>
+</tr>
+<tr>
+<td><code>import failed and was rolled back</code></td>
+<td>Nothing was loaded. Fix the cause shown above it and import
+again.</td>
+</tr>
+<tr>
+<td><code>nothing imported; fix the rows above</code></td>
+<td>Some CSV rows are invalid: fix them, or add
+<code>--skip-invalid</code>.</td>
+</tr>
+<tr>
+<td><code>public ID ... has N characters; Radiator accepts only 12</code></td>
+<td>Program the YubiKey with a 12-character public ID.</td>
+</tr>
+<tr>
+<td><code>database is locked</code></td>
+<td>Radiator was writing at that moment. The script waits 5 seconds; run
+it again.</td>
+</tr>
+<tr>
+<td><code>no write access to ... (run with sudo?)</code></td>
+<td>SQLite: run the script with <code>sudo</code>.</td>
+</tr>
+<tr>
+<td><code>no read access to the yubikeys table ... (is X a member of yubikey_admin?)</code></td>
+<td>PostgreSQL: run <code>init-pg --admin X</code> as
+<code>postgres</code>, or connect as an admin.</td>
+</tr>
+<tr>
+<td><code>server certificate ... does not match host name</code></td>
+<td><code>PGHOST</code> (and Radiator's <code>host=</code>) must be the
+name in the certificate, not an IP address.</td>
+</tr>
+<tr>
+<td><code>no pg_hba.conf entry for host</code></td>
+<td>Add a <code>hostssl</code> line for that address and role, and
+restart PostgreSQL.</td>
+</tr>
+<tr>
+<td><code>password authentication failed for user "radiator"</code></td>
+<td>The <code>DBAuth</code> line doesn't match the password set with
+<code>init-pg --set-password</code>.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="reference" class="level2">
+<h2>Reference</h2>
+<section id="yubikey-dbsh" class="level3">
+<h3><code>yubikey-db.sh</code></h3>
+<pre class="text"><code>yubikey-db.sh [global options] &lt;command&gt; [command options]</code></pre>
+<table>
+<thead>
+<tr>
+<th>Global option</th>
+<th>Environment</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-b, --backend</code></td>
+<td><code>DB_BACKEND</code></td>
+<td><code>sqlite</code></td>
+<td><code>sqlite</code> or <code>pg</code></td>
+</tr>
+<tr>
+<td><code>-d, --db</code></td>
+<td><code>DB_FILE</code>, <code>PGDATABASE</code></td>
+<td><code>/etc/radiator/db/yubicred.db</code>, <code>yubikey</code></td>
+<td>SQLite file, or PostgreSQL database name</td>
+</tr>
+<tr>
+<td><code>-e, --secret-encoding</code></td>
+<td><code>SECRET_ENCODING</code></td>
+<td><code>base64</code></td>
+<td>How AES keys are stored: <code>base64</code> or <code>hex</code>
+(Radiator reads both)</td>
+</tr>
+<tr>
+<td><code>-H, --password-hash</code></td>
+<td><code>PASSWORD_HASH</code></td>
+<td><code>crypt</code></td>
+<td>How PINs are stored: <code>crypt</code> (SHA-512) or
+<code>clear</code></td>
+</tr>
+<tr>
+<td><code>-h</code>, <code>-V</code></td>
+<td></td>
+<td></td>
+<td>Help, version</td>
+</tr>
+</tbody>
+</table>
+<p>Global options go before the command. Other environment variables:
+<code>PGHOST</code>, <code>PGPORT</code>, <code>PGUSER</code>,
+<code>PGSSLMODE</code>, <code>PGSSLROOTCERT</code>,
+<code>PGSERVICE</code> (standard PostgreSQL settings; for a server other
+than the local socket, <code>config</code> copies <code>PGHOST</code>,
+<code>PGPORT</code>, <code>PGSSLMODE</code> and
+<code>PGSSLROOTCERT</code> into Radiator's <code>DBSource</code>),
+<code>PG_ADMIN_ROLE</code> (default <code>yubikey_admin</code>),
+<code>PG_RADIATOR_ROLE</code> (default <code>radiator</code>),
+<code>SQLITE3</code>, <code>PSQL</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Options</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>init</code></td>
+<td><code>-o, --owner USER[:GROUP]</code></td>
+<td>SQLite: create the folder, file and table. PostgreSQL: create the
+table and grants in an existing database. Safe to re-run.</td>
+</tr>
+<tr>
+<td><code>init-pg</code></td>
+<td><code>-a, --admin LOGIN</code> (repeatable),
+<code>--set-password</code></td>
+<td>PostgreSQL, as <code>postgres</code>: create the roles and database,
+then <code>init</code>.</td>
+</tr>
+<tr>
+<td><code>add</code></td>
+<td><code>-u USER</code>, <code>-P PUBLIC_ID</code>,
+<code>-p PRIVATE_ID</code>, <code>-k AES_KEY</code>,
+<code>-w PIN</code>, <code>--no-password</code>,
+<code>--inactive</code>, <code>--update</code> or
+<code>--replace</code></td>
+<td>Add one YubiKey; asks for missing values.</td>
+</tr>
+<tr>
+<td><code>import</code></td>
+<td><code>--dry-run</code>, <code>--skip-invalid</code>,
+<code>--update</code> or <code>--replace</code>,
+<code>--from-export</code>, <code>FILE</code> or <code>-</code></td>
+<td>Load a CSV file, or restore an export.</td>
+</tr>
+<tr>
+<td><code>list</code></td>
+<td><code>[USER]</code></td>
+<td>Show users and YubiKeys, without secrets.</td>
+</tr>
+<tr>
+<td><code>verify</code></td>
+<td><code>-u USER</code>, <code>--no-require2factor</code></td>
+<td>Check a PIN and OTP as Radiator would; save the counters if
+accepted.</td>
+</tr>
+<tr>
+<td><code>enable</code>, <code>disable</code>, <code>delete</code></td>
+<td><code>USER [PUBLIC_ID]</code></td>
+<td>Set <code>active</code> to 1 or 0, or delete the user's rows (or one
+YubiKey).</td>
+</tr>
+<tr>
+<td><code>export</code></td>
+<td><code>-f, --force</code>, <code>FILE</code> or <code>-</code></td>
+<td>Write every row and field to CSV (mode <code>0600</code>).</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td></td>
+<td>Print the <code>&lt;AuthBy SQLYUBIKEY&gt;</code> clause.</td>
+</tr>
+</tbody>
+</table>
+<p>It exits with 0 on success and 1 on any error.</p>
+</section>
+<section id="yubikey-db-migratesh" class="level3">
+<h3><code>yubikey-db-migrate.sh</code></h3>
+<pre class="text"><code>yubikey-db-migrate.sh [options] SQLITE_FILE</code></pre>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-d, --db NAME</code></td>
+<td>PostgreSQL database (default <code>yubikey</code>)</td>
+</tr>
+<tr>
+<td><code>-m, --mode new|sync</code></td>
+<td><code>new</code> (default): the PostgreSQL table must be empty.
+<code>sync</code>: add missing YubiKeys and move counters forward.</td>
+</tr>
+<tr>
+<td><code>-e, --secret-encoding</code></td>
+<td>How AES keys are stored in PostgreSQL (default
+<code>base64</code>)</td>
+</tr>
+<tr>
+<td><code>-n, --dry-run</code></td>
+<td>Do everything, then roll back</td>
+</tr>
+<tr>
+<td><code>--skip-invalid</code></td>
+<td>Copy the valid rows even if some are invalid (they are listed by
+user and public ID)</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="testsmake-otpsh" class="level3">
+<h3><code>tests/make-otp.sh</code></h3>
+<pre class="text"><code>tests/make-otp.sh PUBLIC_ID PRIVATE_ID AES_KEY COUNTER [SESSION]</code></pre>
+<p>Prints the OTP a YubiKey with those values would type. Each OTP must
+have a higher counter (or the same counter and a higher session) than
+the last one used. It passes the AES key to <code>openssl</code> on its
+command line: test keys only.</p>
+</section>
+<section id="database-layout" class="level3">
+<h3>Database layout</h3>
+<p>The table is <code>yubikeys</code>, one row per YubiKey:</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>SQLite</th>
+<th>PostgreSQL</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>username</code></td>
+<td><code>varchar(255)</code></td>
+<td><code>varchar(255)</code></td>
+<td>The login name; indexed, not unique</td>
+</tr>
+<tr>
+<td><code>password</code></td>
+<td><code>varchar(64)</code></td>
+<td><code>text</code></td>
+<td>PIN: <code>{crypt}$6$...</code>, plain text, or empty</td>
+</tr>
+<tr>
+<td><code>active</code></td>
+<td><code>boolean</code></td>
+<td><code>smallint</code>, 0 or 1</td>
+<td>1 allows logins; Radiator treats only 0 or empty as disabled</td>
+</tr>
+<tr>
+<td><code>created</code></td>
+<td><code>datetime</code></td>
+<td><code>timestamptz</code></td>
+<td>When the row was added (UTC)</td>
+</tr>
+<tr>
+<td><code>accessed</code></td>
+<td><code>datetime</code></td>
+<td><code>timestamptz</code></td>
+<td>Last successful login; empty until then</td>
+</tr>
+<tr>
+<td><code>tokenId</code></td>
+<td><code>varchar(60)</code></td>
+<td><code>varchar(60)</code></td>
+<td>Public ID (modhex); unique</td>
+</tr>
+<tr>
+<td><code>userId</code></td>
+<td><code>varchar(60)</code></td>
+<td><code>varchar(60)</code></td>
+<td>Private ID (hex); primary key</td>
+</tr>
+<tr>
+<td><code>secret</code></td>
+<td><code>varchar(60)</code></td>
+<td><code>varchar(60)</code></td>
+<td>AES key, base64 (or hex)</td>
+</tr>
+<tr>
+<td><code>counter</code>, <code>low</code>, <code>high</code></td>
+<td><code>int</code></td>
+<td><code>integer</code></td>
+<td>The replay counters (<code>low</code> is the session counter;
+Radiator sets <code>high</code> to 0)</td>
+</tr>
+</tbody>
+</table>
+<p>PostgreSQL roles: <code>yubikey_admin</code> owns the database and
+table; its members manage users. <code>radiator</code> can
+<code>SELECT</code> username, password, active, tokenId, userId, secret
+and the counters, and <code>UPDATE</code> only accessed and the
+counters.</p>
+</section>
+<section id="export-format" class="level3">
+<h3>Export format</h3>
+<p><code>export</code> writes the header
+<code>username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high</code>
+and one row per YubiKey: AES keys as 32 hex characters, PINs as stored,
+times in UTC, and fields with a comma, quote or line break quoted. Only
+<code>import --from-export</code> reads it.</p>
+</section>
+<section id="how-radiator-430-checks-a-login" class="level3">
+<h3>How Radiator 4.30 checks a login</h3>
+<p>Read from Radiator 4.30's source
+(<code>Radius/AuthYUBIKEYGENERIC.pm</code>) and confirmed with real
+logins (<code>tests/radiator/run.sh</code>). <code>verify</code> follows
+the same steps.</p>
+<ol type="1">
+<li>The login is <code>PIN:</code> (optional), a 12-character public ID,
+and the 32-character token; <code>PIN</code> may also come right before
+the OTP without a colon. Any other public ID length is never found.</li>
+<li>The row is found by username and public ID (<code>%0</code> and
+<code>%3</code> are quoted).</li>
+<li>The YubiKey is rejected if <code>active</code> is 0 or empty. Any
+other value, including the texts <code>true</code> and
+<code>false</code>, and NULL, counts as active.</li>
+<li>The PIN is checked if one was typed, or always with
+<code>Require2Factor</code>. An empty stored PIN never matches.
+<code>{crypt}</code>, <code>{SSHA}</code>, <code>$6$</code> and other
+common formats, and plain text, are accepted.</li>
+<li>A <code>secret</code> of 32 hex characters is read as hex, anything
+else as base64. The token must decrypt with a valid CRC.</li>
+<li>With <code>CheckSecretId</code>, the token's private ID must equal
+<code>userId</code> exactly (lowercase hex).</li>
+<li>The top bit of the usage counter (set when the OTP was triggered
+from a keyboard key) is ignored. The OTP is a replay unless its counter
+is above the stored <code>counter</code>, or equal with a session
+counter above <code>low</code>. A NULL counter skips this check.</li>
+<li><code>UpdateQuery</code> saves the counter, the session counter
+(<code>low</code>), 0 (<code>high</code>) and the time.</li>
+</ol>
+</section>
+</section>
+<section id="testing" class="level2">
+<h2>Testing</h2>
+<p><code>tests/run-tests.sh</code> runs the scripts through 33 scenarios
+against throwaway SQLite and PostgreSQL databases and compares each
+transcript (commands, output, exit codes, and the final table) with
+<code>tests/expected/</code>. It needs <code>bash</code>,
+<code>sqlite3</code>, <code>perl</code>, and, for the
+<code>verify</code> scenarios, <code>openssl</code> and
+<code>libcrypt-rijndael-perl</code>; it runs as a normal user.</p>
+<pre class="bash"><code>tests/run-tests.sh                 # every scenario
+tests/run-tests.sh add verify      # some scenarios
+tests/run-tests.sh --update        # accept a deliberate change; then review it with git diff</code></pre>
+<p>The <code>pg_*</code> and <code>migrate_*</code> scenarios need a
+PostgreSQL 18 server you can reach as a role with <code>CREATEDB</code>
+and <code>CREATEROLE</code>
+(<code>sudo -u postgres createuser --createdb --createrole "$USER"</code>);
+without one they are skipped. They create and drop databases and roles
+named <code>yk_test_&lt;pid&gt;_*</code>.</p>
+<p><code>tests/radiator/run.sh DIR</code> tests against Radiator itself,
+in a container built from the Radiator packages in <code>DIR</code> (see
+<a href="#the-automated-test">The automated test</a>).</p>
+</section>
+<section id="references" class="level2">
+<h2>References</h2>
+<ul>
+<li><a
+href="https://files.radiatorsoftware.com/radiator/ref/AuthBySQLYUBIKEY.html">Radiator
+reference: <code>&lt;AuthBy SQLYUBIKEY&gt;</code></a></li>
+<li><a
+href="https://files.radiatorsoftware.com/radiator/ref/AuthSelect_AuthBySQLYUBIKEY.html">Radiator
+reference: <code>AuthSelect</code> for SQLYUBIKEY</a></li>
+<li>The Radiator distribution's <code>goodies/yubikey.cfg</code> and
+<code>goodies/yubikey.txt</code></li>
+<li><a
+href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey
+Manager (<code>ykman</code>) documentation</a></li>
+<li><a href="https://www.postgresql.org/docs/18/ssl-tcp.html">PostgreSQL
+18: SSL support</a> and <a
+href="https://www.postgresql.org/docs/18/auth-pg-hba-conf.html">the
+pg_hba.conf file</a></li>
+</ul>
+</section>
+    <footer>
+      <p>Generated from <code>docs/guide.md</code> in the radiator-yubikey repository. <a class="top-link" href="#content">Back to top</a></p>
+    </footer>
   </main>
 </div>
 
@@ -644,6 +1790,14 @@ SQL</code></pre>
       document.body.removeChild(ta);
     });
   }
+
+  // Let wide tables scroll sideways on narrow screens.
+  document.querySelectorAll("main table").forEach(function (table) {
+    var wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+  });
 
   document.querySelectorAll("pre").forEach(function (pre) {
     var wrap = document.createElement("div");

@@ -76,6 +76,10 @@ $ PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require yubikey-db.sh -b pg config
     DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require
     DBUsername   radiator
 
+$ PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt
+    DBUsername   radiator
+
 $ PGSERVICE=yubikey yubikey-db.sh -b pg config | grep DB
     DBSource     dbi:Pg:service=yubikey
     DBUsername   radiator

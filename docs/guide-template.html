@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="$description$">
+<title>$title$</title>
+<!--
+  GENERATED from docs/guide.md by docs/build-guide.sh. Edit docs/guide.md, not this file.
+  Self-contained page: no external fonts, scripts, images or CDNs, so it can be
+  copied to any web server (including air-gapped networks) as a single file.
+  The small inline script only adds "Copy" buttons, scrolling tables and
+  table-of-contents highlighting; the page is fully usable without it.
+-->
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --bg-code: #f3f4f6;
+  --text: #1f2328;
+  --text-muted: #59636e;
+  --border: #d8dee4;
+  --accent: #0b5cad;
+  --accent-soft: #e8f1fb;
+  --warn: #9a6700;
+  --warn-bg: #fff8e5;
+  --warn-border: #e9c46a;
+  --danger: #b42318;
+  --danger-bg: #fdf0ef;
+  --danger-border: #f1a9a0;
+  --note-bg: #eef5fd;
+  --note-border: #9cc3ec;
+  --code-comment: #6a737d;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216;
+    --bg-soft: #161b22;
+    --bg-code: #1b2129;
+    --text: #e6edf3;
+    --text-muted: #9aa5b1;
+    --border: #2d333b;
+    --accent: #6cb6ff;
+    --accent-soft: #15283d;
+    --warn: #e3b341;
+    --warn-bg: #2a2212;
+    --warn-border: #6b5418;
+    --danger: #ff8f84;
+    --danger-bg: #2c1614;
+    --danger-border: #6e2a24;
+    --note-bg: #13233a;
+    --note-border: #2c5282;
+    --code-comment: #8b949e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --bg-soft: #161b22; --bg-code: #1b2129; --text: #e6edf3;
+  --text-muted: #9aa5b1; --border: #2d333b; --accent: #6cb6ff; --accent-soft: #15283d;
+  --warn: #e3b341; --warn-bg: #2a2212; --warn-border: #6b5418; --danger: #ff8f84;
+  --danger-bg: #2c1614; --danger-border: #6e2a24; --note-bg: #13233a;
+  --note-border: #2c5282; --code-comment: #8b949e; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 var(--sans);
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 16px; top: 16px; z-index: 10; background: var(--bg); padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+
+/* Layout: sidebar table of contents on wide screens, stacked on narrow ones */
+.layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+}
+@media (min-width: 1000px) {
+  .layout { grid-template-columns: 250px minmax(0, 1fr); padding: 0 32px; }
+}
+
+header.hero {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+header.hero .inner { max-width: 1180px; margin: 0 auto; padding: 40px 16px 32px; }
+@media (min-width: 1000px) { header.hero .inner { padding: 48px 32px 36px; } }
+.eyebrow { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+header.hero h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 38px); line-height: 1.2; letter-spacing: -.01em; }
+header.hero .lede { margin: 0; max-width: 70ch; font-size: 18px; color: var(--text-muted); }
+.meta { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; }
+.chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-muted); }
+
+nav.toc { padding-top: 32px; font-size: 14px; }
+@media (min-width: 1000px) {
+  nav.toc { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: 32px 0 32px; }
+}
+nav.toc h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); border: 0; padding: 0; }
+nav.toc ul { list-style: none; margin: 0; padding: 0; }
+nav.toc li { margin: 0; }
+nav.toc a { display: block; padding: 5px 10px; border-left: 2px solid var(--border); color: var(--text-muted); text-decoration: none; }
+nav.toc a:hover { color: var(--text); border-left-color: var(--text-muted); }
+nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+@media (max-width: 999px) {
+  nav.toc { border-bottom: 1px solid var(--border); padding-bottom: 24px; }
+  nav.toc ul { columns: 2 220px; column-gap: 16px; }
+}
+
+main { min-width: 0; padding: 8px 0 64px; }
+section { padding-top: 24px; }
+h2 { margin: 24px 0 12px; padding-bottom: 8px; font-size: 24px; line-height: 1.3; border-bottom: 1px solid var(--border); }
+h3 { margin: 28px 0 8px; font-size: 19px; }
+p, ul, ol { margin: 0 0 14px; }
+li { margin: 4px 0; }
+main > section > p, main > section > ul, main > section > ol { max-width: 78ch; }
+strong { font-weight: 650; }
+
+code {
+  font-family: var(--mono);
+  font-size: .88em;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .08em .35em;
+  overflow-wrap: anywhere;
+}
+.codeblock { position: relative; margin: 0 0 16px; }
+pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: 13.5px/1.55 var(--mono);
+  tab-size: 4;
+}
+pre code { background: none; border: 0; padding: 0; font-size: inherit; overflow-wrap: normal; }
+pre .c { color: var(--code-comment); font-style: italic; }
+.copy {
+  position: absolute; top: 8px; right: 8px;
+  padding: 3px 10px;
+  font: 600 12px/1.6 var(--sans);
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.codeblock:hover .copy, .copy:focus-visible, .copy.done { opacity: 1; }
+@media (hover: none) { .copy { opacity: 1; } }
+.copy:hover { color: var(--text); }
+
+.table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+th { background: var(--bg-soft); font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+td.wrap code { white-space: normal; overflow-wrap: normal; }
+/* On phones, tables with 3+ columns keep a readable width and scroll sideways. */
+@media (max-width: 700px) {
+  table.wide { min-width: 640px; }
+  table.wide td:last-child { min-width: 24ch; }
+}
+
+.callout {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--note-border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--note-bg);
+  max-width: 78ch;
+}
+.callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+.callout .label { display: block; margin-bottom: 2px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.callout.warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.callout.warn .label { color: var(--warn); }
+.callout.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+.callout.danger .label { color: var(--danger); }
+.callout.note .label { color: var(--accent); }
+
+.flow { counter-reset: step; list-style: none; padding: 0; max-width: 78ch; }
+.flow li { position: relative; padding-left: 40px; margin: 10px 0; }
+.flow li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  font-weight: 700; font-size: 14px; text-align: center; line-height: 26px;
+}
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0 0 18px; }
+.card { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-soft); }
+.card h4 { margin: 0 0 4px; font-size: 15px; }
+.card p { margin: 0; font-size: 14.5px; color: var(--text-muted); }
+
+/* GitHub-style alerts, as pandoc writes them: <div class="note"><div class="title">...</div>...</div> */
+main .note, main .tip, main .important, main .warning, main .caution {
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid var(--note-border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--note-bg);
+  max-width: 78ch;
+}
+main .note > :last-child, main .tip > :last-child, main .important > :last-child,
+main .warning > :last-child, main .caution > :last-child { margin-bottom: 0; }
+main div.title p { margin: 0 0 2px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+main .warning, main .important { background: var(--warn-bg); border-color: var(--warn-border); }
+main .warning div.title p, main .important div.title p { color: var(--warn); }
+main .caution { background: var(--danger-bg); border-color: var(--danger-border); }
+main .caution div.title p { color: var(--danger); }
+main ol > li > pre, main ol > li > .codeblock { margin-top: 8px; }
+
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
+.top-link { font-size: 13px; }
+
+@media print {
+  nav.toc, .copy, .skip, .top-link { display: none !important; }
+  .layout { display: block; padding: 0; }
+  header.hero { background: none; }
+  body { font-size: 11pt; }
+  pre, .callout, .table-wrap, .card { break-inside: avoid; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .table-wrap { overflow: visible; }
+  a { color: inherit; }
+  h2, h3 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+
+<header class="hero">
+  <div class="inner">
+    <p class="eyebrow">Radiator RADIUS · YubiKey OTP · SQLite or PostgreSQL</p>
+    <h1>$title$</h1>
+    <p class="lede">$description$</p>
+    <div class="meta">
+      <span class="chip">Tested with Radiator 4.30</span>
+      <span class="chip">Ubuntu 26.04 LTS</span>
+      <span class="chip">PostgreSQL 18</span>
+      <span class="chip">No cloud dependency</span>
+      <span class="chip">Scripts version $version$</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <h2>Contents</h2>
+$table-of-contents$
+  </nav>
+
+  <main id="content">
+$body$
+    <footer>
+      <p>Generated from <code>docs/guide.md</code> in the radiator-yubikey repository. <a class="top-link" href="#content">Back to top</a></p>
+    </footer>
+  </main>
+</div>
+
+<script>
+/* Progressive enhancement only: the page works without this script. */
+(function () {
+  "use strict";
+
+  // Add a "Copy" button to every code block.
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Fallback for pages served over plain HTTP, where the Clipboard API is unavailable.
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy") ? resolve() : reject(); } catch (e) { reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+
+  // Let wide tables scroll sideways on narrow screens.
+  document.querySelectorAll("main table").forEach(function (table) {
+    var wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+  });
+
+  document.querySelectorAll("pre").forEach(function (pre) {
+    var wrap = document.createElement("div");
+    wrap.className = "codeblock";
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copy";
+    btn.textContent = "Copy";
+    btn.setAttribute("aria-label", "Copy code to clipboard");
+    btn.addEventListener("click", function () {
+      copyText(pre.innerText.replace(/\n$$/, "")).then(function () {
+        btn.textContent = "Copied";
+        btn.classList.add("done");
+      }, function () {
+        btn.textContent = "Press Ctrl+C";
+      });
+      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1800);
+    });
+    wrap.appendChild(btn);
+  });
+
+  // Highlight the table-of-contents entry for the section being read.
+  if (!("IntersectionObserver" in window)) return;
+  var links = {};
+  document.querySelectorAll("nav.toc a").forEach(function (a) {
+    links[a.getAttribute("href").slice(1)] = a;
+  });
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      Object.keys(links).forEach(function (id) { links[id].classList.remove("active"); });
+      var link = links[entry.target.id];
+      if (link) link.classList.add("active");
+    });
+  }, { rootMargin: "0px 0px -70% 0px" });
+  document.querySelectorAll("main section[id]").forEach(function (s) { observer.observe(s); });
+})();
+</script>
+</body>
+</html>

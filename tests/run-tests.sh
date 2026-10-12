@@ -110,21 +110,10 @@ run_from() {
 }
 
 # Print the OTP a YubiKey programmed with these values would type:
-# otp PUBLIC_ID PRIVATE_ID AES_KEY COUNTER SESSION. It is encrypted with
-# openssl, independently of the Perl code that 'verify' decrypts it with.
+# otp PUBLIC_ID PRIVATE_ID AES_KEY COUNTER SESSION. make-otp.sh encrypts it
+# with openssl, independently of the Perl code that 'verify' decrypts it with.
 otp() {
-    printf '%s' "$1"
-    perl -e '
-        my ($priv, $counter, $session) = @ARGV;
-        my $token = pack("H12 v C3 C v", $priv, $counter, 0x12, 0x34, 0x00, $session, 0xbeef);
-        my $crc = 0xffff;
-        for my $b (unpack "C*", $token) {
-            $crc ^= $b;
-            for (1 .. 8) { my $lsb = $crc & 1; $crc >>= 1; $crc ^= 0x8408 if $lsb }
-        }
-        print $token, pack("v", ~$crc & 0xffff);' "$2" "$4" "$5" \
-        | openssl enc -aes-128-ecb -nopad -K "$3" \
-        | perl -e 'local $/; (my $h = unpack "H*", <STDIN>) =~ tr/0-9a-f/cbdefghijklnrtuv/; print $h'
+    "$TESTS_DIR/make-otp.sh" "$@"
 }
 
 # Copy the example wrapper to $WORK/user.sh with the given settings, mode 0700:
@@ -886,7 +875,8 @@ scenario_pg_offline() {
     run_env PSQL="$WORK/psql16" -- -b pg -d yubikey init
     run -b pg config
     for env in DB_BACKEND=pg PGHOST=db.example.com PGHOST=/var/run/postgresql \
-               'PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require' PGSERVICE=yubikey \
+               'PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require' \
+               'PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt' PGSERVICE=yubikey \
                'PGSERVICE=yubikey PGDATABASE=radius' PG_RADIATOR_ROLE=radiusd; do
         read -ra assignments <<<"$env"
         printf '$ %s yubikey-db.sh -b pg config | grep DB\n' "$env"

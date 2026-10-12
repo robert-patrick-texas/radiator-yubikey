@@ -83,6 +83,25 @@
   packages and runs 63 checks of real Radiator logins (SQLite and
   PostgreSQL, with and without `Require2Factor`, the example wrapper),
   comparing each with `verify`.
+- Documentation rewritten as a how-to guide, `docs/guide.md`, tested step by
+  step with Radiator 4.30: a lab container, server installation, programming
+  YubiKeys, SQLite, PostgreSQL on the Radiator server or on a separate server
+  over TLS (`verify-full`, `scram-sha-256`), Radiator configuration and
+  startup with systemd, adding accounts, verifying credentials, maintenance,
+  backups, the SQLite-to-PostgreSQL cutover and rollback, security,
+  troubleshooting and a reference. `yubikey-db-guide.html` is now generated
+  from it (`docs/build-guide.sh`, pandoc), and `README.md` is a short front
+  page with quick starts.
+- `radiator.example.conf`: a Radiator configuration for YubiKey logins, to
+  replace the package's sample, which accepts every login from 127.0.0.1.
+- `config` for PostgreSQL adds `sslrootcert` to `DBSource` when
+  `PGSSLROOTCERT` is set, so Radiator can verify a remote server's
+  certificate.
+- `tests/make-otp.sh`: makes the OTP of a test key, for testing without a
+  YubiKey (the test suites use it too).
+- `tests/radiator/run.sh` now also covers PostgreSQL over TLS with a
+  password, a cutover from SQLite to PostgreSQL while Radiator runs, and the
+  shipped `radiator.example.conf` (78 checks).
 - Tests: `update`, `verify`, `wrapper`, `pg_update` and `pg_verify` scenarios
   (33 in total). `verify` is also checked against Yubico's published sample
   OTP. The `verify` scenarios need `openssl` and `Crypt::Rijndael`, and are
