@@ -1,0 +1,53 @@
+$ yubikey-db.sh -b pg -d <T>_db import <WORK>/users.csv
+Validated <WORK>/users.csv: 4 valid row(s), 0 invalid row(s)
+Imported 4 row(s) into PostgreSQL database <T>_db
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db disable alice
+disable: 2 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db enable alice VVCCCCBBCDEG
+enable: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db disable bob
+disable: 1 row(s) changed
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+alice |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+bob |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+
+$ yubikey-db.sh -b pg -d <T>_db delete alice vvccccbbcdef
+delete: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db delete bob
+delete: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db delete bob
+yubikey-db.sh: error: delete: no matching entry for 'bob'
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db enable o'brien
+yubikey-db.sh: error: enable: no matching entry for 'o'brien'
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db disable x' OR '1'='1
+yubikey-db.sh: error: disable: no matching entry for 'x' OR '1'='1'
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db disable carol x' OR '1'='1
+yubikey-db.sh: error: disable: no matching entry for 'carol x' OR '1'='1'
+[exit 1]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+

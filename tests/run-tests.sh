@@ -19,6 +19,15 @@
 #
 # Needs: bash 4+, sqlite3, perl. Run as a normal user, not root (one scenario
 # checks permission errors, which root bypasses).
+#
+# The pg_* scenarios also need psql and a PostgreSQL 18 (or later) server that
+# this user can reach with the default libpq settings, as a role with CREATEDB
+# and CREATEROLE, for example:
+#     sudo -u postgres createuser --createdb --createrole "$USER"
+# pg_radiator also logs in over TCP to 127.0.0.1 with a password, which
+# Ubuntu's default pg_hba.conf allows. The scenarios create databases and roles
+# named yk_test_<pid>_*, and drop them afterwards. They are skipped when no
+# server is reachable.
 
 set -uo pipefail
 
@@ -29,8 +38,16 @@ EXPECTED=$TESTS_DIR/expected
 UPDATE=0
 TMPROOT=       # per-run temp directory, removed on exit
 WORK=          # scenario scratch directory under TMPROOT, emptied per scenario
+PGT=yk_test_$$ # prefix for throwaway PostgreSQL databases and roles
+PGDB=${PGT}_db
+PG_OK=0        # 1 when a PostgreSQL 18+ server is reachable
+PG_SKIP_REASON="no PostgreSQL server reachable"
 
-trap 'if [[ -n $TMPROOT ]]; then rm -rf -- "$TMPROOT"; fi' EXIT
+cleanup() {
+    if [[ $PG_OK == 1 ]]; then pg_cleanup; fi
+    if [[ -n $TMPROOT ]]; then rm -rf -- "$TMPROOT"; fi
+}
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------
 # Helpers used by the scenarios. Each writes to stdout, which is captured as
@@ -74,8 +91,17 @@ schema() {
 
 # Check that a stored {crypt} hash matches a password, without printing the hash.
 check_crypt() {
-    local db=$1 user=$2 pw=$3 stored
-    stored=$(sqlite3 -batch "$db" "SELECT password FROM yubikeys WHERE username = '$user';")
+    local db=$1 user=$2 pw=$3
+    verify_crypt "$user" "$pw" "$(sqlite3 -batch "$db" "SELECT password FROM yubikeys WHERE username = '$user';")"
+}
+
+check_crypt_pg() {
+    local user=$1 pw=$2
+    verify_crypt "$user" "$pw" "$(pgq "$PGDB" "SELECT password FROM yubikeys WHERE username = '$user';")"
+}
+
+verify_crypt() {
+    local user=$1 pw=$2 stored=$3
     printf '# crypt check for %s: ' "$user"
     PW=$pw STORED=$stored perl -e '
         my $h = $ENV{STORED};
@@ -90,6 +116,74 @@ csv() {
     chmod 600 "$WORK/$1"
 }
 
+# Run one SQL command as this user, unaligned and without headers: pgq DB SQL
+pgq() {
+    psql -X -q -v ON_ERROR_STOP=1 --no-align --tuples-only -d "$1" -c "$2"
+}
+
+# Print a query result with headers, columns separated by ' | ': pgtable SQL
+pgtable() {
+    psql -X -q -v ON_ERROR_STOP=1 --no-align --field-separator ' | ' \
+        --pset footer=off -d "$PGDB" -c "$1"
+}
+
+dump_pg() {
+    printf '# yubikeys table in %s\n' "$PGDB"
+    pgtable "SELECT username, password, active, pg_typeof(active) AS active_type,
+                    to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
+                    accessed, tokenId, userId, secret, counter, low, high
+               FROM yubikeys ORDER BY userId;"
+    echo
+}
+
+# Table definition, ownership and privileges, from catalog queries. NOT NULL
+# constraints are left out of the constraint list; the column list shows them.
+schema_pg() {
+    printf '# columns\n'
+    pgtable "SELECT column_name, data_type, character_maximum_length AS max_length,
+                    is_nullable, column_default
+               FROM information_schema.columns
+              WHERE table_name = 'yubikeys' ORDER BY ordinal_position;"
+    printf '# constraints (NOT NULL is shown in the columns above)\n'
+    pgtable "SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint
+              WHERE conrelid = 'yubikeys'::regclass AND contype <> 'n' ORDER BY conname;"
+    printf '# indexes\n'
+    pgtable "SELECT indexname FROM pg_indexes WHERE tablename = 'yubikeys' ORDER BY indexname;"
+    printf '# owners\n'
+    pgtable "SELECT (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()) AS database_owner,
+                    (SELECT tableowner FROM pg_tables WHERE tablename = 'yubikeys') AS table_owner;"
+    printf '# privileges for roles other than the owner\n'
+    pgtable "SELECT grantee, privilege_type, string_agg(column_name, ', ' ORDER BY column_name) AS columns
+               FROM information_schema.column_privileges
+              WHERE table_name = 'yubikeys' AND grantee LIKE '${PGT}%' AND grantee <> '${PGT}_admin'
+              GROUP BY grantee, privilege_type ORDER BY grantee, privilege_type;"
+    pgtable "SELECT grantee, privilege_type AS table_level_privilege
+               FROM information_schema.table_privileges
+              WHERE table_name = 'yubikeys' AND grantee <> '${PGT}_admin' ORDER BY 1, 2;"
+    pgtable "SELECT datacl AS database_acl FROM pg_database WHERE datname = current_database();"
+    printf '# members of the admin role (test roles only)\n'
+    pgtable "SELECT r.rolname AS member FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
+              WHERE m.roleid = '${PGT}_admin'::regrole AND r.rolname LIKE '${PGT}%' ORDER BY 1;"
+    echo
+}
+
+# Run SQL as the Radiator role over TCP, the way Radiator connects from
+# another host, and record the output: as_radiator SQL
+as_radiator() {
+    local out rc=0
+    out=$(PGPASSWORD=test-only psql -X -q --no-align --field-separator ' | ' --pset footer=off \
+            -v VERBOSITY=terse -h 127.0.0.1 -U "${PGT}_radiator" -d "$PGDB" -c "$1" 2>&1) || rc=$?
+    printf '$ radiator> %s\n%s%s[exit %d]\n\n' "$1" "$out" "${out:+$'\n'}" "$rc"
+}
+
+pg_cleanup() {
+    psql -X -q -d postgres >/dev/null 2>&1 <<EOF
+DROP DATABASE IF EXISTS ${PGT}_db WITH (FORCE);
+DROP DATABASE IF EXISTS ${PGT}_empty WITH (FORCE);
+DROP ROLE IF EXISTS ${PGT}_op, ${PGT}_radiator, ${PGT}_admin;
+EOF
+}
+
 # Replace values that differ between runs with fixed placeholders.
 # shellcheck disable=SC2016  # the $ signs in the sed patterns are literal
 normalize() {
@@ -98,7 +192,10 @@ normalize() {
         -e "s|$ROOT|<ROOT>|g" \
         -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/<TIMESTAMP>/g' \
         -e 's/\{crypt\}\$6\$[^ |]*/{crypt}$6$<HASH>/g' \
-        -e 's/(if Radiator does not run as) [^ ]+$/\1 <USER>/'
+        -e 's/(if Radiator does not run as) [^ ]+$/\1 <USER>/' \
+        -e "s/$PGT/<T>/g" \
+        -e 's/connection to server .* failed:/connection to server <SERVER> failed:/' \
+        -e "s/\(is $(id -un) a member of/(is <USER> a member of/"
 }
 
 # --------------------------------------------------------------------------
@@ -288,11 +385,152 @@ scenario_config() {
     run_env DB_FILE=/opt/yk.db -- config
 }
 
+# PostgreSQL behavior that needs no server.
+scenario_pg_offline() {
+    local env
+    local -a assignments
+    run -b mysql list
+    run init-pg
+    run_env PSQL=/nonexistent/psql -- -b pg list
+    run_env PG_ADMIN_ROLE=Bad-Name -- -b pg list
+    # PostgreSQL older than 18 is refused (a stand-in psql reports 16.4).
+    printf '#!/bin/sh\ncat >/dev/null\necho "160004|16.4"\n' >"$WORK/psql16"
+    chmod +x "$WORK/psql16"
+    run_env PSQL="$WORK/psql16" -- -b pg -d yubikey init-pg
+    run_env PSQL="$WORK/psql16" -- -b pg -d yubikey init
+    run -b pg config
+    for env in DB_BACKEND=pg PGHOST=db.example.com PGHOST=/var/run/postgresql \
+               'PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require' PGSERVICE=yubikey \
+               'PGSERVICE=yubikey PGDATABASE=radius' PG_RADIATOR_ROLE=radiusd; do
+        read -ra assignments <<<"$env"
+        printf '$ %s yubikey-db.sh -b pg config | grep DB\n' "$env"
+        env "${assignments[@]}" "$SCRIPT" -b pg config | grep -E '^ +DB(Source|Username)'
+        echo
+    done
+    printf '$ yubikey-db.sh -b pg -d radius config | grep DB\n'
+    "$SCRIPT" -b pg -d radius config | grep -E '^ +DB(Source|Username)'
+    echo
+}
+
+scenario_pg_init() {
+    run -b pg -d "$PGDB" list
+    run -b pg -d "$PGDB" init-pg --admin "${PGT}_op"
+    schema_pg
+    run -b pg -d "$PGDB" init-pg
+    run -b pg -d "$PGDB" init
+    run -b pg -d "$PGDB" list
+    run -b pg -d "$PGDB" init --bogus
+    run -b pg -d "$PGDB" init-pg --bogus
+    run -b pg -d "$PGDB" init-pg --admin Bad-Login
+    run -b pg -d bad-name init-pg
+    run -b pg -d "$PGDB" init-pg --set-password
+    pgq postgres "CREATE DATABASE ${PGT}_empty;"
+    run -b pg -d "${PGT}_empty" list
+}
+
+scenario_pg_import() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv example.csv <"$ROOT/users.example.csv"
+    run -b pg -d "$PGDB" import --dry-run example.csv
+    run -b pg -d "$PGDB" import example.csv
+    dump_pg
+    check_crypt_pg test.user abc123
+    run -b pg -d "$PGDB" list
+    run -b pg -d "$PGDB" list test.user2
+    run -b pg -d "$PGDB" list nobody
+
+    # Importing the same rows again fails and is rolled back.
+    run -b pg -d "$PGDB" import example.csv
+    run -b pg -d "$PGDB" list
+    # With --replace the rows are overwritten, and their counters reset.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 9;"
+    run -b pg -d "$PGDB" import --replace example.csv
+    run -b pg -d "$PGDB" list
+}
+
+scenario_pg_add() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run -b pg -d "$PGDB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w 's3cr3t'
+    check_crypt_pg alice 's3cr3t'
+    run -b pg -d "$PGDB" add -u bob -P vvccccbbcdeg -p cccccccccccb -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password --inactive
+    dump_pg
+
+    # Duplicate public ID, then the same with --replace (counters reset).
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 7, low = 3, accessed = now() WHERE username = 'alice';"
+    run -b pg -d "$PGDB" add -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
+    run -b pg -d "$PGDB" add --replace -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
+    dump_pg
+
+    # --replace when the new row clashes with two existing rows (one by
+    # public ID, one by private ID): both are replaced by the single new row.
+    run -b pg -d "$PGDB" add --replace -u carol -P vvccccbbcdeg -p 111111111111 -k ffffffffffffffffffffffffffffffff --no-password
+    dump_pg
+}
+
+scenario_pg_encodings() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run -b pg -d "$PGDB" -e hex -H clear add -u hexuser -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6B1F0A9D2C7E4F3A8B5D0C1E9F2A7B6D -w 'plain pw'
+    run -b pg -d "$PGDB" -H clear add -u braceuser -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w '{SHA}not-really'
+    # Quotes, backslashes and dollar signs must be stored exactly as given.
+    run -b pg -d "$PGDB" -H clear add -u quoteuser -P vvccccbbcdeh -p 4a6f8e2d1c3d -k 00112233445566778899aabbccddeeff -w "it's \\ \$\$ :x"
+    dump_pg
+}
+
+scenario_pg_modify() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv users.csv <<'EOF'
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+alice,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+bob,vvccccbbcdeh,4a6f8e2d1c3d,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+carol,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+EOF
+    run -b pg -d "$PGDB" import "$WORK/users.csv"
+    run -b pg -d "$PGDB" disable alice
+    run -b pg -d "$PGDB" enable alice VVCCCCBBCDEG
+    run -b pg -d "$PGDB" disable bob
+    dump_pg
+    run -b pg -d "$PGDB" delete alice vvccccbbcdef
+    run -b pg -d "$PGDB" delete bob
+    run -b pg -d "$PGDB" delete bob
+    # Quotes in arguments must not change the SQL: these match no rows,
+    # and carol must still be active afterwards.
+    run -b pg -d "$PGDB" enable "o'brien"
+    run -b pg -d "$PGDB" disable "x' OR '1'='1"
+    run -b pg -d "$PGDB" disable carol "x' OR '1'='1"
+    dump_pg
+}
+
+# What Radiator's login role can and cannot do, using the queries from
+# 'config' with Radiator's %-substitutions filled in.
+scenario_pg_radiator() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv example.csv <"$ROOT/users.example.csv"
+    run -b pg -d "$PGDB" import example.csv >/dev/null
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+
+    as_radiator "select secret, active, userId, counter, low, high, password from yubikeys where username='test.user2' and tokenId='cbdefghijklr'"
+    as_radiator "update yubikeys set accessed=to_timestamp(1791314814), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    run -b pg -d "$PGDB" list test.user2
+
+    as_radiator "update yubikeys set active=1 where username='test.user2'"
+    as_radiator "insert into yubikeys (username, tokenId, userId, secret) values ('x', 'x', 'x', 'x')"
+    as_radiator "delete from yubikeys"
+    as_radiator "select * from yubikeys"
+
+    # The management script refuses to run as Radiator's role.
+    run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -b pg -d "$PGDB" list
+    run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -b pg -d "$PGDB" disable test.user
+}
+
 # --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
-ALL=(help init import import_formats import_errors add encodings modify permissions tools config)
+ALL=(help init import import_formats import_errors add encodings modify permissions tools config
+     pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator)
+
+# Scenarios that need a PostgreSQL server.
+needs_pg() { [[ $1 == pg_* && $1 != pg_offline ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
@@ -308,14 +546,34 @@ done
 TMPROOT=$(mktemp -d)
 WORK=$TMPROOT/work
 mkdir -p "$EXPECTED"
-pass=0 fail=0
+pass=0 fail=0 skip=0
+
+# Scenarios pick their own databases, so ignore any set in the environment.
+unset PGDATABASE PGSERVICE
+if command -v psql >/dev/null; then
+    pg_version=$(psql -X -d postgres -tAc 'SHOW server_version_num' 2>/dev/null)
+    if [[ $pg_version =~ ^[0-9]+$ ]]; then
+        if (( pg_version >= 180000 )); then PG_OK=1; else PG_SKIP_REASON="needs PostgreSQL 18 or later"; fi
+    fi
+fi
 
 for name in "${SELECTED[@]}"; do
     declare -F "scenario_$name" >/dev/null || { echo "unknown scenario: $name" >&2; exit 2; }
+    if needs_pg "$name" && [[ $PG_OK == 0 ]]; then
+        echo "SKIP     $name ($PG_SKIP_REASON)"; skip=$((skip + 1)); continue
+    fi
     rm -rf -- "$WORK" && mkdir -p "$WORK"
     DB=$WORK/yubicred.db
     actual=$TMPROOT/$name.out
-    ( cd "$WORK" && "scenario_$name" ) 2>&1 | normalize >"$actual"
+    if needs_pg "$name"; then pg_cleanup; fi
+    (
+        cd "$WORK" || exit
+        if needs_pg "$name"; then
+            export PG_ADMIN_ROLE=${PGT}_admin PG_RADIATOR_ROLE=${PGT}_radiator
+        fi
+        "scenario_$name"
+    ) 2>&1 | normalize >"$actual"
+    if needs_pg "$name"; then pg_cleanup; fi
 
     if [[ $UPDATE == 1 ]]; then
         mv -- "$actual" "$EXPECTED/$name.out"
@@ -329,6 +587,6 @@ for name in "${SELECTED[@]}"; do
 done
 
 if [[ $UPDATE == 0 ]]; then
-    echo "$pass passed, $fail failed"
+    echo "$pass passed, $fail failed, $skip skipped"
     [[ $fail -eq 0 ]]
 fi

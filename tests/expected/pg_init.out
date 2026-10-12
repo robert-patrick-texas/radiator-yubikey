@@ -1,0 +1,100 @@
+$ yubikey-db.sh -b pg -d <T>_db list
+yubikey-db.sh: error: cannot use PostgreSQL database <T>_db: connection to server <SERVER> failed: FATAL:  database "<T>_db" does not exist
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init-pg --admin <T>_op
+Roles ready: <T>_admin (owner) and <T>_radiator (Radiator login); members of <T>_admin: <T>_op
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+Next steps:
+  - Radiator on this host: with Ubuntu's default peer authentication on the
+    local socket, Radiator must run as the OS user "<T>_radiator" and needs no password.
+  - Radiator on another host: add a line like this to pg_hba.conf, above the
+    generic "host all all" lines, reload PostgreSQL, and give <T>_radiator a password
+    with: yubikey-db.sh -b pg -d <T>_db init-pg --set-password
+        hostssl  <T>_db  <T>_radiator  <radiator-ip>/32  scram-sha-256
+  - Print the Radiator configuration: yubikey-db.sh -b pg -d <T>_db config
+[exit 0]
+
+# columns
+column_name | data_type | max_length | is_nullable | column_default
+username | character varying | 255 | NO | 
+password | text |  | NO | ''::text
+active | smallint |  | NO | 1
+created | timestamp with time zone |  | NO | now()
+accessed | timestamp with time zone |  | YES | 
+tokenid | character varying | 60 | NO | 
+userid | character varying | 60 | NO | 
+secret | character varying | 60 | NO | 
+counter | integer |  | NO | 0
+low | integer |  | NO | 0
+high | integer |  | NO | 0
+# constraints (NOT NULL is shown in the columns above)
+conname | definition
+yubikeys_active_check | CHECK ((active = ANY (ARRAY[0, 1])))
+yubikeys_pkey | PRIMARY KEY (userid)
+yubikeys_tokenid_key | UNIQUE (tokenid)
+# indexes
+indexname
+yubikeys_pkey
+yubikeys_tokenid_key
+yubikeys_username
+# owners
+database_owner | table_owner
+<T>_admin | <T>_admin
+# privileges for roles other than the owner
+grantee | privilege_type | columns
+<T>_radiator | SELECT | active, counter, high, low, password, secret, tokenid, userid, username
+<T>_radiator | UPDATE | accessed, counter, high, low
+grantee | table_level_privilege
+database_acl
+{<T>_admin=CTc/<T>_admin,<T>_radiator=c/<T>_admin}
+# members of the admin role (test roles only)
+member
+<T>_op
+
+$ yubikey-db.sh -b pg -d <T>_db init-pg
+Roles ready: <T>_admin (owner) and <T>_radiator (Radiator login)
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+Next steps:
+  - Radiator on this host: with Ubuntu's default peer authentication on the
+    local socket, Radiator must run as the OS user "<T>_radiator" and needs no password.
+  - Radiator on another host: add a line like this to pg_hba.conf, above the
+    generic "host all all" lines, reload PostgreSQL, and give <T>_radiator a password
+    with: yubikey-db.sh -b pg -d <T>_db init-pg --set-password
+        hostssl  <T>_db  <T>_radiator  <radiator-ip>/32  scram-sha-256
+  - Print the Radiator configuration: yubikey-db.sh -b pg -d <T>_db config
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username | public_id | active | created | accessed | counter 
+----------+-----------+--------+---------+----------+---------
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db init --bogus
+yubikey-db.sh: error: init: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init-pg --bogus
+yubikey-db.sh: error: init-pg: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init-pg --admin Bad-Login
+yubikey-db.sh: error: invalid login role 'Bad-Login' (use lowercase letters, digits and _, starting with a letter or _)
+[exit 1]
+
+$ yubikey-db.sh -b pg -d bad-name init-pg
+yubikey-db.sh: error: invalid database name 'bad-name' (use lowercase letters, digits and _, starting with a letter or _)
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init-pg --set-password
+yubikey-db.sh: error: init-pg: --set-password needs a terminal to prompt on
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_empty list
+yubikey-db.sh: error: PostgreSQL database <T>_empty has no yubikeys table; run 'yubikey-db.sh -b pg init-pg' first
+[exit 1]
+

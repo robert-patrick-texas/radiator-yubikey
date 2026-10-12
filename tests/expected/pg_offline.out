@@ -1,0 +1,92 @@
+$ yubikey-db.sh -b mysql list
+yubikey-db.sh: error: --backend must be sqlite or pg
+[exit 1]
+
+$ yubikey-db.sh init-pg
+yubikey-db.sh: error: init-pg is for PostgreSQL; add -b pg
+[exit 1]
+
+$ PSQL=/nonexistent/psql yubikey-db.sh -b pg list
+yubikey-db.sh: error: psql not found (install the postgresql-client package or set PSQL=/path/to/psql)
+[exit 1]
+
+$ PG_ADMIN_ROLE=Bad-Name yubikey-db.sh -b pg list
+yubikey-db.sh: error: invalid admin role (PG_ADMIN_ROLE) 'Bad-Name' (use lowercase letters, digits and _, starting with a letter or _)
+[exit 1]
+
+$ PSQL=<WORK>/psql16 yubikey-db.sh -b pg -d yubikey init-pg
+yubikey-db.sh: error: PostgreSQL 18 or later is required (this server runs 16.4)
+[exit 1]
+
+$ PSQL=<WORK>/psql16 yubikey-db.sh -b pg -d yubikey init
+yubikey-db.sh: error: PostgreSQL 18 or later is required (this server runs 16.4)
+[exit 1]
+
+$ yubikey-db.sh -b pg config
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for PostgreSQL database yubikey
+# (secret stored as base64; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+
+    # Radiator on the database host connects over the local socket
+    # (dbi:Pg:dbname=NAME). With peer authentication, the Ubuntu default,
+    # Radiator must run as the OS user "radiator" and DBAuth stays empty.
+    # Radiator on another host connects over TLS, for example
+    #   dbi:Pg:dbname=NAME;host=db.example.com;port=5432;sslmode=verify-full
+    # with DBAuth set to the radiator role's password (init-pg --set-password).
+    # A standby server can be listed as a second DBSource/DBUsername/DBAuth.
+    DBSource     dbi:Pg:dbname=yubikey
+    DBUsername   radiator
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. Radiator's default
+    # current_timestamp() is not valid in PostgreSQL, so %5 is used.
+    UpdateQuery  update yubikeys set accessed=to_timestamp(%5), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+[exit 0]
+
+$ DB_BACKEND=pg yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey
+    DBUsername   radiator
+
+$ PGHOST=db.example.com yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full
+    DBUsername   radiator
+
+$ PGHOST=/var/run/postgresql yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey
+    DBUsername   radiator
+
+$ PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require
+    DBUsername   radiator
+
+$ PGSERVICE=yubikey yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:service=yubikey
+    DBUsername   radiator
+
+$ PGSERVICE=yubikey PGDATABASE=radius yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=radius
+    DBUsername   radiator
+
+$ PG_RADIATOR_ROLE=radiusd yubikey-db.sh -b pg config | grep DB
+    DBSource     dbi:Pg:dbname=yubikey
+    DBUsername   radiusd
+
+$ yubikey-db.sh -b pg -d radius config | grep DB
+    DBSource     dbi:Pg:dbname=radius
+    DBUsername   radiator
+

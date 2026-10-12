@@ -52,13 +52,16 @@ loaded into this database.
 
 ## Prerequisites
 
+Supported platform: **Ubuntu 26.04 LTS**. The PostgreSQL backend (`-b pg`)
+needs **PostgreSQL 18** or later, which is Ubuntu 26.04's default.
+
 | Where | What |
 |---|---|
 | Machine where you run the script | `bash` 4 or later, `sqlite3`, `perl` |
 | Radiator server | Radiator 4.x with the Perl modules `DBD::SQLite`, `Auth::Yubikey_Decrypter` (0.05 or later), and `Crypt::Rijndael` |
 | Machine where you program keys | [YubiKey Manager](https://www.yubico.com/support/download/yubikey-manager/) (`ykman`) |
 
-To install the tools on Debian or Ubuntu:
+To install the tools on Ubuntu:
 
 ```bash
 sudo apt install sqlite3 perl
@@ -418,7 +421,7 @@ matches what this script creates.
 ## Running the tests
 
 `tests/run-tests.sh` runs the script through a fixed set of scenarios against
-throwaway databases. It compares each transcript (commands, output, exit codes,
+throwaway SQLite and PostgreSQL databases. It compares each transcript (commands, output, exit codes,
 and the final table contents) with the files in `tests/expected/`. It needs
 only `bash`, `sqlite3`, and `perl`, and must run as a normal user, not root.
 
@@ -430,6 +433,21 @@ tests/run-tests.sh --update        # accept a deliberate change in behavior
 
 After `--update`, review the changes to `tests/expected/` with `git diff`
 before committing them. The test values are not real keys.
+
+The `pg_*` scenarios test the PostgreSQL backend. They need `psql` and a
+PostgreSQL 18 or later server that you can reach as a role with `CREATEDB` and
+`CREATEROLE`. One-time setup on a test machine:
+
+```bash
+sudo apt install postgresql postgresql-client
+sudo -u postgres createuser --createdb --createrole "$USER"
+```
+
+The scenarios create databases and roles named `yk_test_<pid>_*` and drop them
+afterwards. `pg_radiator` also logs in as the Radiator role over TCP to
+`127.0.0.1` with a password, which Ubuntu's default `pg_hba.conf` allows.
+Without a reachable PostgreSQL 18 server, these scenarios are skipped, not
+failed.
 
 ## References
 
