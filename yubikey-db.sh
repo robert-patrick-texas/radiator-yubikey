@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# yubikey-db.sh - Manage the local SQLite YubiKey database used by Radiator
-#                 RADIUS (<AuthBy SQLYUBIKEY>) for offline YubiKey OTP
-#                 authentication with no YubiCloud dependency.
+# yubikey-db.sh - Manage the SQLite or PostgreSQL YubiKey database used by
+#                 Radiator RADIUS (<AuthBy SQLYUBIKEY>) for offline YubiKey
+#                 OTP authentication with no YubiCloud dependency.
 #
 # VERSION
 #   1.0.1
@@ -20,12 +20,26 @@
 #   Record them, then load them with the 'add' or 'import' commands below.
 #
 # PREREQUISITES
-#   On the host that runs this script : bash 4+, sqlite3, perl
-#   On the Radiator host              : Perl modules DBD::SQLite,
-#                                       Auth::Yubikey_Decrypter, Crypt::Rijndael
+#   Supported platform                : Ubuntu 26.04 LTS; PostgreSQL 18 or
+#                                       later for the PostgreSQL backend
+#   On the host that runs this script : bash 4+, perl, and sqlite3 (SQLite)
+#                                       or psql (PostgreSQL: postgresql-client)
+#   On the Radiator host              : Perl modules Auth::Yubikey_Decrypter,
+#                                       Crypt::Rijndael, and DBD::SQLite or
+#                                       DBD::Pg (libdbd-pg-perl)
+#
+# DATABASES
+#   SQLite (the default) keeps everything in one file on the Radiator host.
+#   PostgreSQL (-b pg) can be shared by several Radiator servers, so the OTP
+#   counters that block replayed OTPs are shared too. With PostgreSQL:
+#     sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"
+#   creates the database "yubikey", an admin role that owns it (yubikey_admin;
+#   --admin makes your login a member), and Radiator's login role (radiator),
+#   which can read the keys but change only the counters and access time.
 #
 # COMMANDS
 #   init      Create the database file and the yubikeys table (safe to re-run)
+#   init-pg   PostgreSQL only: create the roles and database, then the table
 #   add       Add one user/YubiKey (values from options, or prompted)
 #   import    Bulk-load users/YubiKeys from a CSV file in a single transaction
 #   list      Show users and keys (never shows AES keys or passwords)
@@ -56,6 +70,9 @@
 #   sudo ./yubikey-db.sh import users.csv
 #   sudo ./yubikey-db.sh -d /srv/radius/yubi.db list
 #   sudo ./yubikey-db.sh disable test.user
+#   sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin alice
+#   ./yubikey-db.sh -b pg import users.csv                    # as alice
+#   ./yubikey-db.sh -b pg config
 #
 # DIFFERENCES FROM THE ORIGINAL EXAMPLE STATEMENTS
 #   - created is set with an unquoted CURRENT_TIMESTAMP. In SQLite,
@@ -69,12 +86,21 @@
 #     OTP reports it. This matters if you enable CheckSecretId.
 #   - Static passwords are stored as {crypt} SHA-512 hashes by default, not
 #     plaintext (use --password-hash clear to store plaintext).
-#   - SQL is passed to sqlite3 on stdin, not on the command line, so AES keys
-#     are not visible in 'ps' output. All values are validated and quoted.
+#   - SQL is passed to sqlite3 or psql on stdin, not on the command line, so
+#     AES keys are not visible in 'ps' output. All values are validated and
+#     quoted.
 #
 # ENVIRONMENT
-#   DB_FILE          Database path (default /etc/radiator/db/yubicred.db)
+#   DB_BACKEND       sqlite (default) or pg
+#   DB_FILE          SQLite database path (default /etc/radiator/db/yubicred.db)
 #   SQLITE3          sqlite3 binary to use (default: sqlite3 on PATH)
+#   PSQL             psql binary to use (default: psql on PATH)
+#   PGDATABASE       PostgreSQL database name (default yubikey; -d overrides)
+#   PGHOST, PGPORT, PGUSER, PGSSLMODE, PGSERVICE
+#                    Standard PostgreSQL connection settings, used by psql.
+#                    Put passwords in ~/.pgpass, never on the command line.
+#   PG_ADMIN_ROLE    PostgreSQL role that owns the table (default yubikey_admin)
+#   PG_RADIATOR_ROLE PostgreSQL role Radiator logs in as (default radiator)
 #   SECRET_ENCODING  base64 (default) or hex
 #   PASSWORD_HASH    crypt (default) or clear
 #
@@ -88,11 +114,16 @@ umask 027   # new files/directories are not world-readable
 
 PROG=${0##*/}
 VERSION=1.0.1
+DB_BACKEND=${DB_BACKEND:-sqlite}   # all database access goes through the db_* functions
 DB_FILE=${DB_FILE:-/etc/radiator/db/yubicred.db}
 SQLITE3=${SQLITE3:-sqlite3}
+PSQL=${PSQL:-psql}
+PG_ADMIN_ROLE=${PG_ADMIN_ROLE:-yubikey_admin}
+PG_RADIATOR_ROLE=${PG_RADIATOR_ROLE:-radiator}
 SECRET_ENCODING=${SECRET_ENCODING:-base64}
 PASSWORD_HASH=${PASSWORD_HASH:-crypt}
-DB_BACKEND=sqlite   # every database operation goes through the db_* functions
+DB_OPT=       # -d value: the SQLite file or the PostgreSQL database name
+DB_DESC=      # how messages name the database, set by the backend
 
 # YubiKey "modhex" alphabet and the hex digits it maps to, position by position.
 MODHEX=cbdefghijklnrtuv
@@ -115,7 +146,9 @@ usage() {
 Usage: $PROG [global options] <command> [command options]
 
 Global options:
-  -d, --db FILE                 SQLite database (default: $DB_FILE)
+  -b, --backend NAME            Database type: sqlite (default) | pg
+  -d, --db NAME                 SQLite: database file (default: $DB_FILE)
+                                PostgreSQL: database name (default: yubikey)
   -e, --secret-encoding ENC     How the AES key is stored: base64 (default) | hex
   -H, --password-hash MODE      How static passwords are stored: crypt (default) | clear
   -h, --help                    Show this help
@@ -126,6 +159,15 @@ Commands:
         Create the database directory, file, and yubikeys table. --owner chowns
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
+        PostgreSQL: create the table and Radiator's grants in an existing
+        database (run as a member of the admin role).
+
+  init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
+        Create the admin role ($PG_ADMIN_ROLE), Radiator's login role
+        ($PG_RADIATOR_ROLE) and the database, then run init. Run it as the
+        postgres superuser. Each --admin LOGIN is created if needed and made a
+        member of the admin role, so it can manage users. --set-password asks
+        for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
       [--no-password] [--inactive] [--replace]
@@ -147,6 +189,9 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+
+PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
+PGSERVICE settings. Keep passwords in ~/.pgpass.
 EOF
 }
 
@@ -264,7 +309,8 @@ prompt_value() {
 #   db_run               run SQL read from stdin, stopping at the first error
 #   db_ensure_readable   exit unless the database exists and can be read
 #   db_ensure_writable   exit unless the database exists and can be changed
-#   db_init [OPTIONS]    create the database and yubikeys table (safe to re-run)
+#   db_init [OPTIONS]    create the yubikeys table, and for SQLite the database
+#                        file (safe to re-run)
 #   db_insert_sql        print SQL that inserts the record in the R_* globals,
 #                        replacing clashing rows when REPLACE=1
 #   db_list [WHERE]      print users and keys, optionally filtered by WHERE
@@ -282,13 +328,6 @@ db_insert_sql()      { "${DB_BACKEND}_insert_sql"; }
 db_list()            { "${DB_BACKEND}_list" "$@"; }
 db_change()          { "${DB_BACKEND}_change" "$@"; }
 db_config()          { "${DB_BACKEND}_config" "$@"; }
-
-# The query behind 'list', shared by every backend. It never selects the AES
-# key or password. $1 = optional WHERE clause.
-list_sql() {
-    printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter\n'
-    printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
-}
 
 # --------------------------------------------------------------------------
 # SQLite backend
@@ -388,8 +427,13 @@ sqlite_insert_sql() {
         "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
 }
 
+# 'list' never selects the AES key or password.
 sqlite_list() {
-    { printf '.headers on\n.mode column\n'; list_sql "${1-}"; } | sqlite_run
+    {
+        printf '.headers on\n.mode column\n'
+        printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter\n'
+        printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
+    } | sqlite_run
 }
 
 sqlite_change() {
@@ -415,6 +459,290 @@ sqlite_config() {
     # %5 = Unix time, %7 = token ID in modhex. SQLite does not support
     # current_timestamp(), so %5 is used for the access time.
     UpdateQuery  update yubikeys set accessed=datetime(%5,'unixepoch'), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+
+    # Require "password:OTP" (static password/PIN + YubiKey OTP).
+    # Remove this if users authenticate with the OTP alone.
+    Require2Factor
+
+    # Also check that the private ID in the OTP matches userId.
+    CheckSecretId
+</AuthBy>
+EOF
+}
+
+# --------------------------------------------------------------------------
+# PostgreSQL backend
+#
+# psql uses the standard libpq connection settings: -d sets PGDATABASE, and
+# PGHOST, PGPORT, PGUSER, PGSSLMODE and PGSERVICE are used as they are set.
+# Passwords come from ~/.pgpass, or are not needed with peer authentication
+# on the local socket. This script never puts one on a command line.
+#
+# Roles (names set by PG_ADMIN_ROLE and PG_RADIATOR_ROLE):
+#   admin role     owns the database and table. People who run this script
+#                  are members of it (init-pg --admin LOGIN).
+#   radiator role  Radiator's login. It can read the lookup columns and
+#                  update only accessed and the counters.
+# --------------------------------------------------------------------------
+
+# Point psql at the database: -d wins, then PGDATABASE, then "yubikey". A
+# libpq service (PGSERVICE) supplies its own dbname when neither is set.
+pg_setup() {
+    if [[ -n $DB_OPT ]]; then
+        export PGDATABASE=$DB_OPT
+    elif [[ -z ${PGDATABASE-} && -z ${PGSERVICE-} ]]; then
+        export PGDATABASE=yubikey
+    fi
+    DB_DESC="PostgreSQL database ${PGDATABASE:-from service $PGSERVICE}"
+    pg_check_name "admin role (PG_ADMIN_ROLE)" "$PG_ADMIN_ROLE"
+    pg_check_name "Radiator role (PG_RADIATOR_ROLE)" "$PG_RADIATOR_ROLE"
+}
+
+# Role and database names are written into SQL as identifiers, so only
+# plain lowercase names are accepted. $1 = what it is, $2 = the name.
+pg_check_name() {
+    [[ $2 =~ ^[a-z_][a-z0-9_]{0,62}$ ]] \
+        || die "invalid $1 '$2' (use lowercase letters, digits and _, starting with a letter or _)"
+}
+
+pg_require_tools() {
+    command -v "$PSQL" >/dev/null 2>&1 \
+        || die "psql not found (install the postgresql-client package or set PSQL=/path/to/psql)"
+}
+
+# Run psql on SQL read from stdin, stopping at the first error. Terse errors
+# leave out PostgreSQL's DETAIL line, which would show the private ID on a
+# duplicate key. Arguments are passed to psql.
+pg_psql() {
+    {
+        cat <<'EOF'
+\set VERBOSITY terse
+SET client_min_messages = warning;
+SET standard_conforming_strings = on;
+SET lock_timeout = '5s';
+EOF
+        cat
+    } | "$PSQL" -X -q -v ON_ERROR_STOP=1 "$@"
+}
+
+pg_run() {
+    pg_psql --no-align --tuples-only
+}
+
+# Print "missing" if there is no yubikeys table, "ok" if the SQL condition
+# $1 is true, and "denied" otherwise. Exits if psql cannot connect.
+pg_table_access() {
+    local out
+    out=$(printf "SELECT CASE WHEN to_regclass('yubikeys') IS NULL THEN 'missing' WHEN %s THEN 'ok' ELSE 'denied' END;\n" "$1" \
+            | pg_run 2>&1) \
+        || die "cannot use $DB_DESC: ${out#psql: error: }"
+    printf '%s' "$out"
+}
+
+pg_ensure_readable() {
+    local state
+    state=$(pg_table_access "has_table_privilege('yubikeys', 'SELECT')") || exit 1
+    case $state in
+        ok)      ;;
+        missing) die "$DB_DESC has no yubikeys table; run '$PROG -b pg init-pg' first" ;;
+        *)       die "no read access to the yubikeys table in $DB_DESC (is ${PGUSER:-$(id -un)} a member of $PG_ADMIN_ROLE?)" ;;
+    esac
+}
+
+pg_ensure_writable() {
+    local state
+    state=$(pg_table_access "has_table_privilege('yubikeys', 'INSERT')
+        AND has_table_privilege('yubikeys', 'UPDATE') AND has_table_privilege('yubikeys', 'DELETE')") || exit 1
+    case $state in
+        ok)      ;;
+        missing) die "$DB_DESC has no yubikeys table; run '$PROG -b pg init-pg' first" ;;
+        *)       die "no write access to the yubikeys table in $DB_DESC (is ${PGUSER:-$(id -un)} a member of $PG_ADMIN_ROLE?)" ;;
+    esac
+}
+
+# Table definition. It differs from the SQLite one where PostgreSQL is
+# stricter: timestamps are real timestamps, accessed is NULL until the first
+# login, active is a 0/1 smallint (a boolean column rejects 1), and the
+# password column is text, because a {crypt} hash is longer than 64
+# characters. Counters are NOT NULL because Radiator skips its replay check
+# when the counter is NULL.
+pg_schema() {
+    cat <<EOF
+CREATE TABLE IF NOT EXISTS yubikeys (
+    username varchar(255) NOT NULL,
+    password text         NOT NULL DEFAULT '',
+    active   smallint     NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    created  timestamptz  NOT NULL DEFAULT now(),
+    accessed timestamptz,
+    tokenId  varchar(60)  NOT NULL UNIQUE,   -- YubiKey public ID (modhex)
+    userId   varchar(60)  PRIMARY KEY,       -- YubiKey private ID (hex)
+    secret   varchar(60)  NOT NULL,          -- AES key (base64 or hex)
+    counter  integer      NOT NULL DEFAULT 0,
+    low      integer      NOT NULL DEFAULT 0,
+    high     integer      NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
+REVOKE ALL ON yubikeys FROM PUBLIC;
+GRANT SELECT (username, password, active, tokenId, userId, secret, counter, low, high)
+    ON yubikeys TO $PG_RADIATOR_ROLE;
+GRANT UPDATE (accessed, counter, low, high) ON yubikeys TO $PG_RADIATOR_ROLE;
+EOF
+}
+
+pg_init() {
+    [[ $# -eq 0 ]] || die "init: unknown option '$1'"
+    pg_require_version
+    pg_create_table
+}
+
+# Exit unless the server runs PostgreSQL 18 or later, the only version this
+# script supports. Arguments are passed to psql (init-pg uses -d postgres).
+pg_require_version() {
+    local out num ver
+    out=$(echo "SELECT current_setting('server_version_num') || '|' || current_setting('server_version');" \
+            | pg_psql --no-align --tuples-only "$@") \
+        || die "cannot connect to PostgreSQL to check its version"
+    IFS='|' read -r num ver <<<"$out"
+    if ! [[ $num =~ ^[0-9]+$ ]] || (( num < 180000 )); then
+        die "PostgreSQL 18 or later is required (this server runs ${ver:-an unknown version})"
+    fi
+}
+
+# Create the table and Radiator's grants in an existing database. Run as a
+# member of the admin role (or a superuser). The table is created as the
+# admin role, so that role owns it rather than whoever ran init.
+pg_create_table() {
+    if ! { printf 'SET ROLE %s;\n' "$PG_ADMIN_ROLE"; pg_schema; } | pg_run; then
+        die "init failed; roles $PG_ADMIN_ROLE and $PG_RADIATOR_ROLE must exist and ${PGUSER:-$(id -un)} must be a member of $PG_ADMIN_ROLE (run init-pg first)"
+    fi
+    info "Database ready: $DB_DESC (owner $PG_ADMIN_ROLE, Radiator role $PG_RADIATOR_ROLE)"
+}
+
+# init-pg: create the roles and the database, then the table. Run as the
+# postgres superuser, or a role with CREATEROLE and CREATEDB. Safe to re-run:
+# existing roles and the database are kept.
+pg_init_server() {
+    local -a admins=()
+    local set_password=0 db login
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -a|--admin)     admins+=("${2:?--admin needs a login role name}"); shift 2 ;;
+            --set-password) set_password=1; shift ;;
+            *) die "init-pg: unknown option '$1'" ;;
+        esac
+    done
+    db=${PGDATABASE:-}
+    [[ -n $db ]] || die "init-pg: name the database with -d (a service name alone is not enough)"
+    pg_check_name "database name" "$db"
+    for login in "${admins[@]}"; do pg_check_name "login role" "$login"; done
+    if [[ $set_password == 1 && ! -t 0 ]]; then
+        die "init-pg: --set-password needs a terminal to prompt on"
+    fi
+    pg_require_version -d postgres
+
+    local a=$PG_ADMIN_ROLE r=$PG_RADIATOR_ROLE
+    {
+        printf "SELECT 'CREATE ROLE %s NOLOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s')\n\\\\gexec\n" "$a" "$a"
+        printf "SELECT 'CREATE ROLE %s LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s')\n\\\\gexec\n" "$r" "$r"
+        for login in "${admins[@]}"; do
+            printf "SELECT 'CREATE ROLE %s LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s')\n\\\\gexec\n" "$login" "$login"
+            printf 'GRANT %s TO %s;\n' "$a" "$login"
+        done
+        # A non-superuser can only create a database owned by a role it can act as.
+        printf "SELECT 'GRANT %s TO ' || quote_ident(current_user) FROM pg_roles WHERE rolname = current_user AND NOT rolsuper AND NOT pg_has_role(current_user, '%s', 'SET')\n\\\\gexec\n" "$a" "$a"
+        printf "SELECT 'CREATE DATABASE %s OWNER %s' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s')\n\\\\gexec\n" "$db" "$a" "$db"
+        printf 'REVOKE ALL ON DATABASE %s FROM PUBLIC;\n' "$db"
+        printf 'GRANT CONNECT ON DATABASE %s TO %s;\n' "$db" "$r"
+    } | pg_psql --no-align --tuples-only -d postgres \
+        || die "init-pg failed (run it as the postgres superuser, e.g. sudo -u postgres $PROG -b pg init-pg)"
+    info "Roles ready: $a (owner) and $r (Radiator login)${admins[*]:+; members of $a: ${admins[*]}}"
+
+    pg_create_table
+
+    if [[ $set_password == 1 ]]; then
+        info "Set the password for $r (Radiator's DBAuth):"
+        "$PSQL" -X -q -d postgres -c "\\password $r" || die "could not set the password for $r"
+    fi
+    cat <<EOF
+Next steps:
+  - Radiator on this host: with Ubuntu's default peer authentication on the
+    local socket, Radiator must run as the OS user "$r" and needs no password.
+  - Radiator on another host: add a line like this to pg_hba.conf, above the
+    generic "host all all" lines, reload PostgreSQL, and give $r a password
+    with: $PROG -b pg -d $db init-pg --set-password
+        hostssl  $db  $r  <radiator-ip>/32  scram-sha-256
+  - Print the Radiator configuration: $PROG -b pg -d $db config
+EOF
+}
+
+# Print the INSERT for the record held in the R_* globals. With --replace,
+# rows that clash on the public ID or the private ID are deleted in the same
+# statement (ON CONFLICT covers only one constraint), so the replacement is
+# atomic. Referencing the DELETE makes it run before the INSERT.
+pg_insert_sql() {
+    local cols vals
+    cols="username, password, active, created, accessed, tokenId, userId, secret, counter, low, high"
+    vals="$(sql_quote "$R_USER"), $(sql_quote "$R_PASSWORD"), $R_ACTIVE, CURRENT_TIMESTAMP, NULL, $(sql_quote "$R_PUB"), $(sql_quote "$R_PRIV"), $(sql_quote "$R_SECRET"), 0, 0, 0"
+    if [[ $REPLACE == 1 ]]; then
+        printf 'WITH replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' \
+            "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")"
+        printf 'INSERT INTO yubikeys (%s)\nSELECT %s WHERE (SELECT count(*) FROM replaced) >= 0;\n' "$cols" "$vals"
+    else
+        printf 'INSERT INTO yubikeys (%s) VALUES (%s);\n' "$cols" "$vals"
+    fi
+}
+
+# Times are shown in UTC, in the same format as the SQLite backend.
+pg_list() {
+    cat <<EOF | pg_psql --pset=footer=off
+SELECT username, tokenId AS public_id, active,
+       to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
+       to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS accessed,
+       counter
+  FROM yubikeys ${1-} ORDER BY username, tokenId;
+EOF
+}
+
+pg_change() {
+    printf 'WITH changed AS (%s RETURNING 1) SELECT count(*) FROM changed;\n' "${1%;}" | pg_run
+}
+
+pg_config() {
+    local dsn
+    if [[ -z ${PGDATABASE-} ]]; then
+        dsn="dbi:Pg:service=$PGSERVICE"
+    else
+        dsn="dbi:Pg:dbname=$PGDATABASE"
+        if [[ -n ${PGHOST-} && $PGHOST != /* ]]; then
+            dsn+=";host=$PGHOST;port=${PGPORT:-5432};sslmode=${PGSSLMODE:-verify-full}"
+        fi
+    fi
+    cat <<EOF
+# Sample Radiator <AuthBy SQLYUBIKEY> clause for $DB_DESC
+# (secret stored as $SECRET_ENCODING; see the comments below)
+<AuthBy SQLYUBIKEY>
+    Identifier   YubiKeyLocal
+
+    # Radiator on the database host connects over the local socket
+    # (dbi:Pg:dbname=NAME). With peer authentication, the Ubuntu default,
+    # Radiator must run as the OS user "$PG_RADIATOR_ROLE" and DBAuth stays empty.
+    # Radiator on another host connects over TLS, for example
+    #   dbi:Pg:dbname=NAME;host=db.example.com;port=5432;sslmode=verify-full
+    # with DBAuth set to the $PG_RADIATOR_ROLE role's password (init-pg --set-password).
+    # A standby server can be listed as a second DBSource/DBUsername/DBAuth.
+    DBSource     $dsn
+    DBUsername   $PG_RADIATOR_ROLE
+    DBAuth
+
+    # Columns must come back in this order: secret, active, userId,
+    # counter, session_use (low), ignored (high), static_password.
+    # %0 = quoted username, %3 = token (public) ID in modhex.
+    AuthSelect   select secret, active, userId, counter, low, high, password from yubikeys where username=%0 and tokenId=%3
+
+    # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
+    # %5 = Unix time, %7 = token ID in modhex. Radiator's default
+    # current_timestamp() is not valid in PostgreSQL, so %5 is used.
+    UpdateQuery  update yubikeys set accessed=to_timestamp(%5), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
 
     # Require "password:OTP" (static password/PIN + YubiKey OTP).
     # Remove this if users authenticate with the OTP alone.
@@ -542,7 +870,7 @@ cmd_import() {
     if ! db_run <"$TMPFILE"; then
         die "import failed and was rolled back; no rows imported (an existing YubiKey? use --replace)"
     fi
-    info "Imported $ok row(s) into $DB_FILE"
+    info "Imported $ok row(s) into $DB_DESC"
 }
 
 cmd_list() {
@@ -582,7 +910,8 @@ cmd_modify() {
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        -d|--db)              DB_FILE=${2:?--db needs a file}; shift 2 ;;
+        -b|--backend)         DB_BACKEND=${2:?--backend needs sqlite or pg}; shift 2 ;;
+        -d|--db)              DB_OPT=${2:?--db needs a file or database name}; shift 2 ;;
         -e|--secret-encoding) SECRET_ENCODING=${2:?}; shift 2 ;;
         -H|--password-hash)   PASSWORD_HASH=${2:?}; shift 2 ;;
         -h|--help|help)       usage; exit 0 ;;
@@ -596,6 +925,11 @@ done
     || die "--secret-encoding must be base64 or hex"
 [[ $PASSWORD_HASH == crypt || $PASSWORD_HASH == clear ]] \
     || die "--password-hash must be crypt or clear"
+case $DB_BACKEND in
+    sqlite) DB_FILE=${DB_OPT:-$DB_FILE}; DB_DESC=$DB_FILE ;;
+    pg)     pg_setup ;;
+    *)      die "--backend must be sqlite or pg" ;;
+esac
 [[ $# -gt 0 ]] || { usage >&2; exit 1; }
 
 cmd=$1; shift
@@ -605,6 +939,8 @@ esac
 require_tools
 case $cmd in
     init)                   db_init "$@" ;;
+    init-pg)                [[ $DB_BACKEND == pg ]] || die "init-pg is for PostgreSQL; add -b pg"
+                            pg_init_server "$@" ;;
     add)                    cmd_add "$@" ;;
     import)                 cmd_import "$@" ;;
     list)                   cmd_list "$@" ;;

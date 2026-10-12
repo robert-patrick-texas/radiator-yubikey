@@ -2,7 +2,9 @@ $ yubikey-db.sh --help
 Usage: yubikey-db.sh [global options] <command> [command options]
 
 Global options:
-  -d, --db FILE                 SQLite database (default: /etc/radiator/db/yubicred.db)
+  -b, --backend NAME            Database type: sqlite (default) | pg
+  -d, --db NAME                 SQLite: database file (default: /etc/radiator/db/yubicred.db)
+                                PostgreSQL: database name (default: yubikey)
   -e, --secret-encoding ENC     How the AES key is stored: base64 (default) | hex
   -H, --password-hash MODE      How static passwords are stored: crypt (default) | clear
   -h, --help                    Show this help
@@ -13,6 +15,15 @@ Commands:
         Create the database directory, file, and yubikeys table. --owner chowns
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
+        PostgreSQL: create the table and Radiator's grants in an existing
+        database (run as a member of the admin role).
+
+  init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
+        Create the admin role (yubikey_admin), Radiator's login role
+        (radiator) and the database, then run init. Run it as the
+        postgres superuser. Each --admin LOGIN is created if needed and made a
+        member of the admin role, so it can manage users. --set-password asks
+        for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
       [--no-password] [--inactive] [--replace]
@@ -34,6 +45,9 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+
+PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
+PGSERVICE settings. Keep passwords in ~/.pgpass.
 [exit 0]
 
 $ yubikey-db.sh --version
@@ -44,7 +58,9 @@ $ yubikey-db.sh
 Usage: yubikey-db.sh [global options] <command> [command options]
 
 Global options:
-  -d, --db FILE                 SQLite database (default: /etc/radiator/db/yubicred.db)
+  -b, --backend NAME            Database type: sqlite (default) | pg
+  -d, --db NAME                 SQLite: database file (default: /etc/radiator/db/yubicred.db)
+                                PostgreSQL: database name (default: yubikey)
   -e, --secret-encoding ENC     How the AES key is stored: base64 (default) | hex
   -H, --password-hash MODE      How static passwords are stored: crypt (default) | clear
   -h, --help                    Show this help
@@ -55,6 +71,15 @@ Commands:
         Create the database directory, file, and yubikeys table. --owner chowns
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
+        PostgreSQL: create the table and Radiator's grants in an existing
+        database (run as a member of the admin role).
+
+  init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
+        Create the admin role (yubikey_admin), Radiator's login role
+        (radiator) and the database, then run init. Run it as the
+        postgres superuser. Each --admin LOGIN is created if needed and made a
+        member of the admin role, so it can manage users. --set-password asks
+        for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
       [--no-password] [--inactive] [--replace]
@@ -76,6 +101,9 @@ Commands:
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
+
+PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
+PGSERVICE settings. Keep passwords in ~/.pgpass.
 [exit 1]
 
 $ yubikey-db.sh bogus
