@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-10-13
 
 The same OTP is now accepted only once even when it reaches two Radiator
 servers, or two Radiator processes, at the same moment; and
