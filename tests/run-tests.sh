@@ -1693,6 +1693,18 @@ EOF
     ln -sfn yubikey-partition.conf conf.d/yubikey.conf
     part leave | sed -E 's/(error: cannot copy the counters to the primary:).*/\1 <ERROR>/'
     printf '# yubikey.conf -> %s\n' "$(readlink conf.d/yubikey.conf)"
+
+    # leave while a writer (Radiator saving a counter, or the sync) holds
+    # the copy's lock, here for 1.5 s: the reads of the copy wait for it.
+    sed -i 's/port=1/port=5432/' conf.d/yubikey-cluster.conf
+    sqlite3 -cmd '.timeout 10000' state/keys.db "UPDATE yubikeys SET counter = 20, low = 0 WHERE username = 'test.user'"
+    printf 'BEGIN EXCLUSIVE;\n.shell sleep 1.5\nCOMMIT;\n' | sqlite3 state/keys.db &
+    lock=$!
+    sleep 0.3
+    part leave
+    wait "$lock"
+    printf '# yubikey.conf -> %s\n' "$(readlink conf.d/yubikey.conf)"
+    primary_rows
 }
 
 # --------------------------------------------------------------------------

@@ -103,3 +103,12 @@ error: cannot copy the counters to the primary: <ERROR>
 [exit 1]
 
 # yubikey.conf -> yubikey-partition.conf
+$ yubikey-partition.sh leave
+normal mode: Radiator uses the cluster again; counters moved forward in the primary for 1 YubiKey
+[exit 0]
+
+# yubikey.conf -> yubikey-cluster.conf
+# the primary:
+carol | vvccccdddddd | 6 | 2 | accessed
+test.user | cbdefghijkln | 20 | 0 | accessed
+test.user2 | cbdefghijklr | 8 | 0 | accessed

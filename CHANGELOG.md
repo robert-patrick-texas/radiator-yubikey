@@ -53,6 +53,14 @@ installed, from Radiator Software's packages or from their source.
 
 ### Fixed
 
+- `yubikey-partition.sh` read its copy of the keys without waiting for a
+  writer to finish. While Radiator was saving a counter in the copy, or the
+  copy was being updated, leaving partition mode failed with "database is
+  locked" and waited for a later check, and the copy's size in `setup`,
+  `sync`, `status` and the service's log could be blank. Its reads now wait
+  up to 10 s, as its writes already did (and the size shows `?` if the copy
+  still can't be read). `tests/run-tests.sh`: `pg_partition` leaves
+  partition mode while the copy is locked.
 - `tests/radiator/geo.sh` could fail now and then: reading a site's copy of
   the keys while partition mode's service was updating it ("database is
   locked"; it now waits for the lock), and the replayed OTP at West right

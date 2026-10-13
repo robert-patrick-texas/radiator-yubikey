@@ -114,7 +114,17 @@ log() { printf '%s\n' "$*"; }
 
 # yubikeys N: "1 YubiKey", "2 YubiKeys".
 yubikeys() { if [[ $1 == 1 ]]; then echo "1 YubiKey"; else echo "$1 YubiKeys"; fi; }
-copy_size() { yubikeys "$("$SQLITE3" "$COPY" 'SELECT count(*) FROM yubikeys' 2>/dev/null)"; }
+
+# copy_read SQLITE3-OPTIONS... SQL: a query on the copy. Like every use of
+# the copy, it waits up to 10 s for a writer to finish (Radiator saving a
+# counter in partition mode, or sync_copy), instead of failing at once with
+# "database is locked".
+copy_read() { "$SQLITE3" -batch -cmd '.timeout 10000' "${@:1:$#-1}" "$COPY" "${!#}"; }
+copy_size() {
+    local n
+    n=$(copy_read 'SELECT count(*) FROM yubikeys' 2>/dev/null) && [[ $n =~ ^[0-9]+$ ]] || n='?'
+    yubikeys "$n"
+}
 
 usage() {
     cat <<EOF
@@ -259,7 +269,7 @@ EOF
 # forward. Prints how many YubiKeys moved forward.
 merge() {
     local rows uid tok c l acc values='' out
-    rows=$("$SQLITE3" -batch -noheader -separator ' ' "$COPY" \
+    rows=$(copy_read -noheader -separator ' ' \
         "SELECT userId, tokenId, counter, coalesce(low, 0), coalesce(replace(accessed, ' ', 'T'), '-')
          FROM yubikeys WHERE counter IS NOT NULL" 2>&1) || { echo "cannot read the copy: ${rows%%$'\n'*}"; return 1; }
     while read -r uid tok c l acc; do
