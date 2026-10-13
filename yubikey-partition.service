@@ -1,8 +1,9 @@
 # yubikey-partition.service - Runs yubikey-partition.sh, which keeps a copy
 # of the keys on this server and, while no other site answers, makes Radiator
-# use it. Install it with the script (see the guide's "Partition mode"):
+# use it (see the guide's "Partition mode"). The radiator-yubikey package
+# installs it, not enabled; with the scripts in /opt/radiator-yubikey from git
+# instead:
 #
-#   sudo install -m 0755 yubikey-partition.sh yubikey-db.sh /usr/local/sbin/
 #   sudo install -m 0644 yubikey-partition.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 
@@ -13,7 +14,7 @@ After=network-online.target patroni@18-main.service radiator.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/sbin/yubikey-partition.sh run
+ExecStart=/opt/radiator-yubikey/yubikey-partition.sh run
 Restart=always
 RestartSec=5
 # Exit status 3: a problem with the settings or the setup, which a restart

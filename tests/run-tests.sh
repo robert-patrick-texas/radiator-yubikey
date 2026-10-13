@@ -21,7 +21,7 @@
 # checks permission errors, which root bypasses). The verify scenarios also
 # need openssl (to make test OTPs) and the Perl module Crypt::Rijndael, and
 # are skipped without them; so are the anycast scenarios, which need the
-# Perl module.
+# Perl module. The install scenario needs dpkg-deb, and is skipped without it.
 #
 # The pg_* and migrate_* scenarios (except *_offline) also need psql and a
 # PostgreSQL 18 (or later) server that
@@ -1696,6 +1696,214 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# install.sh, with stand-ins for apt-get, dpkg-query, getent and Perl, Radiator
+# in $WORK/root, and small packages made with dpkg-deb.
+# --------------------------------------------------------------------------
+
+# The stand-ins, in $WORK/bin. $WORK/installed lists the installed packages
+# ("NAME VERSION"), $WORK/modules the Perl modules that load, $WORK/inc the
+# stand-in Perl's @INC, and $WORK/users the users. apt-get logs its arguments
+# to $WORK/apt.log, and adds what it installs to $WORK/installed (and the
+# Perl modules in it to $WORK/modules).
+make_install_fakes() {
+    mkdir -p "$WORK/bin" "$WORK/root"
+    : >"$WORK/installed"; : >"$WORK/modules"; : >"$WORK/inc"; : >"$WORK/users"; : >"$WORK/apt.log"
+    cat >"$WORK/bin/dpkg-query" <<'EOF'
+#!/bin/bash
+v=$(awk -v p="${!#}" '$1 == p {v = $2} END {print v}' "$FAKE_DIR/installed")
+[[ -n $v ]] || { echo "dpkg-query: no packages found matching ${!#}" >&2; exit 1; }
+echo "installed $v"
+EOF
+    cat >"$WORK/bin/apt-get" <<'EOF'
+#!/bin/bash
+echo "apt-get $*" >>"$FAKE_DIR/apt.log"
+[[ $1 == install ]] || exit 0
+for a in "${@:2}"; do
+    case $a in
+        -*)    ;;
+        *.deb) echo "$(dpkg-deb -f "$a" Package) $(dpkg-deb -f "$a" Version)" >>"$FAKE_DIR/installed" ;;
+        *)     echo "$a 1.0" >>"$FAKE_DIR/installed"
+               case $a in
+                   libauth-yubikey-decrypter-perl) echo Auth::Yubikey_Decrypter ;;
+                   libcrypt-rijndael-perl)         echo Crypt::Rijndael ;;
+                   libcache-fastmmap-perl)         echo Cache::FastMmap ;;
+                   libdbd-sqlite3-perl)            echo DBD::SQLite ;;
+                   libdbd-pg-perl)                 echo DBD::Pg ;;
+               esac >>"$FAKE_DIR/modules" ;;
+    esac
+done
+EOF
+    cat >"$WORK/bin/getent" <<'EOF'
+#!/bin/bash
+[[ $1 == passwd ]] && grep -qxF "$2" "$FAKE_DIR/users"
+EOF
+    # perl -IDIR -MMODULE -e 1: Radiator's Radius::AuthSQLYUBIKEY loads when
+    # it is in DIR and Auth::Yubikey_Decrypter loads; other modules when they
+    # are in $WORK/modules. perl -e CODE: the first directory of $WORK/inc
+    # with Radius/Util.pm in it (what install.sh asks Perl for).
+    cat >"$WORK/bin/perl" <<'EOF'
+#!/bin/bash
+inc='' module=''
+for a in "$@"; do
+    case $a in
+        -I*) inc=${a#-I} ;;
+        -M*) module=${a#-M} ;;
+    esac
+done
+if [[ -z $module ]]; then
+    while read -r d; do [[ -f $d/Radius/Util.pm ]] && { echo "$d"; exit 0; }; done <"$FAKE_DIR/inc"
+    exit 0
+fi
+if [[ $module == Radius::* ]]; then
+    [[ -f $inc/${module//:://}.pm ]] && grep -qxF Auth::Yubikey_Decrypter "$FAKE_DIR/modules"
+else
+    grep -qxF "$module" "$FAKE_DIR/modules"
+fi
+EOF
+    chmod +x "$WORK/bin/"*
+}
+
+# fake_radiator DIR [#!LINE]: a stand-in radiusd in DIR (run by the stand-in
+# Perl, or the given #! line), and Radiator 4.30's Perl modules in DIR, or
+# in $WORK/root/usr/local/share/perl when DIR is $WORK/root/usr/local/bin.
+fake_radiator() {
+    local lib=$1
+    if [[ $1 == "$WORK/root/usr/local/bin" ]]; then
+        lib=$WORK/root/usr/local/share/perl
+        echo "$lib" >>"$WORK/inc"
+    fi
+    mkdir -p "$1" "$lib/Radius"
+    printf '%s\n# radiusd\n' "${2:-#!/usr/bin/env perl}" >"$1/radiusd"
+    printf "package Radius::Util;\n\$main::VERSION = '4.30';\n" >"$lib/Radius/Util.pm"
+    : >"$lib/Radius/AuthSQLYUBIKEY.pm"
+}
+
+# fake_deb NAME VERSION FILE: a package with nothing in it.
+fake_deb() {
+    rm -rf "$WORK/debroot"
+    mkdir -p "$WORK/debroot/DEBIAN"
+    printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: Test <test@example.com>\nDescription: test\n' \
+        "$1" "$2" >"$WORK/debroot/DEBIAN/control"
+    dpkg-deb --root-owner-group -b "$WORK/debroot" "$3" >/dev/null
+}
+
+# Run install.sh (or $INSTALL) with the stand-ins and no standard input, and
+# record it: inst ARGS...
+inst() {
+    local out rc=0
+    out=$(env PATH="$WORK/bin:$PATH" FAKE_DIR="$WORK" APT_GET="$WORK/bin/apt-get" DPKG_QUERY="$WORK/bin/dpkg-query" \
+              GETENT="$WORK/bin/getent" APT_PERL="$WORK/bin/perl" SYSROOT="$WORK/root" \
+              RADIUSD_PATHS="$WORK/root/opt/radiator/radiator/radiusd $WORK/root/usr/local/bin/radiusd" \
+              "${INSTALL:-$ROOT/install.sh}" "$@" </dev/null 2>&1) || rc=$?
+    printf '$ install.sh %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# What apt-get was asked to do since the last call, and forget it.
+apt_log() {
+    if [[ -s $WORK/apt.log ]]; then sed 's/^/# /' "$WORK/apt.log"; else echo "# apt-get: not run"; fi
+    echo
+    : >"$WORK/apt.log"
+}
+
+scenario_install() {
+    make_install_fakes
+    fake_deb radiator-yubikey 1.9.0 "$WORK/radiator-yubikey_1.9.0_all.deb"
+    fake_deb something-else 1.0 "$WORK/other.deb"
+    inst -V
+    inst --help
+    inst --bogus
+    inst a.deb b.deb
+    inst --radiusd
+    inst missing.deb
+    inst other.deb
+
+    # No Radiator: a stop, without a terminal to ask on, and nothing installed;
+    # then --check, and --yes.
+    inst radiator-yubikey_1.9.0_all.deb
+    apt_log
+    inst --check
+    inst --yes radiator-yubikey_1.9.0_all.deb
+    apt_log
+
+    # Radiator Software's packages, which put radiusd in /opt/radiator/radiator;
+    # the Perl modules not installed yet.
+    : >"$WORK/installed"; : >"$WORK/modules"
+    printf 'radiator 4.30-1\nradiator-radius-utilxs 2.4-4\n' >>"$WORK/installed"
+    fake_radiator "$WORK/root/opt/radiator/radiator"
+    inst --check
+    inst radiator-yubikey_1.9.0_all.deb
+    apt_log
+    inst --check
+    # The same Radiator run by another Perl than the one apt-get installs
+    # modules for: a note only while modules are missing.
+    cp "$WORK/bin/perl" "$WORK/bin/other-perl"
+    fake_radiator "$WORK/root/opt/radiator/radiator" "#!$WORK/bin/other-perl -w"
+    inst --check
+    sed -i '/^DBD::Pg$/d' "$WORK/modules"
+    inst --check
+    echo DBD::Pg >>"$WORK/modules"
+
+    # A package of the same name that is not Radiator Software's, with no
+    # radiusd.
+    rm -rf "$WORK/root/opt/radiator"
+    inst --check
+
+    # Radiator's source in /opt/radiator/radiator: no user radiator and no
+    # radiator.service at first.
+    sed -i '/^radiator /d; /^radiator-radius-utilxs /d' "$WORK/installed"
+    fake_radiator "$WORK/root/opt/radiator/radiator"
+    inst --check
+    echo radiator >"$WORK/users"
+    mkdir -p "$WORK/root/etc/systemd/system"
+    : >"$WORK/root/etc/systemd/system/radiator.service"
+    inst --check
+    rm -rf "$WORK/root/opt/radiator" "$WORK/root/etc"
+
+    # After 'make install': radiusd in /usr/local/bin, the modules in Perl's @INC.
+    mkdir -p "$WORK/root/usr/lib/systemd/system"
+    : >"$WORK/root/usr/lib/systemd/system/radiator.service"
+    fake_radiator "$WORK/root/usr/local/bin"
+    inst --check
+    rm -rf "$WORK/root/usr/local"
+
+    # --radiusd: one that is not Radiator's, and one elsewhere.
+    mkdir -p "$WORK/elsewhere"
+    printf '#!/usr/bin/perl\n' >"$WORK/elsewhere/radiusd"
+    inst --check --radiusd "$WORK/elsewhere/radiusd"
+    fake_radiator "$WORK/elsewhere"
+    inst --check --radiusd "$WORK/elsewhere/radiusd"
+
+    # Units and scripts installed by hand, as the guide said before the
+    # package: one enabled, one not, and a masked one, which is fine.
+    mkdir -p "$WORK/root/etc/systemd/system/multi-user.target.wants" "$WORK/root/usr/local/sbin"
+    : >"$WORK/root/etc/systemd/system/yubikey-anycast.service"
+    ln -s ../yubikey-anycast.service "$WORK/root/etc/systemd/system/multi-user.target.wants/yubikey-anycast.service"
+    : >"$WORK/root/etc/systemd/system/yubikey-partition.service"
+    : >"$WORK/root/usr/local/sbin/yubikey-db.sh"
+    : >"$WORK/root/usr/local/sbin/yubikey-partition.sh"
+    inst --check --radiusd "$WORK/elsewhere/radiusd"
+    rm "$WORK/root/etc/systemd/system/yubikey-partition.service"
+    ln -s /dev/null "$WORK/root/etc/systemd/system/yubikey-partition.service"
+    rm -r "$WORK/root/usr/local/sbin" "$WORK/root/etc/systemd/system/yubikey-anycast.service" \
+        "$WORK/root/etc/systemd/system/multi-user.target.wants"
+    inst --check --radiusd "$WORK/elsewhere/radiusd"
+
+    # A git clone where the package would go.
+    mkdir -p "$WORK/root/opt/radiator-yubikey/.git"
+    inst --yes radiator-yubikey_1.9.0_all.deb
+    apt_log
+    rm -r "$WORK/root/opt/radiator-yubikey"
+
+    # The newest package next to install.sh, by default.
+    mkdir -p "$WORK/inst"
+    cp "$ROOT/install.sh" "$WORK/inst/"
+    fake_deb radiator-yubikey 1.9.0 "$WORK/inst/radiator-yubikey_1.9.0_all.deb"
+    fake_deb radiator-yubikey 1.10.0 "$WORK/inst/radiator-yubikey_1.10.0_all.deb"
+    INSTALL=$WORK/inst/install.sh inst --yes --radiusd "$WORK/elsewhere/radiusd"
+    apt_log
+}
+
+# --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
@@ -1704,11 +1912,12 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
-     anycast anycast_run pg_partition)
+     anycast anycast_run pg_partition install)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
 needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == anycast* ]]; }
+needs_dpkg() { [[ $1 == install ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
@@ -1741,6 +1950,9 @@ for name in "${SELECTED[@]}"; do
     declare -F "scenario_$name" >/dev/null || { echo "unknown scenario: $name" >&2; exit 2; }
     if needs_otp "$name" && [[ $OTP_OK == 0 ]]; then
         echo "SKIP     $name (needs openssl and the Perl module Crypt::Rijndael)"; skip=$((skip + 1)); continue
+    fi
+    if needs_dpkg "$name" && ! command -v dpkg-deb >/dev/null; then
+        echo "SKIP     $name (needs dpkg-deb)"; skip=$((skip + 1)); continue
     fi
     if needs_pg "$name" && [[ $PG_OK == 0 ]]; then
         echo "SKIP     $name ($PG_SKIP_REASON)"; skip=$((skip + 1)); continue

@@ -378,6 +378,14 @@ exports and restores, and prints the Radiator configuration. SQLite by
 default, PostgreSQL with <code>-b pg</code>.</td>
 </tr>
 <tr>
+<td><code>install.sh</code></td>
+<td>Installs the <code>radiator-yubikey</code> package, which puts all
+of these in <code>/opt/radiator-yubikey</code>, with the packages that
+it and Radiator's YubiKey support need, after checking that Radiator is
+installed (see <a href="#the-radiator-yubikey-package">The
+radiator-yubikey package</a>).</td>
+</tr>
+<tr>
 <td><code>yubikey-db-migrate.sh</code></td>
 <td>Copies everything from the SQLite database into PostgreSQL, verified
 row by row, and keeps counters in step during a cutover.</td>
@@ -420,6 +428,11 @@ without a YubiKey.</td>
 <td><code>tests/radiator/</code></td>
 <td>Builds a container with Radiator and runs real logins against both
 databases.</td>
+</tr>
+<tr>
+<td><code>packaging/</code></td>
+<td>Builds the <code>radiator-yubikey</code> package
+(<code>packaging/build-deb.sh</code>).</td>
 </tr>
 </tbody>
 </table>
@@ -477,12 +490,16 @@ PostgreSQL</a>).</p>
 <section id="what-you-need" class="level2">
 <h2>What you need</h2>
 <ul>
-<li><strong>Radiator packages from Radiator Software</strong>, for
-Ubuntu 26.04. This guide uses <code>radiator_4.30-1_all.deb</code> and
+<li><strong>Radiator from Radiator Software</strong>: their packages for
+Ubuntu 26.04, or their source. This guide uses the packages
+<code>radiator_4.30-1_all.deb</code> and
 <code>radiator-radius-utilxs_2.4-4.resolute_amd64.deb</code>. The
 <code>radiator</code> package needs no license file; a
 <code>radiator-locked</code> package needs
 <code>/etc/radiator/license.conf</code> from Radiator Software.</li>
+<li><strong>The <code>radiator-yubikey</code> package and
+<code>install.sh</code></strong>, from this repository's <a
+href="https://github.com/robert-patrick-texas/radiator-yubikey/releases">releases</a>.</li>
 <li><strong>Ubuntu 26.04 LTS</strong> for the Radiator server and, for
 PostgreSQL, a <strong>PostgreSQL 18</strong> server (Ubuntu 26.04's
 default).</li>
@@ -504,18 +521,18 @@ group).</li>
 <tbody>
 <tr>
 <td>Radiator server</td>
-<td>The Radiator packages, <code>libauth-yubikey-decrypter-perl</code>,
+<td>Radiator; <code>libauth-yubikey-decrypter-perl</code>,
 <code>libcrypt-rijndael-perl</code>,
-<code>libcache-fastmmap-perl</code>, and
-<code>libdbd-sqlite3-perl</code> + <code>sqlite3</code> (SQLite) or
-<code>libdbd-pg-perl</code> + <code>postgresql-client</code>
-(PostgreSQL)</td>
+<code>libcache-fastmmap-perl</code>, <code>libdbd-sqlite3-perl</code> +
+<code>sqlite3</code> (SQLite) and <code>libdbd-pg-perl</code> +
+<code>postgresql-client</code> (PostgreSQL), which
+<code>install.sh</code> installs</td>
 </tr>
 <tr>
 <td>Where you run the scripts (usually the Radiator server)</td>
-<td><code>bash</code>, <code>perl</code>, <code>sqlite3</code> or
-<code>postgresql-client</code>; <code>libcrypt-rijndael-perl</code> for
-<code>verify</code></td>
+<td>The <code>radiator-yubikey</code> package (with <code>perl</code>,
+and <code>sqlite3</code> or <code>postgresql-client</code>);
+<code>libcrypt-rijndael-perl</code> for <code>verify</code></td>
 </tr>
 <tr>
 <td>PostgreSQL server (if separate)</td>
@@ -553,9 +570,10 @@ cd radiator-yubikey
 mkdir -p ~/radiator-packages        # copy radiator_*.deb and radiator-radius-utilxs_*.deb here
 docker build -t radiator-yubikey-lab -f tests/radiator/Dockerfile ~/radiator-packages</code></pre>
 <p>Start a container with the repository mounted read-only at
-<code>/opt/yubikey-db</code>. You work as root inside it, so the
-commands below have no <code>sudo</code>:</p>
-<pre class="bash"><code>docker run -it --rm --name yk-lab -v &quot;$PWD:/opt/yubikey-db:ro&quot; -w /opt/yubikey-db radiator-yubikey-lab bash</code></pre>
+<code>/opt/radiator-yubikey</code>, where the package puts the scripts
+on a server. You work as root inside it, so the commands below have no
+<code>sudo</code>:</p>
+<pre class="bash"><code>docker run -it --rm --name yk-lab -v &quot;$PWD:/opt/radiator-yubikey:ro&quot; -w /opt/radiator-yubikey radiator-yubikey-lab bash</code></pre>
 </section>
 <section id="sqlite-in-the-lab" class="level3">
 <h3>SQLite in the lab</h3>
@@ -619,8 +637,8 @@ it.</p>
 <section id="the-automated-test" class="level3">
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
-Patroni, etcd and FRR added, and runs three tests of real Radiator
-logins:</p>
+Patroni, etcd and FRR (and debhelper and lintian, to build and check the
+package) added, and runs four tests of real Radiator logins:</p>
 <ul>
 <li><code>e2e.sh</code>, 92 checks in a throwaway container: SQLite with
 and without <code>Require2Factor</code>, PostgreSQL over the local
@@ -637,7 +655,7 @@ href="#two-database-servers">Two database servers</a>), and the same OTP
 sent to both Radiator servers at the same moment.</li>
 <li><code>geo.sh</code>, 175 checks with three containers, one per site,
 each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
-and <code>yubikey-anycast.sh</code>, set up as in <a
+and <code>yubikey-anycast.sh</code> from the package, set up as in <a
 href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
 with traffic control adding the WAN delays (55 ms between West and East,
 4 ms between the East sites). A fourth container stands in for West's
@@ -660,15 +678,32 @@ network), but aren't privileged. Docker sets the two kernel settings of
 server</a>, step 2, in the containers (<code>--sysctl</code>); the
 step's commands themselves were run in a container whose kernel settings
 it could change for its own network only.</li>
+<li><code>package.sh</code>, 48 checks of the package and
+<code>install.sh</code>: the package builds the same twice, lintian
+finds nothing in it, and it puts nothing outside
+<code>/opt/radiator-yubikey</code> but its two units. Then, on fresh
+Ubuntu 26.04 containers (<code>apt-get</code> in them needs network
+access): without Radiator, where <code>install.sh</code> stops, or goes
+on with <code>--yes</code>; with Radiator Software's packages; with
+Radiator's source unpacked in <code>/opt/radiator/radiator</code>; and
+with it installed with <code>make install</code> (taken from the
+<code>radiator</code> package, which holds Radiator's source
+distribution). Each Radiator then accepts a login and rejects the same
+OTP again. Last, under systemd: units installed by hand as this guide
+said before the package, replaced with <code>install.sh</code>'s
+commands; the package's units neither enabled nor started by the
+install, restarted by an upgrade only while they run, stopped by a
+removal, and gone after a purge.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all three, about 18 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, or geo)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all four, about 21 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 92 passed, 0 failed</code>,
-<code>Two database servers: 56 passed, 0 failed</code> and
-<code>Three sites: 175 passed, 0 failed</code>. Run them again with each
-new Radiator version.
+<code>Two database servers: 56 passed, 0 failed</code>,
+<code>Three sites: 175 passed, 0 failed</code> and
+<code>Package: 48 passed, 0 failed</code>. Run them again with each new
+Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
 around.</p>
@@ -678,33 +713,143 @@ around.</p>
 <h2>Install on the servers</h2>
 <section id="radiator-server" class="level3">
 <h3>Radiator server</h3>
-<p>Install Radiator, the Perl modules its YubiKey support needs, and the
-database driver you use:</p>
-<pre class="bash"><code>sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb \
-                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl
-sudo apt install libdbd-sqlite3-perl sqlite3          # SQLite
-sudo apt install libdbd-pg-perl postgresql-client     # PostgreSQL</code></pre>
+<p>Install Radiator first. It comes from Radiator Software, as packages
+or as source, and the scripts work with either.</p>
+<p><strong>Radiator Software's packages</strong>, as this guide
+uses:</p>
+<pre class="bash"><code>sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb</code></pre>
 <p>The package creates the <code>radiator</code> user, installs Radiator
 in <code>/opt/radiator/radiator</code> (its tools, such as
 <code>radpwtst</code>, aren't on the <code>PATH</code>), and adds the
 <code>radiator.service</code> systemd unit, which runs Radiator as
-<code>radiator</code> with <code>/etc/radiator/radiator.conf</code>.
-Check the modules:</p>
-<pre class="bash"><code>perl -MAuth::Yubikey_Decrypter -MCrypt::Rijndael -MDBD::SQLite -e &#39;print &quot;ok\n&quot;&#39;   # or -MDBD::Pg</code></pre>
+<code>radiator</code> with <code>/etc/radiator/radiator.conf</code>.</p>
+<p><strong>Radiator's source</strong>: unpacked in
+<code>/opt/radiator/radiator</code>, where the systemd unit in its
+<code>goodies</code> directory runs it, or installed with
+<code>perl Makefile.PL &amp;&amp; make &amp;&amp; sudo make install</code>
+(as its <code>Makefile.PL</code> says), which puts <code>radiusd</code>
+and <code>radpwtst</code> in <code>/usr/local/bin</code>. Then make what
+the package would have made: the <code>radiator</code> user, Radiator's
+directories, and the systemd unit (for a <code>make install</code>, with
+its <code>/opt/radiator/radiator</code> paths changed to where
+<code>radiusd</code> is):</p>
+<pre class="bash"><code>sudo groupadd -r radiator
+sudo useradd -r -g radiator -d /var/lib/radiator -s /usr/sbin/nologin radiator
+sudo install -d /etc/radiator/conf.d
+sudo install -d -o radiator -g radiator /var/log/radiator /var/lib/radiator
+sudo install -m 0644 goodies/radiator.service /etc/systemd/system/   # in the source directory</code></pre>
+<p>Where this guide runs <code>/opt/radiator/radiator/radiusd</code> or
+<code>radpwtst</code>, run yours. After a <code>make install</code>,
+give <code>radpwtst</code> the source's dictionary
+(<code>-dictionary /usr/src/radiator/dictionary</code>, for example),
+and in <a href="#install-the-configuration">Install the
+configuration</a>, set <code>DictionaryFile</code> to it too.</p>
 </section>
-<section id="the-scripts-1" class="level3">
-<h3>The scripts</h3>
-<p>Put the scripts where admins can run them, for example
-<code>/opt/yubikey-db</code>:</p>
-<pre class="bash"><code>sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/yubikey-db
-cd /opt/yubikey-db</code></pre>
-<p>The examples in this guide run from that directory. With SQLite, run
-the scripts with <code>sudo</code>, because the database belongs to
+<section id="the-radiator-yubikey-package" class="level3">
+<h3>The radiator-yubikey package</h3>
+<p>The scripts come as a package, <code>radiator-yubikey</code>, which
+puts them in <code>/opt/radiator-yubikey</code>, and
+<code>install.sh</code>, which installs the package with the packages
+that it and Radiator's YubiKey support need. Download both from a <a
+href="https://github.com/robert-patrick-texas/radiator-yubikey/releases">release</a>
+into one directory, and run <code>install.sh</code> there:</p>
+<pre class="bash"><code>curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/radiator-yubikey_1.6.0_all.deb
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/install.sh
+sudo bash install.sh</code></pre>
+<p><code>install.sh</code>:</p>
+<ol type="1">
+<li>Looks for Radiator: Radiator Software's <code>radiator</code> (or
+<code>radiator-locked</code>) package, or a <code>radiusd</code> from
+their source with Radiator's Perl modules, in
+<code>/opt/radiator/radiator</code> or on the <code>PATH</code> (give
+another one with <code>--radiusd FILE</code>). Radiator isn't a
+dependency of the package, so that either kind works. When it finds
+neither, it says how to install Radiator, and asks whether to go on
+without it; with no terminal to ask on, it stops (exit status 3), unless
+you give <code>--yes</code>. Without Radiator, the scripts still manage
+a database, for example on a server that only holds the database.</li>
+<li>Installs with <code>apt-get</code>:
+<code>libauth-yubikey-decrypter-perl</code> and
+<code>libcrypt-rijndael-perl</code> (Radiator's YubiKey support),
+<code>libcache-fastmmap-perl</code> (for <code>DupCache shared</code> in
+<code>radiator.example.conf</code>), <code>libdbd-sqlite3-perl</code>,
+<code>sqlite3</code>, <code>libdbd-pg-perl</code>,
+<code>postgresql-client</code>, and the package. A package of the
+version that is installed already is left as it is.</li>
+<li>Checks that Radiator's Perl loads Radiator's SQLYUBIKEY module and
+the modules it needs, and lists what is left to do: for Radiator from
+source, a missing <code>radiator</code> user or
+<code>radiator.service</code>; for units installed by an earlier version
+of this guide, how to use the package's instead (see <a
+href="#after-upgrading-the-scripts">After upgrading the
+scripts</a>).</li>
+</ol>
+<p><code>sudo /opt/radiator-yubikey/install.sh --check</code> changes
+nothing, shows what is installed, and exits 0 only when nothing is
+missing or left to do:</p>
+<pre class="text"><code>install.sh 1.6.0
+Radiator:  4.30-1, Radiator Software&#39;s package radiator (with radiator-radius-utilxs 2.4-4): /opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.6.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 0.07-2.1
+  ok       libcrypt-rijndael-perl 1.16-1build6
+  ok       libcache-fastmmap-perl 1.60-1
+  ok       libdbd-sqlite3-perl 1.78-1
+  ok       sqlite3 3.46.1-9ubuntu0.3
+  ok       libdbd-pg-perl 3.18.0-4
+  ok       postgresql-client 18+290ubuntu1
+
+Radiator&#39;s Perl (/usr/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.</code></pre>
+<p>The package puts the scripts, their examples,
+<code>tests/make-otp.sh</code>, this guide
+(<code>yubikey-db-guide.html</code>), the README and the changelog in
+<code>/opt/radiator-yubikey</code>. It also installs the systemd units
+<code>yubikey-partition.service</code> and
+<code>yubikey-anycast.service</code>, for <a
+href="#partition-mode">Partition mode</a> and <a
+href="#anycast">Anycast</a>, but neither enables nor starts them.</p>
+<p>The examples in this guide run from
+<code>/opt/radiator-yubikey</code>
+(<code>cd /opt/radiator-yubikey</code>). With SQLite, run the scripts
+with <code>sudo</code>, because the database belongs to
 <code>radiator</code>. With PostgreSQL, run them as yourself, as a
 member of the admin role (set up in <a
 href="#create-the-database">Create the database</a>);
 <code>export DB_BACKEND=pg</code> in your <code>~/.profile</code> saves
 typing <code>-b pg</code> every time.</p>
+<p><strong>To upgrade</strong>, run the new release's
+<code>install.sh</code> with its package, the same way, then see <a
+href="#after-upgrading-the-scripts">After upgrading the scripts</a>. The
+services that run (<code>yubikey-partition</code>,
+<code>yubikey-anycast</code>) restart with the new scripts; one that you
+stopped stays stopped. While <code>yubikey-anycast</code> restarts, the
+server's anycast addresses are off <code>lo</code> for 5 to 10 s, and
+the routers send RADIUS to another site.</p>
+<p><strong>To remove</strong> the scripts,
+<code>sudo apt remove radiator-yubikey</code>: it stops the two services
+and removes <code>/opt/radiator-yubikey</code>. The database, and
+Radiator's configuration and the settings in <code>/etc/radiator</code>,
+stay.</p>
+<p><strong>Without the package</strong>, clone the repository to the
+same place; its <code>install.sh</code> then installs the other packages
+only:</p>
+<pre class="bash"><code>sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/radiator-yubikey
+cd /opt/radiator-yubikey
+sudo ./install.sh</code></pre>
+<p>For partition mode and anycast, install their units yourself:
+<code>sudo install -m 0644 yubikey-partition.service yubikey-anycast.service /etc/systemd/system/</code>,
+then <code>sudo systemctl daemon-reload</code>. To build the package
+from a clone, see <a
+href="#packagingbuild-debsh"><code>packaging/build-deb.sh</code></a>.</p>
 </section>
 <section id="postgresql-server" class="level3">
 <h3>PostgreSQL server</h3>
@@ -1300,7 +1445,27 @@ encrypted.</p>
 </section>
 <section id="after-upgrading-the-scripts" class="level3">
 <h3>After upgrading the scripts</h3>
-<p>Run <code>init</code> again
+<p>From scripts installed by hand, as this guide said before version
+1.6.0 (a clone in <code>/opt/yubikey-db</code>, and for three sites,
+copies in <code>/usr/local/sbin</code> and units in
+<code>/etc/systemd/system</code>), install the package as in <a
+href="#the-radiator-yubikey-package">The radiator-yubikey package</a>. A
+unit in <code>/etc/systemd/system</code> hides the package's, which runs
+the script in <code>/opt/radiator-yubikey</code>;
+<code>sudo /opt/radiator-yubikey/install.sh --check</code> lists each
+one with the commands that replace it, for example:</p>
+<pre class="text"><code>To do:
+  - /etc/systemd/system/yubikey-anycast.service, installed by hand, hides the
+    package&#39;s unit (which runs /opt/radiator-yubikey/yubikey-anycast.sh). To
+    use the package&#39;s:
+      sudo systemctl disable yubikey-anycast.service
+      sudo rm /etc/systemd/system/yubikey-anycast.service
+      sudo systemctl daemon-reload
+      sudo systemctl enable yubikey-anycast.service
+      sudo systemctl try-restart yubikey-anycast.service</code></pre>
+<p>Then remove the copies in <code>/usr/local/sbin</code> and the old
+clone.</p>
+<p>After every upgrade, run <code>init</code> again
 (<code>sudo ./yubikey-db.sh init --owner radiator:radiator</code>, or
 <code>./yubikey-db.sh -b pg init</code> as an admin). It adds what a
 newer version needs to an existing database and changes nothing else.
@@ -2252,19 +2417,16 @@ copy.</p>
 <h3>Set up partition mode</h3>
 <p>On each of the three servers, after <a
 href="#set-up-the-three-servers">Set up the three servers</a>:</p>
-<p><strong>1. Install</strong> the packages for the copy, the script
-(with <code>yubikey-db.sh</code>, which <code>setup</code> uses) and its
-unit, and the settings:</p>
-<pre class="bash"><code>sudo apt install sqlite3 libdbd-sqlite3-perl
-sudo install -m 0755 yubikey-partition.sh yubikey-db.sh /usr/local/sbin/
-sudo install -m 0644 yubikey-partition.service /etc/systemd/system/
+<p><strong>1. The settings.</strong> The package installed the script
+and its unit, and <code>install.sh</code> the packages for the copy
+(<code>sqlite3</code> and <code>libdbd-sqlite3-perl</code>):</p>
+<pre class="bash"><code>cd /opt/radiator-yubikey
 sudo install -m 0644 yubikey-partition.example.conf /etc/radiator/partition.conf
-sudoedit /etc/radiator/partition.conf      # PEERS: the other two servers
-sudo systemctl daemon-reload</code></pre>
+sudoedit /etc/radiator/partition.conf      # PEERS: the other two servers</code></pre>
 <p>On west,
 <code>PEERS="east1.example.com east2.example.com"</code>.</p>
 <p><strong>2. Make the copy</strong> and Radiator's two clauses:</p>
-<pre class="text"><code>$ sudo yubikey-partition.sh setup
+<pre class="text"><code>$ sudo ./yubikey-partition.sh setup
 moved yubikey.conf to yubikey-cluster.conf (in /etc/radiator/conf.d)
 the copy: /var/lib/yubikey-partition/keys.db, 4 YubiKeys
 Radiator&#39;s clause: yubikey.conf -&gt; yubikey-cluster.conf; in partition mode -&gt; yubikey-partition.conf</code></pre>
@@ -2277,7 +2439,7 @@ From now on, change Radiator's clause for PostgreSQL in
 <code>yubikey-cluster.conf</code>, never through the link.</p>
 <p><strong>3. Start it:</strong></p>
 <pre class="bash"><code>sudo systemctl enable --now yubikey-partition
-sudo yubikey-partition.sh status</code></pre>
+sudo ./yubikey-partition.sh status</code></pre>
 <pre class="text"><code>normal mode since 2026-10-13 14:08:21 UTC
 peers answering: east1.example.com east2.example.com
 copy: 4 YubiKeys, updated 14:08:31
@@ -2287,8 +2449,8 @@ Radiator uses: yubikey-cluster.conf</code></pre>
 <h3>Run partition mode</h3>
 <ul>
 <li><p><strong>See the mode:</strong>
-<code>sudo yubikey-partition.sh status</code> exits 0 in normal mode and
-1 in partition mode, for monitoring.
+<code>sudo ./yubikey-partition.sh status</code> exits 0 in normal mode
+and 1 in partition mode, for monitoring.
 <code>journalctl -u yubikey-partition</code> logs each change:</p>
 <pre class="text"><code>started in normal mode: partition mode after 3 checks (15 s) in which none of east1.example.com east2.example.com answers; the copy is updated every 300 s
 copy: 4 YubiKeys, updated 15:33:34
@@ -2304,8 +2466,8 @@ servers down, the third logs users in from its copy, with the risks
 above, until one of them is back.</p></li>
 <li><p><strong>Stopping the service leaves the mode as it is.</strong>
 To return to the cluster by hand,
-<code>sudo yubikey-partition.sh leave</code>: it copies the counters to
-the primary first, and changes nothing if it can't.</p></li>
+<code>sudo ./yubikey-partition.sh leave</code>: it copies the counters
+to the primary first, and changes nothing if it can't.</p></li>
 </ul>
 </section>
 </section>
@@ -2454,13 +2616,11 @@ each device, with the same secret on every server.</li>
 </section>
 <section id="set-up-anycast-on-each-server" class="level3">
 <h3>Set up anycast on each server</h3>
-<p><strong>1. Install FRR</strong> and copy three files from this
-repository:</p>
+<p><strong>1. Install FRR</strong> and the settings (the package
+installed the script and its unit):</p>
 <pre class="bash"><code>sudo apt install frr
-sudo install -m 0755 yubikey-anycast.sh /usr/local/sbin/yubikey-anycast.sh
-sudo install -m 0644 yubikey-anycast.service /etc/systemd/system/
-sudo install -m 0600 yubikey-anycast.example.conf /etc/radiator/anycast.conf
-sudo systemctl daemon-reload</code></pre>
+cd /opt/radiator-yubikey
+sudo install -m 0600 yubikey-anycast.example.conf /etc/radiator/anycast.conf</code></pre>
 <p><strong>2. Let Radiator listen on the anycast addresses</strong>
 while they aren't on <code>lo</code>:</p>
 <pre class="bash"><code>printf &#39;net.ipv4.ip_nonlocal_bind = 1\nnet.ipv6.ip_nonlocal_bind = 1\n&#39; \
@@ -2548,8 +2708,8 @@ secret of <code>&lt;Client 127.0.0.1&gt;</code> in
 its key, in the database, as the admin (with the <code>PGHOST</code> and
 <code>~/.pgpass</code> from <a href="#set-up-the-three-servers">Set up
 the three servers</a>, step 7), try it, and start it:</p>
-<pre class="bash"><code>sudo yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
-sudo yubikey-anycast.sh check
+<pre class="bash"><code>sudo ./yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
+sudo ./yubikey-anycast.sh check
 sudo systemctl enable --now yubikey-anycast</code></pre>
 <p><code>enroll</code> makes a key, a PIN and the user
 <code>anycast-west</code>, keeps them in
@@ -2558,7 +2718,7 @@ prints them as one CSV line for <code>import</code>, through the pipe,
 never on a command line. <code>check</code> prints
 <code>ACCEPT in 148 ms</code> (at West). About 10 s after the start, the
 addresses are on <code>lo</code>, and the router has the routes:</p>
-<pre class="text"><code>$ sudo yubikey-anycast.sh status
+<pre class="text"><code>$ sudo ./yubikey-anycast.sh status
 advertised since 2026-10-13 12:26:43 UTC
 last check: ACCEPT in 127 ms, 1 s ago
 on lo: 192.0.2.153 2001:db8:153::153
@@ -2630,7 +2790,7 @@ preferences 200 and 100.</p>
 <h3>Run anycast</h3>
 <ul>
 <li><p><strong>See what a server advertises:</strong>
-<code>sudo yubikey-anycast.sh status</code> (it exits 0 only while the
+<code>sudo ./yubikey-anycast.sh status</code> (it exits 0 only while the
 addresses are on <code>lo</code>, for monitoring), and
 <code>journalctl -u yubikey-anycast</code>, which logs each change and
 each new kind of check result:</p>
@@ -2833,7 +2993,7 @@ Otherwise check <code>sudo -u postgres psql -d yubikey</code>.</td>
 <code>yubikey-cluster.conf</code> (its <code>DBSource</code>,
 <code>DBAuth</code>, <code>pg_hba.conf</code>). See
 <code>journalctl -u yubikey-partition</code>;
-<code>sudo yubikey-partition.sh leave</code> shows the error.</td>
+<code>sudo ./yubikey-partition.sh leave</code> shows the error.</td>
 </tr>
 <tr>
 <td>Radiator logs <code>attempt to write a readonly database</code> in
@@ -3369,6 +3529,56 @@ or the addresses aren't on <code>lo</code> (<code>status</code>), and 3
 for a problem with the settings, the key or the system, which the
 service then doesn't restart on.</p>
 </section>
+<section id="installsh" class="level3">
+<h3><code>install.sh</code></h3>
+<pre class="text"><code>sudo ./install.sh [OPTIONS] [PACKAGE.deb]</code></pre>
+<p>Checks that Radiator is installed, then installs PACKAGE.deb with the
+packages that it and Radiator's YubiKey support need (see <a
+href="#the-radiator-yubikey-package">The radiator-yubikey package</a>).
+PACKAGE.deb defaults to the newest
+<code>radiator-yubikey_*_all.deb</code> next to <code>install.sh</code>;
+without one, it installs the other packages only.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-y, --yes</code></td>
+<td>Go on without asking when Radiator is not found</td>
+</tr>
+<tr>
+<td><code>-n, --check</code></td>
+<td>Change nothing: show what is installed, what is missing and what is
+left to do (needs no root)</td>
+</tr>
+<tr>
+<td><code>--radiusd FILE</code></td>
+<td>Radiator's <code>radiusd</code>, when it is not in
+<code>/opt/radiator/radiator</code> or on the <code>PATH</code></td>
+</tr>
+</tbody>
+</table>
+<p>It exits with 0 when done (with <code>--check</code>, when nothing is
+missing or left to do), 1 for an error (with <code>--check</code>, when
+something is missing or left to do), 2 for a wrong option, and 3 when it
+stopped because Radiator is not installed.</p>
+</section>
+<section id="packagingbuild-debsh" class="level3">
+<h3><code>packaging/build-deb.sh</code></h3>
+<pre class="text"><code>packaging/build-deb.sh [OUTDIR]</code></pre>
+<p>Builds the package, <code>radiator-yubikey_VERSION_all.deb</code>, in
+OUTDIR (default <code>dist/</code>), from the files that
+<code>packaging/debian/radiator-yubikey.install</code> names. VERSION is
+the scripts' version, and the package's date is that of the version in
+<code>CHANGELOG.md</code>, so the same files always build the same
+package, byte for byte. It needs <code>dpkg-dev</code> and
+<code>debhelper</code>
+(<code>sudo apt install dpkg-dev debhelper</code>).</p>
+</section>
 <section id="testsmake-otpsh" class="level3">
 <h3><code>tests/make-otp.sh</code></h3>
 <pre class="text"><code>tests/make-otp.sh PUBLIC_ID PRIVATE_ID AES_KEY COUNTER [SESSION]</code></pre>
@@ -3506,7 +3716,7 @@ save.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 37 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 38 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>. The two <code>anycast</code> scenarios run
@@ -3515,11 +3725,14 @@ checks each request the way Radiator does, and stand-ins for
 <code>ip</code> and <code>ss</code>. <code>pg_partition</code> runs
 <code>yubikey-partition.sh</code> with the test's PostgreSQL as both the
 local database and the primary, a stand-in for <code>systemctl</code>,
-and a peer that is a port that listens or doesn't. It needs
-<code>bash</code>, <code>sqlite3</code>, <code>perl</code>, and, for the
-<code>verify</code> and <code>anycast</code> scenarios,
-<code>openssl</code> and <code>libcrypt-rijndael-perl</code>; it runs as
-a normal user.</p>
+and a peer that is a port that listens or doesn't. <code>install</code>
+runs <code>install.sh</code> with stand-ins for <code>apt-get</code>,
+<code>dpkg-query</code> and Radiator, installed in each of the ways it
+recognizes. It needs <code>bash</code>, <code>sqlite3</code>,
+<code>perl</code>, and, for the <code>verify</code> and
+<code>anycast</code> scenarios, <code>openssl</code> and
+<code>libcrypt-rijndael-perl</code> (and <code>dpkg-deb</code> for
+<code>install</code>); it runs as a normal user.</p>
 <pre class="bash"><code>tests/run-tests.sh                 # every scenario
 tests/run-tests.sh add verify      # some scenarios
 tests/run-tests.sh --update        # accept a deliberate change; then review it with git diff</code></pre>

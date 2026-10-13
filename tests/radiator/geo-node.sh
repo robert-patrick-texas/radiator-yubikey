@@ -43,12 +43,14 @@
 #                            reply), on two lines
 #   frr-setup                FRR: BGP with BFD to the router, advertising the
 #                            anycast addresses while they are on lo
-#   anycast-setup            install the anycast check, give it a key, check
-#                            once (prints the result), enable and start it
+#   anycast-setup            install the radiator-yubikey package (built by
+#                            geo.sh in /lab/deb) if needed; give the anycast
+#                            check a key, check once (prints the result),
+#                            enable and start it
 #   anycast-status           yubikey-anycast.sh status
-#   partition-setup          install partition mode (yubikey-partition.sh,
-#                            the other two servers as its peers), set it up
-#                            (prints what 'setup' prints), enable and start it
+#   partition-setup          partition mode from the package (the other two
+#                            servers as its peers): set it up (prints what
+#                            'setup' prints), enable and start it
 #   partition-mode           normal or partition (where Radiator's
 #                            yubikey.conf points)
 #   check-cred               the anycast check's user, and its PIN and an OTP
@@ -77,6 +79,7 @@ RTR4=172.31.97.2 RTR6=fd53:97::2 NAS_NET4=172.31.98.0/24 NAS_NET6=fd53:98::/64
 ANY4=192.0.2.153 ANY6=2001:db8:153::153
 ME=$(hostname -s)
 RAD=/opt/radiator/radiator
+PKG=/opt/radiator-yubikey   # the radiator-yubikey package's scripts
 LOG=/var/log/radiator/radiator.log
 LAB=/lab
 K1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
@@ -480,28 +483,24 @@ EOF
     ;;
 
 anycast-setup)
-    install -m 0755 /repo/yubikey-anycast.sh /usr/local/sbin/yubikey-anycast.sh
-    install -m 0644 /repo/yubikey-anycast.service /etc/systemd/system/yubikey-anycast.service
-    install -m 0600 /repo/yubikey-anycast.example.conf /etc/radiator/anycast.conf
-    systemctl daemon-reload
+    dpkg -s radiator-yubikey >/dev/null 2>&1 || dpkg -i /lab/deb/radiator-yubikey_*_all.deb >/dev/null
+    install -m 0600 $PKG/yubikey-anycast.example.conf /etc/radiator/anycast.conf
     # shellcheck source=/dev/null
-    yubikey-anycast.sh enroll 2>/dev/null | (. /root/pg.env; /repo/yubikey-db.sh import --replace -) >/dev/null
-    yubikey-anycast.sh check || true
+    $PKG/yubikey-anycast.sh enroll 2>/dev/null | (. /root/pg.env; $PKG/yubikey-db.sh import --replace -) >/dev/null
+    $PKG/yubikey-anycast.sh check || true
     systemctl enable --now yubikey-anycast 2>/dev/null
     ;;
 
 anycast-status)
-    yubikey-anycast.sh status || true
+    $PKG/yubikey-anycast.sh status || true
     ;;
 
 partition-setup)
-    install -m 0755 /repo/yubikey-partition.sh /repo/yubikey-db.sh /usr/local/sbin/
-    install -m 0644 /repo/yubikey-partition.service /etc/systemd/system/yubikey-partition.service
+    dpkg -s radiator-yubikey >/dev/null 2>&1 || dpkg -i /lab/deb/radiator-yubikey_*_all.deb >/dev/null
     peers=
     for n in "${NODES[@]}"; do [[ $n != "$ME" ]] && peers+=${peers:+ }$n.yk.test; done
-    sed "s/^PEERS=.*/PEERS=\"$peers\"/" /repo/yubikey-partition.example.conf >/etc/radiator/partition.conf
-    systemctl daemon-reload
-    yubikey-partition.sh setup
+    sed "s/^PEERS=.*/PEERS=\"$peers\"/" $PKG/yubikey-partition.example.conf >/etc/radiator/partition.conf
+    $PKG/yubikey-partition.sh setup
     systemctl enable --now yubikey-partition 2>/dev/null
     ;;
 

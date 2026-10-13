@@ -28,6 +28,11 @@ These scripts:
   with BGP only while the local Radiator accepts logins
   (`yubikey-anycast.sh`)
 
+The scripts come as a Debian package, `radiator-yubikey`, which puts them in
+`/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it
+and Radiator need, after checking that Radiator is installed (from Radiator
+Software's packages or from their source).
+
 Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**
 (with Patroni 4.1 and etcd 3.5 for three sites, and FRR 10.5 for anycast),
 including real Radiator logins in containers (`tests/radiator/run.sh`).
@@ -48,14 +53,18 @@ The same guide is published as a web page at
 
 ## Quick start: SQLite
 
-On an Ubuntu 26.04 server, with the Radiator packages from Radiator Software:
+On an Ubuntu 26.04 server, with the Radiator packages from Radiator Software
+(or Radiator from their source: see
+[Radiator server](docs/guide.md#radiator-server)), and the
+`radiator-yubikey` package and `install.sh` from a
+[release](https://github.com/robert-patrick-texas/radiator-yubikey/releases):
 
 ```bash
-sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb \
-                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl \
-                 libdbd-sqlite3-perl sqlite3
-sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/yubikey-db
-cd /opt/yubikey-db
+sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/radiator-yubikey_1.6.0_all.deb
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/install.sh
+sudo bash install.sh            # Perl modules, SQLite and PostgreSQL tools, the scripts
+cd /opt/radiator-yubikey
 
 sudo ./yubikey-db.sh init --owner radiator:radiator                  # the database
 sudo install -m 0640 -o root -g radiator radiator.example.conf /etc/radiator/radiator.conf
@@ -73,10 +82,9 @@ Program each YubiKey first with
 
 ## Quick start: PostgreSQL on the Radiator server
 
-Follow the SQLite quick start, but install `libdbd-pg-perl postgresql
-postgresql-client` instead of `libdbd-sqlite3-perl sqlite3`, and replace its
-`init`, `config`, `add` and `verify` lines with these (run as yourself, not
-with `sudo`):
+Follow the SQLite quick start, add `sudo apt install postgresql`, and replace
+its `init`, `config`, `add` and `verify` lines with these (run as yourself,
+not with `sudo`):
 
 ```bash
 sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"       # roles, database, table
@@ -113,6 +121,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | Path | What it is |
 |---|---|
 | `yubikey-db.sh` | The management script (`yubikey-db.sh help` lists every option) |
+| `install.sh` | Installs the `radiator-yubikey` package with the packages it and Radiator need, after checking for Radiator; `--check` changes nothing |
 | `yubikey-db-migrate.sh` | Verified copy from SQLite to PostgreSQL, and counter sync for a cutover |
 | `yubikey-db-user.example.sh` | Example wrapper: add or update one test account from variables |
 | `radiator.example.conf` | Radiator configuration for YubiKey logins |
@@ -120,6 +129,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | `yubikey-anycast.sh` | Advertises the anycast addresses (through FRR) only while the local Radiator accepts logins; with `yubikey-anycast.service` and `yubikey-anycast.example.conf` |
 | `users.example.csv` | Sample CSV file (test values only) |
 | `docs/guide.md` | The guide; `docs/build-guide.sh` makes `yubikey-db-guide.html` from it |
+| `packaging/` | `build-deb.sh` builds the `radiator-yubikey` package (into `dist/`), from `debian/` |
 | `tests/run-tests.sh` | Regression tests of the scripts against SQLite and PostgreSQL |
 | `tests/radiator/` | Tests against Radiator itself, in containers (bring your own Radiator packages) |
 | `tests/make-otp.sh` | Makes OTPs for test keys, for testing without a YubiKey |
@@ -127,8 +137,8 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 ## Testing
 
 ```bash
-tests/run-tests.sh                           # 37 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 175 checks of real Radiator logins, in Docker
+tests/run-tests.sh                           # 38 scenarios; PostgreSQL ones need a local server
+tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 175 + 48 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

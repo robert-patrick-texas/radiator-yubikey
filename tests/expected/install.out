@@ -1,0 +1,479 @@
+$ install.sh -V
+install.sh 1.5.0
+[exit 0]
+
+$ install.sh --help
+Usage: sudo ./install.sh [OPTIONS] [PACKAGE.deb]
+
+Checks that Radiator is installed, then installs PACKAGE.deb with the
+packages that it and Radiator's YubiKey support need. PACKAGE.deb defaults
+to the newest radiator-yubikey_*_all.deb next to install.sh; without
+one, it installs the other packages only.
+
+Options:
+  -y, --yes        Go on without asking when Radiator is not found
+  -n, --check      Change nothing: show what is installed and what is missing
+  --radiusd FILE   Radiator's radiusd, when it is somewhere else
+  -h, --help       Show this help
+  -V, --version    Show the version
+[exit 0]
+
+$ install.sh --bogus
+install.sh: unknown option '--bogus' (see install.sh --help)
+[exit 2]
+
+$ install.sh a.deb b.deb
+install.sh: more than one package given (see install.sh --help)
+[exit 2]
+
+$ install.sh --radiusd
+install.sh: --radiusd needs a file (see install.sh --help)
+[exit 2]
+
+$ install.sh missing.deb
+install.sh: error: missing.deb: no such file
+[exit 1]
+
+$ install.sh other.deb
+install.sh: error: other.deb is not a radiator-yubikey package
+[exit 1]
+
+$ install.sh radiator-yubikey_1.9.0_all.deb
+install.sh 1.5.0
+Radiator:  not found
+  Neither Radiator Software's radiator package nor a radiusd from their
+  source is installed. Install Radiator first, in one of these ways:
+    - their packages, for example:
+        sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
+    - their source: unpacked in /opt/radiator/radiator, or installed with
+        perl Makefile.PL && make && sudo make install
+  If it is installed somewhere else, give its radiusd with --radiusd FILE.
+  Without Radiator, the scripts can still manage a database (on another
+  server than Radiator's, for example).
+Stopped: install Radiator and run install.sh again, or run it with --yes
+to go on without it.
+[exit 3]
+
+# apt-get: not run
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  not found
+  Neither Radiator Software's radiator package nor a radiusd from their
+  source is installed. Install Radiator first, in one of these ways:
+    - their packages, for example:
+        sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
+    - their source: unpacked in /opt/radiator/radiator, or installed with
+        perl Makefile.PL && make && sudo make install
+  If it is installed somewhere else, give its radiusd with --radiusd FILE.
+  Without Radiator, the scripts can still manage a database (on another
+  server than Radiator's, for example).
+Package:   radiator-yubikey not installed, and no package to install
+
+Packages:
+  missing  libauth-yubikey-decrypter-perl
+  missing  libcrypt-rijndael-perl
+  missing  libcache-fastmmap-perl
+  missing  libdbd-sqlite3-perl
+  missing  sqlite3
+  missing  libdbd-pg-perl
+  missing  postgresql-client
+
+Something is missing.
+[exit 1]
+
+$ install.sh --yes radiator-yubikey_1.9.0_all.deb
+install.sh 1.5.0
+Radiator:  not found
+  Neither Radiator Software's radiator package nor a radiusd from their
+  source is installed. Install Radiator first, in one of these ways:
+    - their packages, for example:
+        sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
+    - their source: unpacked in /opt/radiator/radiator, or installed with
+        perl Makefile.PL && make && sudo make install
+  If it is installed somewhere else, give its radiusd with --radiusd FILE.
+  Without Radiator, the scripts can still manage a database (on another
+  server than Radiator's, for example).
+Going on without Radiator (--yes).
+Package:   radiator-yubikey 1.9.0 (<WORK>/radiator-yubikey_1.9.0_all.deb); installed: none
+
+Installing with <WORK>/bin/apt-get:
+  libauth-yubikey-decrypter-perl libcrypt-rijndael-perl
+  libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl
+  postgresql-client
+  <WORK>/radiator-yubikey_1.9.0_all.deb
+
+Done. The scripts are in /opt/radiator-yubikey, with the guide
+(yubikey-db-guide.html): go on at its "Create the database". For SQLite:
+  cd /opt/radiator-yubikey && sudo ./yubikey-db.sh init --owner radiator:radiator
+[exit 0]
+
+# apt-get -qq update
+# apt-get install -y libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client <WORK>/radiator-yubikey_1.9.0_all.deb
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey not installed, and no package to install
+
+Packages:
+  missing  libauth-yubikey-decrypter-perl
+  missing  libcrypt-rijndael-perl
+  missing  libcache-fastmmap-perl
+  missing  libdbd-sqlite3-perl
+  missing  sqlite3
+  missing  libdbd-pg-perl
+  missing  postgresql-client
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  missing  Radius::AuthSQLYUBIKEY   (Radiator)
+  missing  Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  missing  Crypt::Rijndael          (libcrypt-rijndael-perl)
+  missing  Cache::FastMmap          (libcache-fastmmap-perl)
+  missing  DBD::SQLite              (libdbd-sqlite3-perl)
+  missing  DBD::Pg                  (libdbd-pg-perl)
+
+Something is missing.
+[exit 1]
+
+$ install.sh radiator-yubikey_1.9.0_all.deb
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0 (<WORK>/radiator-yubikey_1.9.0_all.deb); installed: none
+
+Installing with <WORK>/bin/apt-get:
+  libauth-yubikey-decrypter-perl libcrypt-rijndael-perl
+  libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl
+  postgresql-client
+  <WORK>/radiator-yubikey_1.9.0_all.deb
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Done. The scripts are in /opt/radiator-yubikey, with the guide
+(yubikey-db-guide.html): go on at its "Create the database". For SQLite:
+  cd /opt/radiator-yubikey && sudo ./yubikey-db.sh init --owner radiator:radiator
+[exit 0]
+
+# apt-get -qq update
+# apt-get install -y libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client <WORK>/radiator-yubikey_1.9.0_all.deb
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/other-perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/other-perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  missing  DBD::Pg                  (libdbd-pg-perl)
+
+To do:
+  - Radiator runs with <WORK>/bin/other-perl, but apt-get
+    installs Perl modules for <WORK>/bin/perl: install the
+    missing ones for <WORK>/bin/other-perl too (with cpanm,
+    for example).
+
+Something is missing.
+[exit 1]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4), but its radiusd was not found
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Something is missing.
+[exit 1]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+To do:
+  - There is no user radiator. Radiator Software's radiator.service, and the
+    guide, run Radiator as radiator:
+      sudo groupadd -r radiator
+      sudo useradd -r -g radiator -d /var/lib/radiator -s /usr/sbin/nologin radiator
+  - There is no radiator.service. The guide starts Radiator with 'systemctl
+    start radiator', and partition mode restarts it that way: copy
+    goodies/radiator.service from Radiator's source to /etc/systemd/system/,
+    with its paths changed to those of your radiusd.
+
+Something is left to do.
+[exit 1]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/root/opt/radiator/radiator/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --check
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/root/usr/local/bin/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --check --radiusd <WORK>/elsewhere/radiusd
+install.sh 1.5.0
+install.sh: error: <WORK>/elsewhere/radiusd is not Radiator's radiusd: Radius/Util.pm is neither next to it nor in its Perl's @INC
+[exit 1]
+
+$ install.sh --check --radiusd <WORK>/elsewhere/radiusd
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --check --radiusd <WORK>/elsewhere/radiusd
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+To do:
+  - /etc/systemd/system/yubikey-anycast.service, installed by hand, hides the
+    package's unit (which runs /opt/radiator-yubikey/yubikey-anycast.sh). To
+    use the package's:
+      sudo systemctl disable yubikey-anycast.service
+      sudo rm /etc/systemd/system/yubikey-anycast.service
+      sudo systemctl daemon-reload
+      sudo systemctl enable yubikey-anycast.service
+      sudo systemctl try-restart yubikey-anycast.service
+  - /etc/systemd/system/yubikey-partition.service, installed by hand, hides
+    the package's unit (which runs
+    /opt/radiator-yubikey/yubikey-partition.sh). To use the package's:
+      sudo rm /etc/systemd/system/yubikey-partition.service
+      sudo systemctl daemon-reload
+  - /usr/local/sbin/yubikey-db.sh /usr/local/sbin/yubikey-partition.sh:
+    copies installed by hand, which the package's units don't use. Remove
+    them when nothing else does.
+
+Something is left to do.
+[exit 1]
+
+$ install.sh --check --radiusd <WORK>/elsewhere/radiusd
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
+Package:   radiator-yubikey 1.9.0, installed
+
+Packages:
+  ok       libauth-yubikey-decrypter-perl 1.0
+  ok       libcrypt-rijndael-perl 1.0
+  ok       libcache-fastmmap-perl 1.0
+  ok       libdbd-sqlite3-perl 1.0
+  ok       sqlite3 1.0
+  ok       libdbd-pg-perl 1.0
+  ok       postgresql-client 1.0
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Nothing is missing.
+[exit 0]
+
+$ install.sh --yes radiator-yubikey_1.9.0_all.deb
+install.sh: error: /opt/radiator-yubikey is a git clone, and the package would install its files over it: move it away first, or use it without the package
+[exit 1]
+
+# apt-get: not run
+
+$ install.sh --yes --radiusd <WORK>/elsewhere/radiusd
+install.sh 1.5.0
+Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
+Package:   radiator-yubikey 1.10.0 (<WORK>/inst/radiator-yubikey_1.10.0_all.deb); installed: 1.9.0
+
+Installing with <WORK>/bin/apt-get:
+  libauth-yubikey-decrypter-perl libcrypt-rijndael-perl
+  libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl
+  postgresql-client
+  <WORK>/inst/radiator-yubikey_1.10.0_all.deb
+
+Radiator's Perl (<WORK>/bin/perl) loads:
+  ok       Radius::AuthSQLYUBIKEY   (Radiator)
+  ok       Auth::Yubikey_Decrypter  (libauth-yubikey-decrypter-perl)
+  ok       Crypt::Rijndael          (libcrypt-rijndael-perl)
+  ok       Cache::FastMmap          (libcache-fastmmap-perl)
+  ok       DBD::SQLite              (libdbd-sqlite3-perl)
+  ok       DBD::Pg                  (libdbd-pg-perl)
+
+Done. The scripts are in /opt/radiator-yubikey, with the guide
+(yubikey-db-guide.html): go on at its "Create the database". For SQLite:
+  cd /opt/radiator-yubikey && sudo ./yubikey-db.sh init --owner radiator:radiator
+[exit 0]
+
+# apt-get -qq update
+# apt-get install -y libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client <WORK>/inst/radiator-yubikey_1.10.0_all.deb
+

@@ -1,0 +1,5 @@
+# Add-on software from outside the distribution, installed beside Radiator
+# Software's own package (which uses /opt/radiator).
+radiator-yubikey: dir-or-file-in-opt [opt/radiator-yubikey/*]
+# The guide, README and changelog sit next to the scripts they describe.
+radiator-yubikey: package-contains-documentation-outside-usr-share-doc [opt/radiator-yubikey/*]

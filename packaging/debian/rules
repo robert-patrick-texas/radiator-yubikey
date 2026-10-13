@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# The services need settings (/etc/radiator/anycast.conf or partition.conf)
+# and are for three sites only: installed, not enabled or started. An upgrade
+# restarts the ones that run.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start --restart-after-upgrade

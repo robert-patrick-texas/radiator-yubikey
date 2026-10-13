@@ -1,0 +1,16 @@
+yubikey-db.sh                   opt/radiator-yubikey
+yubikey-db-migrate.sh           opt/radiator-yubikey
+yubikey-partition.sh            opt/radiator-yubikey
+yubikey-anycast.sh              opt/radiator-yubikey
+install.sh                      opt/radiator-yubikey
+yubikey-db-user.example.sh      opt/radiator-yubikey
+radiator.example.conf           opt/radiator-yubikey
+users.example.csv               opt/radiator-yubikey
+yubikey-partition.example.conf  opt/radiator-yubikey
+yubikey-anycast.example.conf    opt/radiator-yubikey
+yubikey-db-guide.html           opt/radiator-yubikey
+README.md                       opt/radiator-yubikey
+CHANGELOG.md                    opt/radiator-yubikey
+tests/make-otp.sh               opt/radiator-yubikey/tests
+yubikey-partition.service       usr/lib/systemd/system
+yubikey-anycast.service         usr/lib/systemd/system

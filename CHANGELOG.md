@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+The scripts as a Debian package, `radiator-yubikey`, in
+`/opt/radiator-yubikey`, and `install.sh`, which installs it with the
+packages that it and Radiator need, after checking that Radiator is
+installed, from Radiator Software's packages or from their source.
+
+### Added
+
+- The `radiator-yubikey` package, built by `packaging/build-deb.sh` from
+  `packaging/debian/` (the same files always build the same package): the
+  scripts, their examples, `tests/make-otp.sh`, the HTML guide, README and
+  changelog in `/opt/radiator-yubikey`, and `yubikey-partition.service` and
+  `yubikey-anycast.service`, neither enabled nor started. An upgrade
+  restarts the services that run and leaves stopped ones stopped; a removal
+  stops them. It depends on `perl` and `sqlite3` or `postgresql-client`, not
+  on Radiator, so that either kind of Radiator works.
+- `install.sh`: looks for Radiator (Radiator Software's `radiator` or
+  `radiator-locked` package, or a `radiusd` from their source, in
+  `/opt/radiator/radiator`, on the `PATH`, or given with `--radiusd`).
+  Without it, says how to install it and asks whether to go on; with no
+  terminal, stops (exit status 3) unless `--yes`. Then installs with
+  `apt-get` the Perl modules that Radiator's YubiKey support and
+  `DupCache shared` need, the SQLite and PostgreSQL drivers and tools, and
+  the package; checks that Radiator's Perl loads Radiator's SQLYUBIKEY
+  module and those modules; and lists what is left to do (for Radiator from
+  source, a missing `radiator` user or `radiator.service`; units installed
+  by hand that hide the package's, with the commands that replace them).
+  `--check` changes nothing.
+- `tests/radiator/package.sh` (in `run.sh`), 48 checks: the package builds
+  the same twice, lintian finds nothing, and nothing is outside
+  `/opt/radiator-yubikey` but its units; `install.sh` on fresh Ubuntu 26.04
+  containers without Radiator, with Radiator Software's packages, and with
+  Radiator's source unpacked in `/opt/radiator/radiator` or installed with
+  `make install`, each with a login through Radiator; the units under
+  systemd through an install, an upgrade, a removal and a purge.
+- `tests/run-tests.sh`: the `install` scenario, `install.sh` with stand-ins
+  for `apt-get`, `dpkg-query` and Radiator.
+
+### Changed
+
+- `yubikey-partition.service` and `yubikey-anycast.service` run the scripts
+  in `/opt/radiator-yubikey`, not `/usr/local/sbin`.
+- Guide: installs the scripts with the package (or a clone in
+  `/opt/radiator-yubikey`, not `/opt/yubikey-db`), covers Radiator from its
+  source, and says how to move from scripts and units installed by hand.
+  Partition mode and anycast no longer copy scripts and units.
+- `tests/radiator/geo.sh` installs the package on the three sites; the test
+  image has debhelper and lintian.
+
+### Fixed
+
+- `tests/radiator/geo.sh` could fail now and then: reading a site's copy of
+  the keys while partition mode's service was updating it ("database is
+  locked"; it now waits for the lock), and the replayed OTP at West right
+  after its cut was healed, before every Radiator process had reconnected
+  (it now retries while the answer is "secret not found", as other checks
+  after a cut do).
+
 ## 1.5.0 - 2026-10-13
 
 Partition mode: a site that can reach no other site logs users in from a

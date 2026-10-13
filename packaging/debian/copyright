@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: radiator-yubikey
+Upstream-Contact: Robert Patrick <193846785+robert-patrick-texas@users.noreply.github.com>
+Source: https://github.com/robert-patrick-texas/radiator-yubikey
+
+Files: *
+Copyright: 2026 Robert Patrick
+License: none
+ No license has been chosen for this software.

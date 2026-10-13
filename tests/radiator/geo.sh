@@ -28,7 +28,9 @@
 # fd53:97::2 on yk-geo, 172.31.98.2 and fd53:98::2 on yk-geo-nas): it
 # prefers West, then East1, then East2. Behind it, a RADIUS client
 # (yk-geo-nas, 172.31.98.10 and fd53:98::10) logs in at the anycast
-# addresses. The steps in the containers are in geo-node.sh.
+# addresses. The sites run yubikey-anycast.sh and yubikey-partition.sh from
+# the radiator-yubikey package, with its systemd units. The steps in the
+# containers are in geo-node.sh.
 #
 # The containers get CAP_SYS_ADMIN (systemd mounts its cgroups) and
 # CAP_NET_ADMIN (traffic control in their own network), not --privileged:
@@ -81,6 +83,8 @@ fi
 docker network create --ipv6 --subnet 172.31.97.0/24 --subnet fd53:97::/64 yk-geo >/dev/null || exit 1
 docker network create --ipv6 --subnet 172.31.98.0/24 --subnet fd53:98::/64 yk-geo-nas >/dev/null || exit 1
 docker volume create yk-geo-lab >/dev/null || exit 1
+# The radiator-yubikey package, in the shared volume, for the sites to install.
+docker run --rm -v "$root:/repo:ro" -v yk-geo-lab:/lab "$image" /repo/packaging/build-deb.sh /lab/deb >/dev/null || exit 1
 
 declare -A IP=([east1]=172.31.97.11 [east2]=172.31.97.12 [west]=172.31.97.13 [rtr]=172.31.97.2)
 declare -A IP6=([east1]=fd53:97::11 [east2]=fd53:97::12 [west]=fd53:97::13 [rtr]=fd53:97::2)
@@ -617,7 +621,7 @@ cluster "West follows East1 again" "$NORMAL" east1
 # Its old replication connection may wait for TCP to retry, or for
 # wal_receiver_timeout (60 s) to replace it.
 wait_for "West's standby has alice's counter ($during)" "$during" west "$ALICE" 90
-login "OTP $during again at West (used at East2 during the cut)" "REJECT: Replay attack detected" west "$during"
+login_settled "OTP $during again at West (used at East2 during the cut)" "REJECT: Replay attack detected" west "$during"
 login_until "OTP at West" west 30
 T0=$SECONDS
 routes_until "West advertises again" "$ALL3" 30
@@ -707,9 +711,10 @@ echo "== Partition mode: set up on the three servers"
 check "setup, at West" "moved yubikey.conf to yubikey-cluster.conf (in /etc/radiator/conf.d)|the copy: /var/lib/yubikey-partition/keys.db, 4 YubiKeys|Radiator's clause: yubikey.conf -> yubikey-cluster.conf; in partition mode -> yubikey-partition.conf" \
     "$(node west partition-setup | paste -sd'|')"
 for n in east1 east2; do node "$n" partition-setup >/dev/null; done
+# (The service updates the copy as it starts: wait for its lock.)
 check "each server has a copy of the 4 YubiKeys (alice's, and the anycast checks')" "4 4 4" \
-    "$(for n in "${SITES[@]}"; do docker exec "yk-geo-$n" sqlite3 /var/lib/yubikey-partition/keys.db \
-         'SELECT count(*) FROM yubikeys'; done | paste -sd' ')"
+    "$(for n in "${SITES[@]}"; do docker exec "yk-geo-$n" sqlite3 -cmd '.timeout 10000' \
+         /var/lib/yubikey-partition/keys.db 'SELECT count(*) FROM yubikeys'; done | paste -sd' ')"
 check "normal mode: Radiator uses the cluster" "normal normal normal" \
     "$(for n in "${SITES[@]}"; do node "$n" partition-mode; done | paste -sd' ')"
 login "OTP at West"                             ACCEPT west

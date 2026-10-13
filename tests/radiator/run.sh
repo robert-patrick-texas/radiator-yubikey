@@ -2,13 +2,13 @@
 #
 # run.sh - Test yubikey-db.sh against a real Radiator, in a Docker container.
 #
-# Usage: tests/radiator/run.sh DIR [e2e|ha|geo]
+# Usage: tests/radiator/run.sh DIR [e2e|ha|geo|package]
 #   DIR holds the Radiator packages from Radiator Software, which are not part
 #   of this repository: radiator_<version>_all.deb and
 #   radiator-radius-utilxs_<version>_amd64.deb.
 #
 # Builds an Ubuntu 26.04 image with Radiator, SQLite, PostgreSQL 18, Patroni,
-# etcd and FRR, tagged yk-radiator-test:<Radiator version>, then runs the three
+# etcd and FRR, tagged yk-radiator-test:<Radiator version>, then runs the four
 # tests, or only the one named:
 #   e2e  e2e.sh in a throwaway container with this repository mounted
 #        read-only: SQLite, PostgreSQL on the same host, cutover (about 1 min)
@@ -17,6 +17,10 @@
 #   geo  geo.sh: three sites, each with etcd, PostgreSQL under Patroni,
 #        Radiator and FRR, with one anycast address and then partition mode,
 #        through reboots, power losses and network partitions (about 15 min)
+#   package  package.sh: the radiator-yubikey package and install.sh, on fresh
+#        Ubuntu 26.04 containers without Radiator, with Radiator Software's
+#        packages, and with Radiator's source; the services under systemd
+#        (about 5 min; apt-get in the containers needs network access)
 # Needs Docker, usable without sudo (membership of the docker group). Exits 0
 # when every check passes.
 
@@ -28,8 +32,8 @@ die() { printf 'run.sh: error: %s\n' "$*" >&2; exit 1; }
 
 dir=${1:-}
 which=${2:-all}
-[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|ha|geo] (DIR: the directory with the Radiator .deb packages)"
-[[ $which =~ ^(all|e2e|ha|geo)$ ]] || die "unknown test '$which' (e2e, ha or geo)"
+[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|ha|geo|package] (DIR: the directory with the Radiator .deb packages)"
+[[ $which =~ ^(all|e2e|ha|geo|package)$ ]] || die "unknown test '$which' (e2e, ha, geo or package)"
 shopt -s nullglob
 rad=("$dir"/radiator_*_all.deb)
 utilxs=("$dir"/radiator-radius-utilxs_*.deb)
@@ -56,5 +60,9 @@ fi
 if [[ $which == all || $which == geo ]]; then
     [[ $which == all ]] && echo
     "$here/geo.sh" "$image" || status=1
+fi
+if [[ $which == all || $which == package ]]; then
+    [[ $which == all ]] && echo
+    "$here/package.sh" "$image" "$dir" || status=1
 fi
 exit $status

@@ -1,0 +1,27 @@
+Source: radiator-yubikey
+Section: net
+Priority: optional
+Maintainer: Robert Patrick <193846785+robert-patrick-texas@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.3
+Homepage: https://github.com/robert-patrick-texas/radiator-yubikey
+Rules-Requires-Root: no
+
+Package: radiator-yubikey
+Architecture: all
+Depends: perl, sqlite3 | postgresql-client, ${misc:Depends}
+Recommends: libcrypt-rijndael-perl
+Suggests: libauth-yubikey-decrypter-perl, libdbd-sqlite3-perl, libdbd-pg-perl,
+          openssl, frr
+Description: YubiKey OTP database tools for Radiator RADIUS
+ Scripts that create and manage the SQLite or PostgreSQL database of users
+ and YubiKeys that Radiator's <AuthBy SQLYUBIKEY> checks one-time passwords
+ against, with no dependency on Yubico's cloud: add, import, verify, back up
+ and restore accounts, move from SQLite to PostgreSQL, keep logging users in
+ at a site that is cut off (partition mode), and advertise an anycast
+ address only while Radiator accepts logins.
+ .
+ Installed in /opt/radiator-yubikey. Radiator, from Radiator Software's
+ packages or its source, is not a dependency, so either works;
+ /opt/radiator-yubikey/install.sh checks for it and installs the Perl
+ modules and database tools it needs.
