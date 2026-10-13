@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 - 2026-10-13
 
 The scripts as a Debian package, `radiator-yubikey`, in
 `/opt/radiator-yubikey`, and `install.sh`, which installs it with the

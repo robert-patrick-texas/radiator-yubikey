@@ -4,7 +4,7 @@
 #              the packages that it and Radiator's YubiKey support need.
 #
 # VERSION
-#   1.5.0
+#   1.6.0
 #
 # WHAT IT DOES
 #   1. Looks for Radiator. It comes from Radiator Software, as packages or as
@@ -56,7 +56,7 @@ set -uo pipefail
 shopt -s nullglob
 
 PROG=${0##*/}
-VERSION=1.5.0
+VERSION=1.6.0
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 NEED_ROOT=1; [[ -n ${APT_GET:-} ]] && NEED_ROOT=0
 APT_GET=${APT_GET:-apt-get}

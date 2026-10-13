@@ -1,5 +1,5 @@
 $ install.sh -V
-install.sh 1.5.0
+install.sh 1.6.0
 [exit 0]
 
 $ install.sh --help
@@ -39,7 +39,7 @@ install.sh: error: other.deb is not a radiator-yubikey package
 [exit 1]
 
 $ install.sh radiator-yubikey_1.9.0_all.deb
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  not found
   Neither Radiator Software's radiator package nor a radiusd from their
   source is installed. Install Radiator first, in one of these ways:
@@ -57,7 +57,7 @@ to go on without it.
 # apt-get: not run
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  not found
   Neither Radiator Software's radiator package nor a radiusd from their
   source is installed. Install Radiator first, in one of these ways:
@@ -83,7 +83,7 @@ Something is missing.
 [exit 1]
 
 $ install.sh --yes radiator-yubikey_1.9.0_all.deb
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  not found
   Neither Radiator Software's radiator package nor a radiusd from their
   source is installed. Install Radiator first, in one of these ways:
@@ -112,7 +112,7 @@ Done. The scripts are in /opt/radiator-yubikey, with the guide
 # apt-get install -y libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client <WORK>/radiator-yubikey_1.9.0_all.deb
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey not installed, and no package to install
 
@@ -137,7 +137,7 @@ Something is missing.
 [exit 1]
 
 $ install.sh radiator-yubikey_1.9.0_all.deb
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0 (<WORK>/radiator-yubikey_1.9.0_all.deb); installed: none
 
@@ -164,7 +164,7 @@ Done. The scripts are in /opt/radiator-yubikey, with the guide
 # apt-get install -y libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client <WORK>/radiator-yubikey_1.9.0_all.deb
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -189,7 +189,7 @@ Nothing is missing.
 [exit 0]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -214,7 +214,7 @@ Nothing is missing.
 [exit 0]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -245,7 +245,7 @@ Something is missing.
 [exit 1]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4), but its radiusd was not found
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -262,7 +262,7 @@ Something is missing.
 [exit 1]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -297,7 +297,7 @@ Something is left to do.
 [exit 1]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/root/opt/radiator/radiator/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -322,7 +322,7 @@ Nothing is missing.
 [exit 0]
 
 $ install.sh --check
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/root/usr/local/bin/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -347,12 +347,12 @@ Nothing is missing.
 [exit 0]
 
 $ install.sh --check --radiusd <WORK>/elsewhere/radiusd
-install.sh 1.5.0
+install.sh 1.6.0
 install.sh: error: <WORK>/elsewhere/radiusd is not Radiator's radiusd: Radius/Util.pm is neither next to it nor in its Perl's @INC
 [exit 1]
 
 $ install.sh --check --radiusd <WORK>/elsewhere/radiusd
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -377,7 +377,7 @@ Nothing is missing.
 [exit 0]
 
 $ install.sh --check --radiusd <WORK>/elsewhere/radiusd
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -420,7 +420,7 @@ Something is left to do.
 [exit 1]
 
 $ install.sh --check --radiusd <WORK>/elsewhere/radiusd
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
 Package:   radiator-yubikey 1.9.0, installed
 
@@ -451,7 +451,7 @@ install.sh: error: /opt/radiator-yubikey is a git clone, and the package would i
 # apt-get: not run
 
 $ install.sh --yes --radiusd <WORK>/elsewhere/radiusd
-install.sh 1.5.0
+install.sh 1.6.0
 Radiator:  4.30, from source: <WORK>/elsewhere/radiusd
 Package:   radiator-yubikey 1.10.0 (<WORK>/inst/radiator-yubikey_1.10.0_all.deb); installed: 1.9.0
 
