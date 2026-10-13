@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 - 2026-10-13
 
 Partition mode: a site that can reach no other site logs users in from a
 copy of the keys on its own server, and copies the counters back to the

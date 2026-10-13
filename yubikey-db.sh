@@ -5,7 +5,7 @@
 #                 OTP authentication with no YubiCloud dependency.
 #
 # VERSION
-#   1.4.0
+#   1.5.0
 #
 # HOW IT WORKS
 #   Radiator's <AuthBy SQLYUBIKEY> decrypts each YubiKey OTP locally using the
@@ -131,7 +131,7 @@ set -euo pipefail
 umask 027   # new files/directories are not world-readable
 
 PROG=${0##*/}
-VERSION=1.4.0
+VERSION=1.5.0
 DB_BACKEND=${DB_BACKEND:-sqlite}   # all database access goes through the db_* functions
 DB_FILE=${DB_FILE:-/etc/radiator/db/yubicred.db}
 SQLITE3=${SQLITE3:-sqlite3}
