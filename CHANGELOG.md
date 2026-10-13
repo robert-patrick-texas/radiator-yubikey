@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+Partition mode: a site that can reach no other site logs users in from a
+copy of the keys on its own server, and copies the counters back to the
+primary when the network returns.
+
+### Added
+
+- `yubikey-partition.sh`, with `yubikey-partition.service` and
+  `yubikey-partition.example.conf`: every 5 minutes it updates a SQLite
+  copy of the keys from the server's own PostgreSQL (counters only move
+  forward). When neither of the other servers has answered for 3 checks (5 s
+  apart), it updates the copy once more (a standby that is cut off still
+  answers reads), points Radiator's `yubikey.conf` (now a link) at the
+  copy's clause and restarts Radiator. A former primary, whose PostgreSQL
+  Patroni is stopping, uses the last copy until PostgreSQL answers again. When another server answers and the primary can be reached, it
+  copies the counters that moved forward in the copy to the primary (only
+  forward, with Radiator's own login), points the link back at the cluster,
+  restarts Radiator, and copies once more.
+- Guide: "Partition mode": how it works, the risks it accepts (an OTP used
+  at another site works once more at the cut-off site; changes reach it
+  only when the network is back), what users see, as measured, the setup,
+  running it, security notes and troubleshooting rows.
+- `tests/radiator/geo.sh`: partition mode with West cut off, the primary's
+  site cut off, two servers down at once, and the link between the East
+  sites broken (no partition mode: East2 still reaches West).
+- `tests/run-tests.sh`: the `pg_partition` scenario: the copy follows the
+  database, the counters go back only forward, and the service switches
+  Radiator's clause both ways.
+
+### Fixed
+
+- `tests/radiator/ha.sh` could fail now and then on a replayed OTP right
+  after a failover: one of Radiator's four processes had not reconnected yet
+  and answered `Yubikey secret not found in database`. Those checks now
+  wait for an answer from the database.
+
 ## 1.4.0 - 2026-10-13
 
 One anycast address for all sites: each server advertises it with BGP only

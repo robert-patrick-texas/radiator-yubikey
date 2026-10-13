@@ -82,6 +82,23 @@ login() {
     check "$1 [$3, ${MS} ms]" "$2" "$(head -1 <<<"$out")"
 }
 
+# login_settled LABEL EXPECTED RAD COUNTER: login, for right after a
+# failover. Each of Radiator's four processes reconnects on its own, so one
+# that hasn't yet answers "Yubikey secret not found in database": retry once
+# a second while that is the answer, for up to 20 s. (A replayed OTP stays
+# rejected, however often it is sent.)
+login_settled() {
+    local start=$SECONDS out
+    while :; do
+        out=$(node "$3" login alice s3cr3t "$4" 0)
+        [[ $(head -1 <<<"$out") == "REJECT: Yubikey secret not found in database" ]] || break
+        ((SECONDS - start < 20)) || break
+        sleep 1
+    done
+    MS=$(tail -1 <<<"$out")
+    check "$1 [$3, ${MS} ms]" "$2" "$(head -1 <<<"$out")"
+}
+
 # login_until LABEL RAD COUNTER: retry the login once a second until it is
 # accepted, for up to 20 s; reports how long that took.
 login_until() {
@@ -180,7 +197,7 @@ login "OTP 3, no writable server"               "REJECT: Yubikey secret not foun
 node db2 promote
 check "db2 promoted" primary "$(node db2 role)"
 login_until "OTP 3, once FailureBackoffTime is over" rad1 3
-login "OTP 2 (used before the failure)"         "REJECT: Replay attack detected" rad1 2
+login_settled "OTP 2 (used before the failure)" "REJECT: Replay attack detected" rad1 2
 login "OTP 4, rad2's old session was to db1"    ACCEPT rad2 4
 check "rad1 uses db2" db2 "$(uses rad1)"
 check "rad2 uses db2" db2 "$(uses rad2)"
@@ -216,7 +233,7 @@ login "OTP 6 on db2, not copied to db1"         ACCEPT rad2 6
 docker kill yk-ha-db2 >/dev/null
 node db1 promote
 login_until "OTP 6 again: accepted by the promoted db1" rad2 6
-login "OTP 6 a third time"                      "REJECT: Replay attack detected" rad2 6
+login_settled "OTP 6 a third time"              "REJECT: Replay attack detected" rad2 6
 login "OTP 7"                                   ACCEPT rad1 7
 docker start yk-ha-db2 >/dev/null
 node db2 standby db2 db1
@@ -239,7 +256,7 @@ docker start yk-ha-db1 >/dev/null
 node db1 standby db1 db2
 check "db2 streams to db1" "db1|streaming|async" "$(streams_to db2)"
 login "OTP 10"                                  ACCEPT rad1 10
-login "OTP 10 on the other Radiator server"     "REJECT: Replay attack detected" rad2 10
+login_settled "OTP 10 on the other Radiator server" "REJECT: Replay attack detected" rad2 10
 wait_for "db1 has alice's counter (10)" 10 db1 "$ALICE"
 
 echo
@@ -248,7 +265,7 @@ login "OTP 11, just before the switchover"      ACCEPT rad1 11
 node db2 stop
 node db1 promote
 login_until "OTP 12 on db1" rad1 12
-login "OTP 11: the clean stop sent every change" "REJECT: Replay attack detected" rad2 11
+login_settled "OTP 11: the clean stop sent every change" "REJECT: Replay attack detected" rad2 11
 node db2 standby db2 db1
 check "db1 streams to db2" "db2|streaming|async" "$(streams_to db1)"
 check "rad1 uses db1" db1 "$(uses rad1)"

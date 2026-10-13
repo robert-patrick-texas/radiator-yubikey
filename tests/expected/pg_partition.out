@@ -1,0 +1,105 @@
+$ yubikey-partition.sh status
+unknown mode; the service is not running
+Radiator uses: ?
+[exit 1]
+
+$ yubikey-partition.sh setup
+moved yubikey.conf to yubikey-cluster.conf (in <WORK>/conf.d)
+the copy: <WORK>/state/keys.db, 2 YubiKeys
+Radiator's clause: yubikey.conf -> yubikey-cluster.conf; in partition mode -> yubikey-partition.conf
+[exit 0]
+
+# yubikey.conf -> yubikey-cluster.conf
+    Identifier   YubiKeyLocal
+    DBSource     dbi:SQLite:dbname=<WORK>/state/keys.db
+# the copy:
+username | tokenId | active | counter | low
+test.user | cbdefghijkln | 1 | 0 | 0
+test.user2 | cbdefghijklr | 1 | 0 | 0
+
+$ yubikey-partition.sh sync
+copy: 4 YubiKeys
+[exit 0]
+
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 30 | 0
+dave | vvcccceeeeee | 1 | 0 | 0
+test.user | cbdefghijkln | 1 | 9 | 1
+test.user2 | cbdefghijklr | 0 | 0 | 0
+$ yubikey-partition.sh sync
+copy: 3 YubiKeys
+[exit 0]
+
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 0 | 0
+test.user | cbdefghijkln | 1 | 9 | 1
+test.user2 | cbdefghijklr | 0 | 0 | 0
+
+$ yubikey-partition.sh sync
+copy: 3 YubiKeys
+[exit 0]
+
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 0 | 0
+test.user | cbdefghijkln | 1 | 12 | 4
+test.user2 | cbdefghijklr | 0 | 0 | 0
+
+$ yubikey-partition.sh leave
+not in partition mode
+[exit 0]
+
+$ yubikey-partition.sh status
+partition mode since <TIME>
+peers answering: none
+copy: 3 YubiKeys, updated <TIME>
+Radiator uses: yubikey-partition.conf
+counters to copy to the primary: yes
+[exit 1]
+
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 4 | 0
+test.user | cbdefghijkln | 1 | 12 | 4
+test.user2 | cbdefghijklr | 0 | 0 | 0
+# the primary:
+carol | vvccccdddddd | 6 | 2 | accessed
+test.user | cbdefghijkln | 14 | 0 | 
+test.user2 | cbdefghijklr | 7 | 7 | accessed
+
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 6 | 2
+test.user | cbdefghijkln | 1 | 14 | 0
+test.user2 | cbdefghijklr | 0 | 7 | 7
+# the copy:
+username | tokenId | active | counter | low
+carol | vvccccdddddd | 1 | 6 | 2
+test.user | cbdefghijkln | 1 | 14 | 0
+test.user2 | cbdefghijklr | 0 | 8 | 0
+# the service exited with 0; its log:
+started in normal mode: partition mode after 2 checks (2 s) in which none of 127.0.0.1 answers; the copy is updated every 3600 s
+copy: 3 YubiKeys, updated <TIME>
+partition mode: none of 127.0.0.1 answered in 2 checks; Radiator uses this server's copy of the keys (3 YubiKeys, updated just now)
+normal mode: Radiator uses the cluster again; counters moved forward in the primary for 2 YubiKeys
+partition mode: none of 127.0.0.1 answered in 2 checks; Radiator uses this server's copy of the keys (3 YubiKeys, updated <TIME>; cannot read this server's PostgreSQL: psql: error: FATAL:  the database system is shutting down)
+copy: updated from this server's PostgreSQL again (3 YubiKeys, updated <TIME>)
+normal mode: Radiator uses the cluster again; counters moved forward in the primary for 0 YubiKeys
+# systemctl:
+systemctl restart radiator
+systemctl restart radiator
+systemctl restart radiator
+systemctl restart radiator
+# the primary:
+carol | vvccccdddddd | 6 | 2 | accessed
+test.user | cbdefghijkln | 14 | 0 | 
+test.user2 | cbdefghijklr | 8 | 0 | accessed
+# merge-pending: no
+
+$ yubikey-partition.sh leave
+error: cannot copy the counters to the primary: <ERROR>
+[exit 1]
+
+# yubikey.conf -> yubikey-partition.conf

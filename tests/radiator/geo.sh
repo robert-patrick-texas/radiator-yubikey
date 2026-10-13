@@ -45,6 +45,11 @@
 # the primary through West; a standby can be copied again; with two servers
 # down, the last one stops being the primary. Planned switchovers bring the
 # primary back to East1 after each failover.
+# Partition mode, as the guide's "Partition mode" section sets it up, last:
+# a server that no other site answers logs users in from its own copy of the
+# keys, and copies the counters back to the primary when the network is back
+# (West cut off, the primary cut off, two servers down); one that still
+# reaches another site doesn't.
 # Anycast checks: all three sites advertise, and West answers the client,
 # from the anycast address, over IPv4 and IPv6; the check's user is
 # rejected from the client; West withdraws when its Radiator stops and when
@@ -169,6 +174,23 @@ logins() {
     check "$1 [$2, OTPs $((C - 4)) to $C, median $MS ms]" "ACCEPT ACCEPT ACCEPT ACCEPT ACCEPT" "${answers[*]}"
 }
 
+# login_settled LABEL EXPECTED SITE COUNTER: alice logs in at SITE with
+# COUNTER's OTP, once a second while there is no answer or Radiator can't
+# reach its database (for up to 20 s, as when it restarts); then checks the
+# answer. A replayed OTP stays rejected, however often it is sent.
+login_settled() {
+    local out answer start=$SECONDS
+    while :; do
+        out=$(node "$3" login alice s3cr3t "$4" 0 5)
+        answer=$(head -1 <<<"$out")
+        [[ $answer == "NO REPLY" || $answer == "REJECT: Yubikey secret not found in database" ]] || break
+        ((SECONDS - start < 20)) || break
+        sleep 1
+    done
+    MS=$(tail -1 <<<"$out")
+    check "$1 [$3, OTP $4, $MS ms]" "$2" "$(head -1 <<<"$out")"
+}
+
 # login_until LABEL SITE [LIMIT]: a new OTP at SITE once a second until one
 # is accepted, for up to LIMIT seconds (default 60). Reports the seconds
 # since T0, which the caller sets when the failure starts.
@@ -287,6 +309,18 @@ one_leader() {
     check "$1 [after $((SECONDS - start)) s]" "one leader in the East, all streaming" \
         "$( [[ $out =~ ^east1=(leader|quorum)\ east2=(leader|quorum)\ west=quorum$ && $out == *leader* ]] \
             && echo "one leader in the East, all streaming" || echo "$out")"
+}
+
+# mode_until LABEL SITE MODE [LIMIT]: wait up to LIMIT seconds (default 60)
+# for SITE's partition mode service to be in MODE (normal or partition).
+mode_until() {
+    local start=$SECONDS out
+    while ((SECONDS - start < ${4:-60})); do
+        out=$(node "$2" partition-mode 2>/dev/null)
+        [[ $out == "$3" ]] && break
+        sleep 0.5
+    done
+    check "$1 [after $((SECONDS - T0)) s]" "$3" "$out"
 }
 
 # routes_until LABEL EXPECTED [LIMIT]: wait up to LIMIT seconds (default 60)
@@ -669,8 +703,106 @@ routes_until "all three sites advertise again" "$ALL3" 30
 nas "OTP from the NAS: West answers" "ACCEPT from $ANY4 by west" 4
 
 echo
+echo "== Partition mode: set up on the three servers"
+check "setup, at West" "moved yubikey.conf to yubikey-cluster.conf (in /etc/radiator/conf.d)|the copy: /var/lib/yubikey-partition/keys.db, 4 YubiKeys|Radiator's clause: yubikey.conf -> yubikey-cluster.conf; in partition mode -> yubikey-partition.conf" \
+    "$(node west partition-setup | paste -sd'|')"
+for n in east1 east2; do node "$n" partition-setup >/dev/null; done
+check "each server has a copy of the 4 YubiKeys (alice's, and the anycast checks')" "4 4 4" \
+    "$(for n in "${SITES[@]}"; do docker exec "yk-geo-$n" sqlite3 /var/lib/yubikey-partition/keys.db \
+         'SELECT count(*) FROM yubikeys'; done | paste -sd' ')"
+check "normal mode: Radiator uses the cluster" "normal normal normal" \
+    "$(for n in "${SITES[@]}"; do node "$n" partition-mode; done | paste -sd' ')"
+login "OTP at West"                             ACCEPT west
+
+echo
+echo "== Partition mode: West is cut off from both East sites"
+login "OTP at East2, just before the cut"       ACCEPT east2
+before_cut=$C
+T0=$SECONDS
+partition west
+login "OTP at West, at once: no primary within reach" "REJECT: Yubikey secret not found in database" west
+mode_until "West enters partition mode: no other site answers" west partition 40
+part_s=$((SECONDS - T0))
+# The copy is updated every 5 minutes, and again when partition mode begins.
+login_settled "OTP $before_cut (used at East2 just before the cut) at West: in West's copy, a replay" \
+    "REJECT: Replay attack detected" west "$before_cut"
+login_until "OTP at West, from West's copy of the keys" west 30
+west_otp=$C
+login "OTP at East1"                            ACCEPT east1
+login "OTP $C (just used at East1) again at West: accepted, the risk of partition mode" ACCEPT west "$C"
+login "OTP $west_otp (used at West) again at West" "REJECT: Replay attack detected" west "$west_otp"
+node east1 admin disable alice >/dev/null
+login "OTP at West while alice is disabled at East1: accepted (West can't know)" ACCEPT west
+node east1 admin enable alice >/dev/null
+last_west=$C
+routes_until "West advertises again, logging in from its copy" "$ALL3" 40
+nas "OTP from the NAS: West answers, from its copy" "ACCEPT from $ANY4 by west" 4
+last_west=$C
+T0=$SECONDS
+heal west
+mode_until "West leaves partition mode once East answers and the primary is reachable" west normal 60
+wait_for "the primary has alice's counter from West's copy ($last_west)" "$last_west" east1 "$ALICE" 10
+login "OTP $last_west (used at West while cut off) at East2: a replay" "REJECT: Replay attack detected" east2 "$last_west"
+login_until "OTP at West, through the primary again" west 30
+
+echo
+echo "== Partition mode: East1 (the primary's site) is cut off from the others"
+T0=$SECONDS
+partition east1
+mode_until "East1 enters partition mode" east1 partition 60
+login_until "OTP at East1, from its copy" east1 60
+east1_otp=$C
+login_until "OTP at East2 once Patroni promotes it" east2 60
+login "OTP at West"                             ACCEPT west
+check "West and East2 stayed in normal mode: they answer each other" "normal normal" \
+    "$(node west partition-mode) $(node east2 partition-mode)"
+T0=$SECONDS
+heal east1
+mode_until "East1 leaves partition mode" east1 normal 90
+cluster "East1 rejoins as a standby" "east1=quorum east2=leader west=quorum" east2 90
+login "OTP $east1_otp (used at East1 while cut off) at West: a replay" "REJECT: Replay attack detected" west "$east1_otp"
+switchover east1 east1
+cluster "back to normal, East1 the primary" "$NORMAL" east1
+
+echo
+echo "== Partition mode: East2 and West down at the same time"
+docker stop -t 60 yk-geo-east2 >/dev/null &
+docker stop -t 60 yk-geo-west >/dev/null &
+wait
+T0=$SECONDS
+mode_until "East1, alone, enters partition mode" east1 partition 60
+login_until "OTP at East1, from its copy" east1 60
+alone_otp=$C
+docker start yk-geo-east2 yk-geo-west >/dev/null
+booted east2
+booted west
+T0=$SECONDS
+mode_until "East1 leaves partition mode once there is a primary again" east1 normal 120
+one_leader "a leader in the East, all streaming"
+[[ $(node east1 members) == "$NORMAL" ]] || switchover east1 east1
+cluster "back to normal, East1 the primary" "$NORMAL" east1
+login "OTP $alone_otp (used at East1 alone) at West: a replay" "REJECT: Replay attack detected" west "$alone_otp"
+login_until "OTP at West" west 30
+
+echo
+echo "== Partition mode: the link between East1 and East2 fails"
+T0=$SECONDS
+node east1 cut east2
+node east2 cut east1
+login "OTP at East2: East1 out of reach" "REJECT: Yubikey secret not found in database" east2
+sleep 20    # longer than three checks
+check "East2 stays in normal mode: West still answers" normal "$(node east2 partition-mode)"
+node east1 heal east2
+node east2 heal east1
+cluster "East2 follows East1 again" "$NORMAL" east1
+login_until "OTP at East2" east2 30
+T0=$SECONDS
+routes_until "all three sites advertise" "$ALL3" 30
+
+echo
 echo "Login times (median, warm connections): East1 ${LAT[east1]} ms, East2 ${LAT[east2]} ms, West ${LAT[west]} ms"
 echo "Anycast: West withdrawn ${withdraw_s} s after its Radiator stopped, back ${advertise_s} s after it started;" \
      "dropped in under $((bfd_s + 1)) s after a power loss (BFD); back ${failover_s} s after the primary lost power"
+echo "Partition mode: West, cut off, used its copy ${part_s} s after the cut"
 printf 'Three sites: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

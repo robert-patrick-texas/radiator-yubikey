@@ -301,6 +301,8 @@ PostgreSQL</a></li>
 <li><a href="#two-database-servers" id="toc-two-database-servers">Two
 database servers</a></li>
 <li><a href="#three-sites" id="toc-three-sites">Three sites</a></li>
+<li><a href="#partition-mode" id="toc-partition-mode">Partition
+mode</a></li>
 <li><a href="#anycast" id="toc-anycast">Anycast</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
@@ -319,8 +321,8 @@ database, managed with the scripts in this repository. It covers a lab
 you can build in a container, a server installation, adding accounts,
 checking credentials, day-to-day maintenance, moving from SQLite to
 PostgreSQL, a second PostgreSQL server that takes over when the first
-fails, three sites with automatic failover, and one anycast address for
-all of them.</p>
+fails, three sites with automatic failover, logins at a site that is cut
+off, and one anycast address for all of them.</p>
 <p>The scripts, this guide and the releases are on GitHub: <a
 href="https://github.com/robert-patrick-texas/radiator-yubikey">https://github.com/robert-patrick-texas/radiator-yubikey</a>.</p>
 <p>Every procedure in this guide was run as written with
@@ -389,6 +391,14 @@ variables at the top of the file.</td>
 <td><code>radiator.example.conf</code></td>
 <td>A Radiator configuration for YubiKey logins, to replace the
 package's sample.</td>
+</tr>
+<tr>
+<td><code>yubikey-partition.sh</code></td>
+<td>Keeps a copy of the keys on each server of the three sites, and
+makes Radiator use it while the server can reach no other site (see <a
+href="#partition-mode">Partition mode</a>); with
+<code>yubikey-partition.service</code> and
+<code>yubikey-partition.example.conf</code>.</td>
 </tr>
 <tr>
 <td><code>yubikey-anycast.sh</code></td>
@@ -512,6 +522,10 @@ group).</li>
 <td><code>postgresql</code></td>
 </tr>
 <tr>
+<td>Each server, for partition mode</td>
+<td><code>sqlite3</code>, <code>libdbd-sqlite3-perl</code></td>
+</tr>
+<tr>
 <td>Each server, for anycast</td>
 <td><code>frr</code></td>
 </tr>
@@ -621,7 +635,7 @@ servers, through a dead primary, a hung primary, failovers, an old
 primary coming back, a planned switchover, the replay window (see <a
 href="#two-database-servers">Two database servers</a>), and the same OTP
 sent to both Radiator servers at the same moment.</li>
-<li><code>geo.sh</code>, 134 checks with three containers, one per site,
+<li><code>geo.sh</code>, 175 checks with three containers, one per site,
 each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
 and <code>yubikey-anycast.sh</code>, set up as in <a
 href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
@@ -633,10 +647,13 @@ stops West's Radiator and West's check, reboots each server in turn,
 cuts West's and then the primary's power, kills Patroni on the primary,
 cuts West off, cuts the primary's site off, breaks the link between the
 East sites, copies a standby again, and takes two servers down at once.
-Each time it checks which logins are accepted, that no OTP accepted
-before is accepted again, that the cluster recovers, which servers the
-router has anycast routes from, and which server answers the client. The
-containers have the <code>SYS_ADMIN</code> capability (for systemd) and
+Then it sets up <a href="#partition-mode">partition mode</a> and cuts
+West off, cuts the primary's site off, takes two servers down at once,
+and breaks the link between the East sites again. Each time it checks
+which logins are accepted, which OTPs are replays, that the cluster
+recovers, which servers the router has anycast routes from, and which
+server answers the client. The containers have the
+<code>SYS_ADMIN</code> capability (for systemd) and
 <code>NET_ADMIN</code> (for traffic control and addresses in their own
 network), but aren't privileged. Docker sets the two kernel settings of
 <a href="#set-up-anycast-on-each-server">Set up anycast on each
@@ -644,13 +661,13 @@ server</a>, step 2, in the containers (<code>--sysctl</code>); the
 step's commands themselves were run in a container whose kernel settings
 it could change for its own network only.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all three, about 13 minutes
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all three, about 18 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, or geo)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 92 passed, 0 failed</code>,
 <code>Two database servers: 56 passed, 0 failed</code> and
-<code>Three sites: 134 passed, 0 failed</code>. Run them again with each
+<code>Three sites: 175 passed, 0 failed</code>. Run them again with each
 new Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -1783,9 +1800,9 @@ is rejected until one of them is back.</td>
 primary; network devices that try their local accounts only when no
 RADIUS server answers won't fall back to them. (With <a
 href="#anycast">anycast</a>, a site that can't log anyone in stops
-answering instead.) Logging in at a site that can reach no primary, such
-as West when it is cut off, would need a copy of the keys on that site,
-which this setup doesn't have.</p>
+answering instead.) To log users in at a site that can reach no primary,
+such as West when it is cut off, add <a href="#partition-mode">partition
+mode</a>.</p>
 </section>
 <section id="before-you-start" class="level3">
 <h3>Before you start</h3>
@@ -2119,6 +2136,177 @@ West), and West confirms its commits, so logins at East1 take a WAN
 round trip longer. East2 can't reach the primary: its logins are
 rejected until the link is back.</li>
 </ul>
+<p>With <a href="#partition-mode">partition mode</a>, a site that
+reaches neither of the others logs users in from a copy of the keys
+instead.</p>
+</section>
+</section>
+<section id="partition-mode" class="level2">
+<h2>Partition mode</h2>
+<p>With <a href="#three-sites">three sites</a>, a site that can reach no
+other site can't reach a primary either, so it rejects every login until
+the network is back. <strong>Partition mode</strong> lets that site log
+users in from a copy of the keys on its own server while it is cut off,
+and copies the counters back to the primary when the network returns. It
+is optional: <code>yubikey-partition.sh</code> runs it, on each of the
+three servers. <code>tests/radiator/geo.sh</code> tests it after
+everything else (see <a href="#testing">Testing</a>).</p>
+<section id="how-partition-mode-works" class="level3">
+<h3>How partition mode works</h3>
+<ul>
+<li><strong>A copy of the keys on each server.</strong> Every 5 minutes,
+<code>yubikey-partition.sh</code> updates a SQLite copy of the
+<code>yubikeys</code> table,
+<code>/var/lib/yubikey-partition/keys.db</code>, from the server's own
+PostgreSQL (a standby or the primary), through the local socket. New,
+changed, disabled and deleted YubiKeys follow; counters only move
+forward.</li>
+<li><strong>Cut off: Radiator uses the copy.</strong> Every 5 s, the
+script checks whether the other two servers answer, on PostgreSQL's port
+or Patroni's. When neither has for 3 checks in a row, the server is cut
+off. The script updates the copy once more: a standby that is cut off
+still answers reads, with every change up to the cut. Then it points
+Radiator's <code>/etc/radiator/conf.d/yubikey.conf</code>, which is a
+link, at <code>yubikey-partition.conf</code> (Radiator's clause for the
+copy) instead of <code>yubikey-cluster.conf</code>, and restarts
+Radiator. Logins at that site work again, and their counters are saved
+in the copy.</li>
+<li><strong>If PostgreSQL doesn't answer at that moment, the last
+copy.</strong> When the primary is cut off, Patroni stops its
+PostgreSQL, which then refuses connections for about a minute before it
+starts again as a standby. If partition mode begins during that minute,
+the copy is the one from the last 5-minute update, and it is updated as
+soon as PostgreSQL answers. (In the test, East1's PostgreSQL still
+answered when partition mode began.)</li>
+<li><strong>Back: the counters go to the primary.</strong> When another
+server answers and the primary can be reached, twice in a row, the
+script copies to the primary the counters that moved forward in the copy
+(only forward, with Radiator's own database login), points the link back
+at the cluster, restarts Radiator, and copies once more, for logins in
+between.</li>
+<li><strong>Only when no other site answers.</strong> A site that still
+reaches another site doesn't use its copy: East2 while only its link to
+East1 is down, or every site while Patroni replaces a primary. They
+reject, as before.</li>
+</ul>
+<p><strong>The risks you accept with partition mode:</strong></p>
+<ul>
+<li>While a site is cut off, an OTP that a user typed at another site
+can be used once more at the cut-off site, which can't know about it. On
+a former primary whose PostgreSQL didn't answer when partition mode
+began, so can an OTP typed anywhere in the last 5 minutes before the
+cut, until it answers. And an OTP used at the cut-off site can be used
+once more at another site, until the network is back and its counters
+have reached the primary.</li>
+<li>A user disabled, a PIN changed or a YubiKey deleted elsewhere while
+a site is cut off still works at that site until the network is
+back.</li>
+<li>Each server keeps every AES key in a second place, the copy.</li>
+</ul>
+</section>
+<section id="what-users-see-with-partition-mode" class="level3">
+<h3>What users see with partition mode</h3>
+<p>Measured by the test:</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Logins</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>West is cut off</td>
+<td>At West, rejected until West enters partition mode, 13 to 15 s after
+the cut; logins from its copy work from 20 to 22 s (Radiator restarts in
+between), and an OTP used at another site just before the cut is a
+replay there too. At the East sites, nothing changes. 6 to 8 s after the
+network is back, West uses the primary again, and the OTPs used at West
+are replays everywhere.</td>
+</tr>
+<tr>
+<td>East1 (the primary) is cut off</td>
+<td>At East1, no answer at first, then rejected, then logins from its
+copy from 20 to 23 s. Elsewhere, as without partition mode: East2 takes
+over, and West and East2 stay in normal mode, as they reach each other.
+7 to 10 s after the network is back, East1's counters are in the new
+primary.</td>
+</tr>
+<tr>
+<td>East2 and West down at once</td>
+<td>East1 logs users in from its copy from about 20 s, instead of
+rejecting until one of them is back.</td>
+</tr>
+<tr>
+<td>The link between East1 and East2 fails</td>
+<td>No change: East2 still reaches West, so it rejects until the link is
+back.</td>
+</tr>
+</tbody>
+</table>
+<p>With <a href="#anycast">anycast</a>, a cut-off site withdraws while
+its logins fail, and advertises again once it logs users in from its
+copy.</p>
+</section>
+<section id="set-up-partition-mode" class="level3">
+<h3>Set up partition mode</h3>
+<p>On each of the three servers, after <a
+href="#set-up-the-three-servers">Set up the three servers</a>:</p>
+<p><strong>1. Install</strong> the packages for the copy, the script
+(with <code>yubikey-db.sh</code>, which <code>setup</code> uses) and its
+unit, and the settings:</p>
+<pre class="bash"><code>sudo apt install sqlite3 libdbd-sqlite3-perl
+sudo install -m 0755 yubikey-partition.sh yubikey-db.sh /usr/local/sbin/
+sudo install -m 0644 yubikey-partition.service /etc/systemd/system/
+sudo install -m 0644 yubikey-partition.example.conf /etc/radiator/partition.conf
+sudoedit /etc/radiator/partition.conf      # PEERS: the other two servers
+sudo systemctl daemon-reload</code></pre>
+<p>On west,
+<code>PEERS="east1.example.com east2.example.com"</code>.</p>
+<p><strong>2. Make the copy</strong> and Radiator's two clauses:</p>
+<pre class="text"><code>$ sudo yubikey-partition.sh setup
+moved yubikey.conf to yubikey-cluster.conf (in /etc/radiator/conf.d)
+the copy: /var/lib/yubikey-partition/keys.db, 4 YubiKeys
+Radiator&#39;s clause: yubikey.conf -&gt; yubikey-cluster.conf; in partition mode -&gt; yubikey-partition.conf</code></pre>
+<p><code>setup</code> moves the clause from step 7 of the three-site
+setup to <code>yubikey-cluster.conf</code>, makes the copy (owned by
+<code>radiator</code>, which writes the counters in partition mode),
+writes <code>yubikey-partition.conf</code>, and makes
+<code>yubikey.conf</code> a link to <code>yubikey-cluster.conf</code>.
+From now on, change Radiator's clause for PostgreSQL in
+<code>yubikey-cluster.conf</code>, never through the link.</p>
+<p><strong>3. Start it:</strong></p>
+<pre class="bash"><code>sudo systemctl enable --now yubikey-partition
+sudo yubikey-partition.sh status</code></pre>
+<pre class="text"><code>normal mode since 2026-10-13 14:08:21 UTC
+peers answering: east1.example.com east2.example.com
+copy: 4 YubiKeys, updated 14:08:31
+Radiator uses: yubikey-cluster.conf</code></pre>
+</section>
+<section id="run-partition-mode" class="level3">
+<h3>Run partition mode</h3>
+<ul>
+<li><p><strong>See the mode:</strong>
+<code>sudo yubikey-partition.sh status</code> exits 0 in normal mode and
+1 in partition mode, for monitoring.
+<code>journalctl -u yubikey-partition</code> logs each change:</p>
+<pre class="text"><code>started in normal mode: partition mode after 3 checks (15 s) in which none of east1.example.com east2.example.com answers; the copy is updated every 300 s
+copy: 4 YubiKeys, updated 15:33:34
+partition mode: none of east1.example.com east2.example.com answered in 3 checks; Radiator uses this server&#39;s copy of the keys (4 YubiKeys, updated just now)
+normal mode: Radiator uses the cluster again; counters moved forward in the primary for 2 YubiKeys</code></pre>
+<p>If the server's PostgreSQL doesn't answer when partition mode begins,
+the <code>partition mode</code> line gives the time of the copy and ends
+with <code>cannot read this server's PostgreSQL: ...</code>, and
+<code>copy: updated from this server's PostgreSQL again</code> follows
+once it answers.</p></li>
+<li><p><strong>Maintenance stays one server at a time.</strong> With two
+servers down, the third logs users in from its copy, with the risks
+above, until one of them is back.</p></li>
+<li><p><strong>Stopping the service leaves the mode as it is.</strong>
+To return to the cluster by hand,
+<code>sudo yubikey-partition.sh leave</code>: it copies the counters to
+the primary first, and changes nothing if it can't.</p></li>
+</ul>
 </section>
 </section>
 <section id="anycast" class="level2">
@@ -2179,7 +2367,9 @@ replaces a primary that lost power, every server withdraws after 3
 checks, and devices get <strong>no answer</strong> instead of a reject
 until a server's check passes again. A network device that falls back to
 its local accounts when no RADIUS server answers will do so during that
-time.</p>
+time. With <a href="#partition-mode">partition mode</a>, a site that
+reaches no other site logs users in from its copy, so its check passes
+and it keeps advertising.</p>
 </section>
 <section id="what-devices-see-with-anycast" class="level3">
 <h3>What devices see with anycast</h3>
@@ -2224,7 +2414,7 @@ still reach it. West is back two checks after it can log in again.</td>
 <td>The primary (East1) loses power</td>
 <td>Rejected at first; West and East2 withdraw 10 to 17 s after the
 power loss (3 failed checks), and there is no answer until they
-advertise again, about 40 s after it.</td>
+advertise again, 35 to 45 s after it.</td>
 </tr>
 <tr>
 <td>East2 and West down at once</td>
@@ -2520,6 +2710,14 @@ REST API passwords: mode <code>0640</code>, owner
 <code>root:postgres</code>. Patroni's REST API answers health checks
 without a password but takes commands, such as a switchover, only with
 it; open port 8008 only to the three servers and your monitoring.</li>
+<li><strong>Partition mode:</strong> the copy,
+<code>/var/lib/yubikey-partition/keys.db</code>, holds every AES key,
+like the database: mode <code>0640</code>, owned by
+<code>radiator</code>. <code>yubikey-cluster.conf</code> holds
+Radiator's database password (mode <code>0640</code>, owner
+<code>root:radiator</code>); partition mode uses that login to copy
+counters back. See <a href="#how-partition-mode-works">the risks</a> of
+using the copy.</li>
 <li><strong>Anycast:</strong> <code>/var/lib/yubikey-anycast/key</code>
 holds a working login, the check's PIN and AES key: mode
 <code>0600</code>, root only. Radiator accepts the check's users
@@ -2621,6 +2819,27 @@ until one does.</td>
 Radiator servers, or a replay attempt). The first was accepted; the
 second gets no answer. If it happens without a reason, find where the
 second request came from.</td>
+</tr>
+<tr>
+<td><code>journalctl -u yubikey-partition</code> shows
+<code>copy: cannot read this server's PostgreSQL</code></td>
+<td>Normal while Patroni stops or starts PostgreSQL, for example on a
+former primary that is cut off; the copy is updated again when it runs.
+Otherwise check <code>sudo -u postgres psql -d yubikey</code>.</td>
+</tr>
+<tr>
+<td>Partition mode stays on after the network is back</td>
+<td>The primary can't be reached with Radiator's login in
+<code>yubikey-cluster.conf</code> (its <code>DBSource</code>,
+<code>DBAuth</code>, <code>pg_hba.conf</code>). See
+<code>journalctl -u yubikey-partition</code>;
+<code>sudo yubikey-partition.sh leave</code> shows the error.</td>
+</tr>
+<tr>
+<td>Radiator logs <code>attempt to write a readonly database</code> in
+partition mode</td>
+<td><code>radiator</code> must own the copy and its folder:
+<code>sudo chown -R radiator:radiator /var/lib/yubikey-partition</code>.</td>
 </tr>
 <tr>
 <td><code>yubikey-anycast.sh check</code> prints
@@ -2964,6 +3183,95 @@ user and public ID)</td>
 </tbody>
 </table>
 </section>
+<section id="yubikey-partitionsh" class="level3">
+<h3><code>yubikey-partition.sh</code></h3>
+<pre class="text"><code>yubikey-partition.sh [-c FILE] COMMAND</code></pre>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>setup</code></td>
+<td>Make the copy, Radiator's clause for it
+(<code>yubikey-partition.conf</code>) and the link
+<code>yubikey.conf</code> -&gt; <code>yubikey-cluster.conf</code>,
+moving an existing <code>yubikey.conf</code> to
+<code>yubikey-cluster.conf</code>. Safe to run again.</td>
+</tr>
+<tr>
+<td><code>run</code></td>
+<td>The service, as <code>yubikey-partition.service</code> runs it.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>The mode and since when, the peers that answer, the copy, and where
+<code>yubikey.conf</code> points. Exits 0 in normal mode, 1 in partition
+mode.</td>
+</tr>
+<tr>
+<td><code>sync</code></td>
+<td>Update the copy from this server's PostgreSQL now.</td>
+</tr>
+<tr>
+<td><code>leave</code></td>
+<td>Leave partition mode now: copy the counters to the primary, point
+<code>yubikey.conf</code> back at the cluster, restart Radiator. Changes
+nothing if the primary can't be reached.</td>
+</tr>
+</tbody>
+</table>
+<p><code>-c FILE</code> reads the settings from FILE instead of
+<code>/etc/radiator/partition.conf</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PEERS</code></td>
+<td></td>
+<td>The other two servers, separated by spaces</td>
+</tr>
+<tr>
+<td><code>PORTS</code></td>
+<td><code>5432 8008</code></td>
+<td>A server answers when it accepts a connection on one of these</td>
+</tr>
+<tr>
+<td><code>INTERVAL</code></td>
+<td><code>5</code></td>
+<td>Seconds between checks</td>
+</tr>
+<tr>
+<td><code>ENTER</code></td>
+<td><code>3</code></td>
+<td>Checks in a row with no server answering before partition mode</td>
+</tr>
+<tr>
+<td><code>LEAVE</code></td>
+<td><code>2</code></td>
+<td>Checks in a row with a server answering and the primary reachable
+before normal mode</td>
+</tr>
+<tr>
+<td><code>SYNC</code></td>
+<td><code>300</code></td>
+<td>Seconds between updates of the copy (it is also updated when
+partition mode begins)</td>
+</tr>
+</tbody>
+</table>
+<p>It exits with 0 on success, 1 when a step fails, and 3 for a problem
+with the settings or the setup.</p>
+</section>
 <section id="yubikey-anycastsh" class="level3">
 <h3><code>yubikey-anycast.sh</code></h3>
 <pre class="text"><code>yubikey-anycast.sh [-c FILE] COMMAND</code></pre>
@@ -3198,14 +3506,17 @@ save.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 36 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 37 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>. The two <code>anycast</code> scenarios run
 <code>yubikey-anycast.sh</code> against a stand-in RADIUS server, which
 checks each request the way Radiator does, and stand-ins for
-<code>ip</code> and <code>ss</code>. It needs <code>bash</code>,
-<code>sqlite3</code>, <code>perl</code>, and, for the
+<code>ip</code> and <code>ss</code>. <code>pg_partition</code> runs
+<code>yubikey-partition.sh</code> with the test's PostgreSQL as both the
+local database and the primary, a stand-in for <code>systemctl</code>,
+and a peer that is a port that listens or doesn't. It needs
+<code>bash</code>, <code>sqlite3</code>, <code>perl</code>, and, for the
 <code>verify</code> and <code>anycast</code> scenarios,
 <code>openssl</code> and <code>libcrypt-rijndael-perl</code>; it runs as
 a normal user.</p>

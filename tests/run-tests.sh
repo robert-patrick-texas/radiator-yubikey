@@ -40,6 +40,7 @@ ROOT=$(dirname -- "$TESTS_DIR")
 SCRIPT=${YUBIKEY_DB_SH:-$ROOT/yubikey-db.sh}   # override to test another copy
 MIGRATE=$ROOT/yubikey-db-migrate.sh
 ANYCAST=$ROOT/yubikey-anycast.sh
+PARTITION=$ROOT/yubikey-partition.sh
 HOST_S=$(hostname -s | tr '[:upper:]' '[:lower:]')   # the anycast check's user is anycast-HOST_S
 EXPECTED=$TESTS_DIR/expected
 UPDATE=0
@@ -1526,6 +1527,175 @@ scenario_anycast_run() {
 }
 
 # --------------------------------------------------------------------------
+# yubikey-partition.sh, with the test's PostgreSQL as both this server's own
+# database and the primary, a stand-in for systemctl, and a peer that is a
+# port on this machine, listening or not.
+# --------------------------------------------------------------------------
+
+# Run yubikey-partition.sh with the test's directories and stand-ins.
+partition_env() {
+    env TZ=UTC PARTITION_STATE_DIR="$WORK/state" PARTITION_RUN_DIR="$WORK/run" PARTITION_CONF_D="$WORK/conf.d" \
+        PARTITION_LOCAL_DB="$PGDB" PARTITION_OWNER='' SYSTEMCTL="$WORK/systemctl" YUBIKEY_DB_SH="$SCRIPT" \
+        "$PARTITION" -c partition.conf "$@"
+}
+
+# Run it, with no standard input, and record it: part ARGS...
+part() {
+    local out rc=0
+    out=$(partition_env "$@" </dev/null 2>&1) || rc=$?
+    printf '$ yubikey-partition.sh %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# The copy's rows, without the secrets.
+copy_rows() {
+    printf '# the copy:\n'
+    sqlite3 -batch -header -separator ' | ' "$WORK/state/keys.db" \
+        "SELECT username, tokenId, active, counter, low FROM yubikeys ORDER BY username, tokenId"
+}
+
+# The primary's counters.
+primary_rows() {
+    printf '# the primary:\n'
+    pgq "$PGDB" "SELECT username || ' | ' || tokenId || ' | ' || coalesce(counter::text, '') || ' | ' || coalesce(low::text, '')
+                 || ' | ' || CASE WHEN accessed IS NULL THEN '' ELSE 'accessed' END FROM yubikeys ORDER BY username, tokenId"
+}
+
+# peer_up / peer_down: the peer (a port on this machine) listens, or not.
+PEER_PID=''
+peer_up() {
+    perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $ARGV[0],
+        Listen => 5, ReuseAddr => 1) or die; while (my $c = $s->accept) { close $c }' "$PEER_PORT" &
+    PEER_PID=$!
+    sleep 0.3
+}
+peer_down() {
+    if [[ -n $PEER_PID ]]; then kill "$PEER_PID"; wait "$PEER_PID" 2>/dev/null; PEER_PID=''; fi
+}
+
+# wait_mode MODE: wait up to 15 s for the running service to be in MODE.
+wait_mode() {
+    for _ in $(seq 150); do
+        [[ $(readlink "$WORK/conf.d/yubikey.conf") == "yubikey-$1.conf" ]] && return
+        sleep 0.1
+    done
+    echo "# timed out waiting for $1 mode"
+}
+
+scenario_pg_partition() {
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv example.csv <"$ROOT/users.example.csv"
+    run -b pg -d "$PGDB" import example.csv >/dev/null
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    printf '#!/bin/sh\necho "systemctl $*" >>"%s/systemctl.log"\n' "$WORK" >systemctl
+    chmod +x systemctl
+    PEER_PORT=$(perl -MIO::Socket::INET -e 'print IO::Socket::INET->new(Listen => 1, LocalAddr => "127.0.0.1")->sockport')
+    printf 'PEERS=127.0.0.1\nPORTS=%s\nINTERVAL=1\nENTER=2\nLEAVE=1\nSYNC=3600\n' "$PEER_PORT" >partition.conf
+    # psql, except that this server's own PostgreSQL (no host=) doesn't
+    # answer while local-down exists, as when Patroni stops it.
+    cat >psql-local <<EOF
+#!/bin/sh
+if [ -e "$WORK/local-down" ]; then
+    case "\$*" in *host=*) ;; *) echo "psql: error: FATAL:  the database system is shutting down" >&2; exit 2 ;; esac
+fi
+exec psql "\$@"
+EOF
+    chmod +x psql-local
+
+    # Radiator's clause for the cluster, as 'config' writes it, with
+    # Radiator's password.
+    mkdir conf.d
+    PGHOST=127.0.0.1 PGSSLMODE=disable PGCONNECT_TIMEOUT=2 "$SCRIPT" -b pg -d "$PGDB" config \
+        | sed 's/^\( *\)DBAuth *$/\1DBAuth       test-only/' >conf.d/yubikey.conf
+    part status
+    part setup
+    printf '# yubikey.conf -> %s\n' "$(readlink conf.d/yubikey.conf)"
+    grep -E 'DBSource|Identifier' conf.d/yubikey-partition.conf | sed "s|$WORK|<WORK>|"
+    copy_rows
+    echo
+
+    # Changes in the database reach the copy: a login elsewhere (counters
+    # forward), a disabled user, new users, a deleted one, and a YubiKey
+    # programmed with a new key (its counters start again).
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 9, low = 1 WHERE username = 'test.user'"
+    run -b pg -d "$PGDB" disable test.user2 >/dev/null
+    run_lines 'carol,vvccccdddddd,0a0b0c0d0e0f,00112233445566778899aabbccddeeff,pin1' \
+              'dave,vvcccceeeeee,0a0b0c0d0e10,00112233445566778899aabbccddeef0,pin2' -- -b pg -d "$PGDB" import - >/dev/null
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 30, low = 0 WHERE username = 'carol'"
+    part sync
+    copy_rows
+    run -b pg -d "$PGDB" delete dave >/dev/null
+    run_lines 'carol,vvccccdddddd,aabbccddeeff,0f1e2d3c4b5a69788796a5b4c3d2e1f0,newpin' -- -b pg -d "$PGDB" import --replace - >/dev/null
+    part sync
+    copy_rows
+    echo
+
+    # The copy is ahead (logins here while cut off): its counters stay.
+    sqlite3 -cmd '.timeout 10000' state/keys.db "UPDATE yubikeys SET counter = 12, low = 4, accessed = '2026-10-13 12:00:00' WHERE username = 'test.user'"
+    part sync
+    copy_rows
+    echo
+    part leave
+
+    # The service: partition mode after 2 checks without the peer, back
+    # after 1 check with the peer and the primary; the counters saved in the
+    # copy go to the primary, only forward. The copy is updated when the
+    # service starts and when partition mode begins (SYNC is an hour).
+    peer_up
+    env TZ=UTC PARTITION_STATE_DIR="$WORK/state" PARTITION_RUN_DIR="$WORK/run" PARTITION_CONF_D="$WORK/conf.d" \
+        PARTITION_LOCAL_DB="$PGDB" SYSTEMCTL="$WORK/systemctl" PSQL="$WORK/psql-local" \
+        "$PARTITION" -c partition.conf run >run.log 2>&1 &
+    pid=$!
+    sleep 2.5
+    # A login at another site just before the cut.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 4, low = 0 WHERE username = 'carol'"
+    peer_down
+    wait_mode partition
+    part status | sed -E 's/since .* UTC/since <TIME>/; s/updated [0-9:]+/updated <TIME>/'
+    copy_rows
+    # Logins here (in the copy), and at another site (in the primary).
+    sqlite3 -cmd '.timeout 10000' state/keys.db "UPDATE yubikeys SET counter = 13, low = 0, accessed = '2026-10-13 12:05:00' WHERE username = 'test.user'"
+    sqlite3 -cmd '.timeout 10000' state/keys.db "UPDATE yubikeys SET counter = 6, low = 2, accessed = '2026-10-13 12:06:00' WHERE username = 'carol'"
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 5, low = 0 WHERE username = 'carol'"
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 14, low = 0 WHERE username = 'test.user'"
+    sqlite3 -cmd '.timeout 10000' state/keys.db "UPDATE yubikeys SET counter = 7, low = 7, accessed = '2026-10-13 12:07:00' WHERE username = 'test.user2'"
+    peer_up
+    wait_mode cluster
+    sleep 1.5
+    primary_rows
+    echo
+
+    # Again, with this server's PostgreSQL not answering when partition mode
+    # begins (a former primary, which Patroni is stopping): the copy is the
+    # last one until PostgreSQL answers again.
+    touch local-down
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 8, low = 0 WHERE username = 'test.user2'"
+    peer_down
+    wait_mode partition
+    copy_rows
+    rm local-down
+    sleep 2.5
+    copy_rows
+    peer_up
+    wait_mode cluster
+    sleep 0.5
+    peer_down
+    kill "$pid"
+    wait "$pid"
+    printf '# the service exited with %d; its log:\n' "$?"
+    sed -E 's/updated [0-9:]+/updated <TIME>/' run.log
+    printf '# systemctl:\n'
+    cat systemctl.log
+    primary_rows
+    printf '# merge-pending: %s\n\n' "$([[ -e state/merge-pending ]] && echo yes || echo no)"
+
+    # leave, with the primary out of reach: nothing changes.
+    sed -i 's/port=5432/port=1/' conf.d/yubikey-cluster.conf
+    ln -sfn yubikey-partition.conf conf.d/yubikey.conf
+    part leave | sed -E 's/(error: cannot copy the counters to the primary:).*/\1 <ERROR>/'
+    printf '# yubikey.conf -> %s\n' "$(readlink conf.d/yubikey.conf)"
+}
+
+# --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
@@ -1534,7 +1704,7 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
-     anycast anycast_run)
+     anycast anycast_run pg_partition)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }

@@ -1,0 +1,38 @@
+# yubikey-partition.service - Runs yubikey-partition.sh, which keeps a copy
+# of the keys on this server and, while no other site answers, makes Radiator
+# use it. Install it with the script (see the guide's "Partition mode"):
+#
+#   sudo install -m 0755 yubikey-partition.sh yubikey-db.sh /usr/local/sbin/
+#   sudo install -m 0644 yubikey-partition.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+
+[Unit]
+Description=Partition mode: Radiator uses this server's copy of the keys while no other site answers
+Documentation=https://robert-patrick-texas.github.io/radiator-yubikey/#partition-mode
+After=network-online.target patroni@18-main.service radiator.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/yubikey-partition.sh run
+Restart=always
+RestartSec=5
+# Exit status 3: a problem with the settings or the setup, which a restart
+# won't fix.
+RestartPreventExitStatus=3
+RuntimeDirectory=yubikey-partition
+# Root: it reads PostgreSQL as postgres through the local socket, changes
+# the link in /etc/radiator/conf.d and restarts Radiator.
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/etc/radiator/conf.d
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

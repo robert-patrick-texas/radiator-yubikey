@@ -15,8 +15,8 @@
 #   ha   ha.sh: two PostgreSQL servers (primary and standby) and two Radiator
 #        servers in separate containers, through failures (about 2 min)
 #   geo  geo.sh: three sites, each with etcd, PostgreSQL under Patroni,
-#        Radiator and FRR, with one anycast address, through reboots, power
-#        losses and network partitions (about 10 min)
+#        Radiator and FRR, with one anycast address and then partition mode,
+#        through reboots, power losses and network partitions (about 15 min)
 # Needs Docker, usable without sudo (membership of the docker group). Exits 0
 # when every check passes.
 

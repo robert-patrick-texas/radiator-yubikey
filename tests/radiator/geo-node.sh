@@ -46,6 +46,11 @@
 #   anycast-setup            install the anycast check, give it a key, check
 #                            once (prints the result), enable and start it
 #   anycast-status           yubikey-anycast.sh status
+#   partition-setup          install partition mode (yubikey-partition.sh,
+#                            the other two servers as its peers), set it up
+#                            (prints what 'setup' prints), enable and start it
+#   partition-mode           normal or partition (where Radiator's
+#                            yubikey.conf points)
 #   check-cred               the anycast check's user, and its PIN and an OTP
 #                            ahead of the check's, as "USER PIN:OTP"
 #   router-setup             (rtr) FRR: a BGP session with BFD to each site,
@@ -487,6 +492,25 @@ anycast-setup)
 
 anycast-status)
     yubikey-anycast.sh status || true
+    ;;
+
+partition-setup)
+    install -m 0755 /repo/yubikey-partition.sh /repo/yubikey-db.sh /usr/local/sbin/
+    install -m 0644 /repo/yubikey-partition.service /etc/systemd/system/yubikey-partition.service
+    peers=
+    for n in "${NODES[@]}"; do [[ $n != "$ME" ]] && peers+=${peers:+ }$n.yk.test; done
+    sed "s/^PEERS=.*/PEERS=\"$peers\"/" /repo/yubikey-partition.example.conf >/etc/radiator/partition.conf
+    systemctl daemon-reload
+    yubikey-partition.sh setup
+    systemctl enable --now yubikey-partition 2>/dev/null
+    ;;
+
+partition-mode)
+    case $(readlink /etc/radiator/conf.d/yubikey.conf) in
+        yubikey-partition.conf) echo partition ;;
+        yubikey-cluster.conf)   echo normal ;;
+        *)                      echo unknown ;;
+    esac
     ;;
 
 check-cred)
