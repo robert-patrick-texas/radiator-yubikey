@@ -34,10 +34,23 @@ $ yubikey-db.sh -b pg config
     # Radiator on another host connects over TLS, for example
     #   dbi:Pg:dbname=NAME;host=db.example.com;port=5432;sslmode=verify-full
     # with DBAuth set to the radiator role's password (init-pg --set-password).
-    # A standby server can be listed as a second DBSource/DBUsername/DBAuth.
+    # With a primary and a standby server, list both in one DBSource:
+    #   host=db1.example.com,db2.example.com;target_session_attrs=read-write
+    # libpq then connects to whichever server accepts writes, so Radiator
+    # follows a promoted standby. Never list two independent databases:
+    # each would keep its own counters, and an OTP used on one would be
+    # accepted by the other.
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiator
     DBAuth
+
+    # Give up quickly on a database server that does not answer, and try
+    # again soon. Radiator's defaults wait up to 60 s for each query, and
+    # when no server can be reached they reject every login for 600 s.
+    # ConnectTimeout must cover connect_timeout for each listed server.
+    Timeout             2
+    ConnectTimeout      5
+    FailureBackoffTime  10
 
     # Columns must come back in this order: secret, active, userId,
     # counter, session_use (low), ignored (high), static_password.
@@ -60,37 +73,58 @@ $ yubikey-db.sh -b pg config
 </AuthBy>
 [exit 0]
 
-$ DB_BACKEND=pg yubikey-db.sh -b pg config | grep DB
+$ DB_BACKEND=pg yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiator
+    ConnectTimeout      5
 
-$ PGHOST=db.example.com yubikey-db.sh -b pg config | grep DB
-    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full
+$ PGHOST=db.example.com yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;connect_timeout=2
     DBUsername   radiator
+    ConnectTimeout      3
 
-$ PGHOST=/var/run/postgresql yubikey-db.sh -b pg config | grep DB
+$ PGHOST=/var/run/postgresql yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiator
+    ConnectTimeout      5
 
-$ PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require yubikey-db.sh -b pg config | grep DB
-    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require
+$ PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require;connect_timeout=2
     DBUsername   radiator
+    ConnectTimeout      3
 
-$ PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep DB
-    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt
+$ PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+    DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2
     DBUsername   radiator
+    ConnectTimeout      3
 
-$ PGSERVICE=yubikey yubikey-db.sh -b pg config | grep DB
+$ PGSERVICE=yubikey yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:service=yubikey
     DBUsername   radiator
+    ConnectTimeout      5
 
-$ PGSERVICE=yubikey PGDATABASE=radius yubikey-db.sh -b pg config | grep DB
+$ PGSERVICE=yubikey PGDATABASE=radius yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=radius
     DBUsername   radiator
+    ConnectTimeout      5
 
-$ PG_RADIATOR_ROLE=radiusd yubikey-db.sh -b pg config | grep DB
+$ PG_RADIATOR_ROLE=radiusd yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiusd
+    ConnectTimeout      5
+
+$ PGHOST=db1.example.com,db2.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+    DBSource     dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write
+    DBUsername   radiator
+    ConnectTimeout      5
+
+$ PGHOST=db1,db2 PGCONNECT_TIMEOUT=3 PGTARGETSESSIONATTRS=primary yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+    DBSource     dbi:Pg:dbname=yubikey;host=db1,db2;port=5432;sslmode=verify-full;connect_timeout=3;target_session_attrs=primary
+    DBUsername   radiator
+    ConnectTimeout      7
+
+$ PGCONNECT_TIMEOUT=0 yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
+yubikey-db.sh: error: PGCONNECT_TIMEOUT must be 1 to 999 seconds (0 would wait for ever)
 
 $ yubikey-db.sh -b pg -d radius config | grep DB
     DBSource     dbi:Pg:dbname=radius

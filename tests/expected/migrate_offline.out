@@ -20,7 +20,8 @@ Options:
   -V, --version                 Show the version
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
-PGSERVICE settings. Keep passwords in ~/.pgpass.
+PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
+list both (PGHOST=db1,db2): the copy goes to the one that accepts writes.
 [exit 1]
 
 $ yubikey-db-migrate.sh --mode copy src.db

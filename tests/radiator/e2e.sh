@@ -234,7 +234,7 @@ export PGHOST=localhost PGSSLROOTCERT=/etc/radiator/pg-ca.crt
 make_conf
 sed -i 's/^\( *\)DBAuth *$/\1DBAuth       lab-radiator-pw/' "$CONF"
 unset PGHOST PGSSLROOTCERT
-check "DBSource from 'config'" "dbi:Pg:dbname=yubikey;host=localhost;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt" \
+check "DBSource from 'config'" "dbi:Pg:dbname=yubikey;host=localhost;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2" \
     "$(awk '/^ +DBSource/ {print $2}' "$CONF")"
 start_radiator
 login "password:OTP over TLS"           ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 5 0)"

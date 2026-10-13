@@ -2,15 +2,20 @@
 #
 # run.sh - Test yubikey-db.sh against a real Radiator, in a Docker container.
 #
-# Usage: tests/radiator/run.sh DIR
+# Usage: tests/radiator/run.sh DIR [e2e|ha]
 #   DIR holds the Radiator packages from Radiator Software, which are not part
 #   of this repository: radiator_<version>_all.deb and
 #   radiator-radius-utilxs_<version>_amd64.deb.
 #
 # Builds an Ubuntu 26.04 image with Radiator, SQLite and PostgreSQL 18, tagged
-# yk-radiator-test:<Radiator version>, and runs e2e.sh in a throwaway container
-# with this repository mounted read-only. Needs Docker, usable without sudo
-# (membership of the docker group). Exits 0 when every check passes.
+# yk-radiator-test:<Radiator version>, then runs both tests, or only the one
+# named:
+#   e2e  e2e.sh in a throwaway container with this repository mounted
+#        read-only: SQLite, PostgreSQL on the same host, cutover (about 1 min)
+#   ha   ha.sh: two PostgreSQL servers (primary and standby) and two Radiator
+#        servers in separate containers, through failures (about 2 min)
+# Needs Docker, usable without sudo (membership of the docker group). Exits 0
+# when every check passes.
 
 set -euo pipefail
 
@@ -19,7 +24,9 @@ root=$(dirname -- "$(dirname -- "$here")")
 die() { printf 'run.sh: error: %s\n' "$*" >&2; exit 1; }
 
 dir=${1:-}
-[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR (the directory with the Radiator .deb packages)"
+which=${2:-all}
+[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|ha] (DIR: the directory with the Radiator .deb packages)"
+[[ $which == all || $which == e2e || $which == ha ]] || die "unknown test '$which' (e2e or ha)"
 shopt -s nullglob
 rad=("$dir"/radiator_*_all.deb)
 utilxs=("$dir"/radiator-radius-utilxs_*.deb)
@@ -35,4 +42,12 @@ cp -- "${rad[0]}" "${utilxs[0]}" "$here/Dockerfile" "$ctx/"
 
 echo "Building $image (Radiator $version) ..."
 docker build -q -t "$image" "$ctx" >/dev/null
-docker run --rm -v "$root:/repo:ro" "$image" bash /repo/tests/radiator/e2e.sh
+status=0
+if [[ $which != ha ]]; then
+    docker run --rm -v "$root:/repo:ro" "$image" bash /repo/tests/radiator/e2e.sh || status=1
+fi
+if [[ $which != e2e ]]; then
+    [[ $which == all ]] && echo
+    "$here/ha.sh" "$image" || status=1
+fi
+exit $status

@@ -108,11 +108,14 @@
 #   SQLITE3          sqlite3 binary to use (default: sqlite3 on PATH)
 #   PSQL             psql binary to use (default: psql on PATH)
 #   PGDATABASE       PostgreSQL database name (default yubikey; -d overrides)
-#   PGHOST, PGPORT, PGUSER, PGSSLMODE, PGSSLROOTCERT, PGSERVICE
+#   PGHOST, PGPORT, PGUSER, PGSSLMODE, PGSSLROOTCERT, PGSERVICE,
+#   PGCONNECT_TIMEOUT, PGTARGETSESSIONATTRS
 #                    Standard PostgreSQL connection settings, used by psql.
 #                    Put passwords in ~/.pgpass, never on the command line.
-#                    'config' copies PGHOST, PGPORT, PGSSLMODE and
-#                    PGSSLROOTCERT into Radiator's DBSource.
+#                    'config' copies them (except PGUSER and PGSERVICE)
+#                    into Radiator's DBSource. With two servers
+#                    (PGHOST=db1,db2), PGTARGETSESSIONATTRS defaults to
+#                    read-write, so changes go to the primary.
 #   PG_ADMIN_ROLE    PostgreSQL role that owns the table (default yubikey_admin)
 #   PG_RADIATOR_ROLE PostgreSQL role Radiator logs in as (default radiator)
 #   SECRET_ENCODING  base64 (default) or hex
@@ -241,7 +244,8 @@ password, or when you are not sure whether a YubiKey is already loaded. If
 the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
-PGSERVICE settings. Keep passwords in ~/.pgpass.
+PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
+list both (PGHOST=db1,db2): changes then go to the one that accepts writes.
 EOF
 }
 
@@ -866,7 +870,8 @@ EOF
 # PostgreSQL backend
 #
 # psql uses the standard libpq connection settings: -d sets PGDATABASE, and
-# PGHOST, PGPORT, PGUSER, PGSSLMODE and PGSERVICE are used as they are set.
+# PGHOST, PGPORT, PGUSER, PGSSLMODE and PGSERVICE are used as they are set;
+# with several hosts in PGHOST, PGTARGETSESSIONATTRS defaults to read-write.
 # Passwords come from ~/.pgpass, or are not needed with peer authentication
 # on the local socket. This script never puts one on a command line.
 #
@@ -884,6 +889,11 @@ pg_setup() {
         export PGDATABASE=$DB_OPT
     elif [[ -z ${PGDATABASE-} && -z ${PGSERVICE-} ]]; then
         export PGDATABASE=yubikey
+    fi
+    # With a primary and a standby (PGHOST=db1,db2), changes must go to
+    # whichever server accepts writes.
+    if [[ ${PGHOST-} == *,* && -z ${PGTARGETSESSIONATTRS-} ]]; then
+        export PGTARGETSESSIONATTRS=read-write
     fi
     DB_DESC="PostgreSQL database ${PGDATABASE:-from service $PGSERVICE}"
     pg_check_name "admin role (PG_ADMIN_ROLE)" "$PG_ADMIN_ROLE"
@@ -1145,7 +1155,8 @@ pg_change() {
 }
 
 pg_config() {
-    local dsn
+    local dsn hosts ct=${PGCONNECT_TIMEOUT:-2} connect_timeout=5
+    [[ $ct =~ ^[1-9][0-9]{0,2}$ ]] || die "PGCONNECT_TIMEOUT must be 1 to 999 seconds (0 would wait for ever)"
     if [[ -z ${PGDATABASE-} ]]; then
         dsn="dbi:Pg:service=$PGSERVICE"
     else
@@ -1153,6 +1164,14 @@ pg_config() {
         if [[ -n ${PGHOST-} && $PGHOST != /* ]]; then
             dsn+=";host=$PGHOST;port=${PGPORT:-5432};sslmode=${PGSSLMODE:-verify-full}"
             if [[ -n ${PGSSLROOTCERT-} ]]; then dsn+=";sslrootcert=$PGSSLROOTCERT"; fi
+            # libpq's connect_timeout applies to each server in turn, and
+            # Radiator's ConnectTimeout to the whole attempt: allow for all.
+            dsn+=";connect_timeout=$ct"
+            hosts=$(($(tr -cd , <<<"$PGHOST" | wc -c) + 1))
+            connect_timeout=$((hosts * ct + 1))
+            if [[ -n ${PGTARGETSESSIONATTRS-} ]]; then
+                dsn+=";target_session_attrs=$PGTARGETSESSIONATTRS"
+            fi
         fi
     fi
     cat <<EOF
@@ -1167,10 +1186,23 @@ pg_config() {
     # Radiator on another host connects over TLS, for example
     #   dbi:Pg:dbname=NAME;host=db.example.com;port=5432;sslmode=verify-full
     # with DBAuth set to the $PG_RADIATOR_ROLE role's password (init-pg --set-password).
-    # A standby server can be listed as a second DBSource/DBUsername/DBAuth.
+    # With a primary and a standby server, list both in one DBSource:
+    #   host=db1.example.com,db2.example.com;target_session_attrs=read-write
+    # libpq then connects to whichever server accepts writes, so Radiator
+    # follows a promoted standby. Never list two independent databases:
+    # each would keep its own counters, and an OTP used on one would be
+    # accepted by the other.
     DBSource     $dsn
     DBUsername   $PG_RADIATOR_ROLE
     DBAuth
+
+    # Give up quickly on a database server that does not answer, and try
+    # again soon. Radiator's defaults wait up to 60 s for each query, and
+    # when no server can be reached they reject every login for 600 s.
+    # ConnectTimeout must cover connect_timeout for each listed server.
+    Timeout             2
+    ConnectTimeout      $connect_timeout
+    FailureBackoffTime  10
 
     # Columns must come back in this order: secret, active, userId,
     # counter, session_use (low), ignored (high), static_password.

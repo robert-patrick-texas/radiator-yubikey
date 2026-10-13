@@ -77,7 +77,8 @@ password, or when you are not sure whether a YubiKey is already loaded. If
 the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
-PGSERVICE settings. Keep passwords in ~/.pgpass.
+PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
+list both (PGHOST=db1,db2): changes then go to the one that accepts writes.
 [exit 0]
 
 $ yubikey-db.sh --version
@@ -163,7 +164,8 @@ password, or when you are not sure whether a YubiKey is already loaded. If
 the same values were programmed into a YubiKey again, use --replace.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
-PGSERVICE settings. Keep passwords in ~/.pgpass.
+PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
+list both (PGHOST=db1,db2): changes then go to the one that accepts writes.
 [exit 1]
 
 $ yubikey-db.sh bogus

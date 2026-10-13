@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+Two PostgreSQL servers: a primary and a streaming standby that Radiator
+follows when it is promoted, tested through failures with two Radiator
+servers.
+
+### Added
+
+- `config`, with several hosts in `PGHOST` (`PGHOST=db1,db2`), writes one
+  `DBSource` with both hosts and `target_session_attrs=read-write`: libpq
+  connects only to the server that accepts writes, so every Radiator server
+  uses the primary, and follows the standby once it is promoted.
+- `yubikey-db.sh` and `yubikey-db-migrate.sh` send their changes to the
+  writable server too: with several hosts in `PGHOST`,
+  `PGTARGETSESSIONATTRS` defaults to `read-write`.
+- `tests/radiator/ha.sh` (run by `tests/radiator/run.sh`, or alone with
+  `run.sh DIR ha`): two PostgreSQL servers with asynchronous replication over
+  TLS and two Radiator servers, in four containers, through a dead primary, a
+  hung primary, failovers, a planned switchover, and an old primary started
+  as it was. 50 checks.
+- Guide: "Two database servers": replication setup, Radiator and admin
+  settings, failover, rebuilding the old primary as the standby, planned
+  switchover, the replay window of asynchronous replication, and what users
+  see during a failover (measured).
+
+### Changed
+
+- `config` for PostgreSQL adds `Timeout 2`, `ConnectTimeout` and
+  `FailureBackoffTime 10`, and `connect_timeout=2` (from `PGCONNECT_TIMEOUT`)
+  to a TCP `DBSource`. Radiator's defaults wait up to 60 s for a query and,
+  after a failed connection, reject every login for 600 s; the test measured
+  2 to 5 s for the first login after a database failure, and logins working
+  again within 10 s of a promotion. Existing configurations are not changed:
+  write `config` again, or add the lines by hand.
+
 ## 1.1.0 - 2026-10-12
 
 PostgreSQL support, a migration path from SQLite, a `verify` command that

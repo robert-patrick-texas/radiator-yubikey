@@ -44,8 +44,10 @@
 #
 # ENVIRONMENT
 #   PGDATABASE       PostgreSQL database name (default yubikey; -d overrides)
-#   PGHOST, PGPORT, PGUSER, PGSSLMODE, PGSERVICE
+#   PGHOST, PGPORT, PGUSER, PGSSLMODE, PGSERVICE, PGTARGETSESSIONATTRS
 #                    Standard PostgreSQL connection settings, used by psql.
+#                    With two servers (PGHOST=db1,db2),
+#                    PGTARGETSESSIONATTRS defaults to read-write.
 #   PG_ADMIN_ROLE    Admin role named in error hints (default yubikey_admin)
 #   SQLITE3, PSQL    sqlite3 and psql binaries (default: found on PATH)
 
@@ -96,7 +98,8 @@ Options:
   -V, --version                 Show the version
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
-PGSERVICE settings. Keep passwords in ~/.pgpass.
+PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
+list both (PGHOST=db1,db2): the copy goes to the one that accepts writes.
 EOF
 }
 
@@ -395,6 +398,10 @@ if [[ -n $DB_OPT ]]; then
     export PGDATABASE=$DB_OPT
 elif [[ -z ${PGDATABASE-} && -z ${PGSERVICE-} ]]; then
     export PGDATABASE=yubikey
+fi
+# With a primary and a standby (PGHOST=db1,db2), write to the primary.
+if [[ ${PGHOST-} == *,* && -z ${PGTARGETSESSIONATTRS-} ]]; then
+    export PGTARGETSESSIONATTRS=read-write
 fi
 DB_DESC="PostgreSQL database ${PGDATABASE:-from service $PGSERVICE}"
 

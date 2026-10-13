@@ -295,6 +295,8 @@ accounts</a></li>
 <li><a href="#move-from-sqlite-to-postgresql"
 id="toc-move-from-sqlite-to-postgresql">Move from SQLite to
 PostgreSQL</a></li>
+<li><a href="#two-database-servers" id="toc-two-database-servers">Two
+database servers</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
 id="toc-troubleshooting">Troubleshooting</a></li>
@@ -310,8 +312,9 @@ id="toc-troubleshooting">Troubleshooting</a></li>
 YubiKeys kept in a local SQLite database or a shared PostgreSQL
 database, managed with the scripts in this repository. It covers a lab
 you can build in a container, a server installation, adding accounts,
-checking credentials, day-to-day maintenance, and moving from SQLite to
-PostgreSQL.</p>
+checking credentials, day-to-day maintenance, moving from SQLite to
+PostgreSQL, and a second PostgreSQL server that takes over when the
+first fails.</p>
 <p>Every procedure in this guide was run as written with
 <strong>Radiator 4.30</strong> on <strong>Ubuntu 26.04 LTS</strong> with
 <strong>PostgreSQL 18</strong>, and <code>tests/radiator/run.sh</code>
@@ -425,6 +428,12 @@ members of an admin role</td>
 <td>Nothing more</td>
 <td>A PostgreSQL 18 server, on the Radiator server or elsewhere (over
 TLS)</td>
+</tr>
+<tr>
+<td>If the database server fails</td>
+<td>—</td>
+<td>A second server can take over (see <a
+href="#two-database-servers">Two database servers</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -568,16 +577,29 @@ it.</p>
 </section>
 <section id="the-automated-test" class="level3">
 <h3>The automated test</h3>
-<p><code>tests/radiator/run.sh</code> builds the same image and runs 78
-checks of real Radiator logins in a throwaway container: SQLite with and
-without <code>Require2Factor</code>, PostgreSQL over the local socket
-and over TLS, the example wrapper, and a cutover from SQLite to
+<p><code>tests/radiator/run.sh</code> builds the same image and runs two
+tests of real Radiator logins:</p>
+<ul>
+<li><code>e2e.sh</code>, 78 checks in a throwaway container: SQLite with
+and without <code>Require2Factor</code>, PostgreSQL over the local
+socket and over TLS, the example wrapper, and a cutover from SQLite to
 PostgreSQL while Radiator runs. For each login it checks Radiator's
-answer and the reason it logs, and that <code>verify</code> agrees:</p>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages</code></pre>
-<p>It prints one <code>PASS</code> or <code>FAIL</code> line per check
-and ends with <code>Radiator 4.30-1: 78 passed, 0 failed</code>. Run it
-again with each new Radiator version.</p>
+answer and the reason it logs, and that <code>verify</code> agrees.</li>
+<li><code>ha.sh</code>, 50 checks with four containers: two PostgreSQL
+servers (primary and streaming standby, over TLS) and two Radiator
+servers, through a dead primary, a hung primary, failovers, an old
+primary coming back, a planned switchover, and the replay window (see <a
+href="#two-database-servers">Two database servers</a>).</li>
+</ul>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # both, about 3 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e)</code></pre>
+<p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
+and ends with a count, such as
+<code>Radiator 4.30-1: 78 passed, 0 failed</code> and
+<code>Two database servers: 50 passed, 0 failed</code>. Run them again
+with each new Radiator version.
+<code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> leaves
+the four containers running afterwards, to look around.</p>
 </section>
 </section>
 <section id="install-on-the-servers" class="level2">
@@ -771,8 +793,10 @@ EOF
 <p>With these settings, <code>./yubikey-db.sh config</code> writes the
 same connection into Radiator's configuration: <code>host</code>,
 <code>port</code>, <code>sslmode=verify-full</code> and
-<code>sslrootcert</code>. You add Radiator's password in the next
-section.</p>
+<code>sslrootcert</code>, and <code>connect_timeout=2</code>. You add
+Radiator's password in the next section. For a second database server
+that takes over when this one fails, see <a
+href="#two-database-servers">Two database servers</a>.</p>
 </section>
 </section>
 <section id="configure-and-start-radiator" class="level2">
@@ -837,6 +861,12 @@ default <code>current_timestamp()</code> isn't valid there.</li>
 <li><code>CheckSecretId</code> checks the private ID inside the OTP
 against the database.</li>
 <li><code>Require2Factor</code>: see below.</li>
+<li>For PostgreSQL, <code>config</code> also writes
+<code>Timeout 2</code>, <code>ConnectTimeout</code> and
+<code>FailureBackoffTime 10</code>, so Radiator gives up quickly on a
+database server that doesn't answer and tries again after 10 s, not 600
+s (see <a href="#configure-radiator-for-two-servers">Configure Radiator
+for two servers</a>).</li>
 </ul>
 </section>
 <section id="choose-pin-and-otp-or-otp-only" class="level3">
@@ -1253,6 +1283,310 @@ counters (and any users added there) into SQLite, then switch:</p>
 ./yubikey-db.sh config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null
 sudo systemctl restart radiator</code></pre>
 </section>
+<section id="two-database-servers" class="level2">
+<h2>Two database servers</h2>
+<p>With one PostgreSQL server, logins stop when it does. A second
+server, kept up to date by PostgreSQL's built-in streaming replication,
+can take over. <code>tests/radiator/ha.sh</code> runs everything in this
+section with two database servers and two Radiator servers (see <a
+href="#testing">Testing</a>).</p>
+<section id="how-it-works-1" class="level3">
+<h3>How it works</h3>
+<ul>
+<li><strong>One primary, one standby.</strong> The primary accepts reads
+and writes. The standby receives each change from the primary as it
+happens (in the test, about 6 ms later) and accepts only reads.</li>
+<li><strong>Every Radiator server lists both servers</strong> in one
+<code>DBSource</code>, with
+<code>target_session_attrs=read-write</code>. PostgreSQL's client
+library tries them in order and connects only to the one that accepts
+writes. So every Radiator server uses the primary, whichever server it
+lists first, and they all share one set of counters: an OTP used on one
+Radiator server is rejected on the others.</li>
+<li><strong>A failover is a promotion.</strong> When the primary fails,
+you promote the standby with one command. It starts accepting writes,
+and every Radiator server connects to it within 10 seconds, with no
+change to its configuration. The failed server then comes back as the
+new standby.</li>
+</ul>
+<p>Designs that look simpler but allow replays:</p>
+<ul>
+<li><strong>Two independent databases</strong>, one per Radiator server,
+or two <code>DBSource</code> lines that point to separate databases:
+each keeps its own counters, so an OTP used on one is accepted on the
+other.</li>
+<li><strong>Two writable servers that replicate to each other</strong>
+(PostgreSQL logical replication both ways): an OTP used on one server is
+accepted on the other until the change arrives, during normal operation,
+not only during failures. And when both servers update the same row, the
+change that arrives last wins, which can move a counter backward.</li>
+</ul>
+</section>
+<section id="the-replay-window" class="level3">
+<h3>The replay window</h3>
+<p>Replication is <strong>asynchronous</strong>: the primary saves a
+login's counters and answers Radiator without waiting for the standby.
+If the primary dies in that moment, the promoted standby doesn't have
+the newest counters, and those OTPs can be used once more. Only OTPs
+used in the last fraction of a second before the failure are affected,
+and only until the user's next login moves the counter past them. In
+normal operation there is no window, because every Radiator server
+writes to the same primary. The test shows the window by stopping
+replication before a failover.</p>
+<p>Synchronous replication (<code>synchronous_standby_names</code>)
+closes the window, but with only two servers every login then stops
+whenever the standby is down. This guide uses asynchronous
+replication.</p>
+</section>
+<section id="what-users-see-during-a-failover" class="level3">
+<h3>What users see during a failover</h3>
+<p>Measured by the test, with the settings
+<code>yubikey-db.sh config</code> writes:</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>What Radiator does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The primary died or hangs, and the standby isn't promoted yet</td>
+<td>It <strong>rejects</strong> every login with
+<code>Yubikey secret not found in database</code>. The first login after
+the failure takes 2 to 5 s (up to 2 s waiting for a query, plus up to 2
+s for each server that doesn't answer). For the next 10 s
+(<code>FailureBackoffTime</code>) it rejects at once without trying,
+then tries again.</td>
+</tr>
+<tr>
+<td>The standby has been promoted</td>
+<td>Logins work again within 10 s.</td>
+</tr>
+<tr>
+<td>A Radiator server's connection to the old primary ended, and a
+writable server exists</td>
+<td>It reconnects and answers the same login: nothing is rejected.</td>
+</tr>
+<tr>
+<td>An OTP used before the failure</td>
+<td>Still rejected as a replay, unless it was used in the replay
+window.</td>
+</tr>
+</tbody>
+</table>
+<p>Radiator rejects logins while no server accepts writes; it doesn't
+stay silent. Its log says <code>Request is ignored</code>, but the
+YubiKey check returns a reject. Network devices that try their local
+accounts only when no RADIUS server answers won't fall back to them, so
+keep your usual break-glass procedure for a long outage.</p>
+</section>
+<section id="set-up-the-two-servers" class="level3">
+<h3>Set up the two servers</h3>
+<p>Below, the database servers are <code>db1.example.com</code>
+(<code>192.0.2.11</code>, the first primary) and
+<code>db2.example.com</code> (<code>192.0.2.12</code>), and the Radiator
+servers are <code>192.0.2.21</code> and <code>192.0.2.22</code>. The
+admin <code>opsadmin</code> works on <code>192.0.2.21</code>.</p>
+<p><strong>On both database servers:</strong></p>
+<ol type="1">
+<li><p>Install PostgreSQL and a certificate for <strong>that server's
+own name</strong>, made as in <a
+href="#postgresql-on-a-separate-server">PostgreSQL on a separate
+server</a> (step 1) and signed by the same CA:
+<code>CN=db1.example.com</code> and
+<code>subjectAltName=DNS:db1.example.com</code> on db1, and the same
+with <code>db2</code> on db2.</p></li>
+<li><p>Make PostgreSQL listen with TLS and keep recent changes for the
+standby:</p>
+<pre class="bash"><code>sudo tee /etc/postgresql/18/main/conf.d/yubikey.conf &gt;/dev/null &lt;&lt;&#39;EOF&#39;
+listen_addresses = &#39;*&#39;
+ssl = on
+ssl_cert_file = &#39;/etc/postgresql/18/main/server.crt&#39;
+ssl_key_file = &#39;/etc/postgresql/18/main/server.key&#39;
+wal_keep_size = &#39;1GB&#39;
+EOF</code></pre>
+<p><code>wal_keep_size</code> keeps the last 1 GB of changes on the
+primary, so a standby that was offline for a while can catch up. A login
+adds at most about 8 KB of changes, so that covers well over 100,000
+logins.</p></li>
+<li><p>Add the same lines on both servers, since either can be the
+primary, to <code>/etc/postgresql/18/main/pg_hba.conf</code>,
+<strong>above</strong> the first line that starts with
+<code>host</code>:</p>
+<pre class="text"><code>hostssl  yubikey      radiator    192.0.2.21/32  scram-sha-256
+hostssl  yubikey      radiator    192.0.2.22/32  scram-sha-256
+hostssl  yubikey      opsadmin    192.0.2.21/32  scram-sha-256
+hostssl  replication  replicator  192.0.2.11/32  scram-sha-256
+hostssl  replication  replicator  192.0.2.12/32  scram-sha-256</code></pre>
+<p>Open TCP port 5432 to these addresses in any firewall.</p></li>
+<li><p>Give the <code>postgres</code> user the CA certificate and the
+replication password, for when this server is the standby. Choose the
+replication password now; you set it on the primary in the next
+part:</p>
+<pre class="bash"><code>sudo install -d -m 0700 -o postgres -g postgres /var/lib/postgresql/.postgresql
+sudo install -m 0644 -o postgres -g postgres ca.crt /var/lib/postgresql/.postgresql/root.crt
+sudo touch /var/lib/postgresql/.pgpass
+sudo chown postgres:postgres /var/lib/postgresql/.pgpass
+sudo chmod 0600 /var/lib/postgresql/.pgpass
+echo &#39;*:5432:replication:replicator:REPLICATION-PASSWORD&#39; | sudo tee /var/lib/postgresql/.pgpass &gt;/dev/null</code></pre></li>
+<li><p>Stop PostgreSQL from starting by itself when the server
+boots:</p>
+<pre class="bash"><code>echo manual | sudo tee /etc/postgresql/18/main/start.conf &gt;/dev/null</code></pre>
+<div class="warning">
+<div class="title">
+<p>Warning</p>
+</div>
+<p>A primary that restarts by itself after a failover is a second
+primary, with old counters. A Radiator server that connects to it, for
+example after a restart, accepts OTPs already used on the new primary.
+The test shows this. With <code>manual</code>, PostgreSQL starts only
+when someone runs <code>sudo systemctl start postgresql@18-main</code>:
+always on a standby, and on the old primary only if no failover happened
+while it was down.</p>
+</div></li>
+<li><p><code>sudo systemctl restart postgresql@18-main</code>.</p></li>
+</ol>
+<p><strong>On db1, the first primary:</strong> create the roles and the
+database as in <a href="#postgresql-on-a-separate-server">PostgreSQL on
+a separate server</a> (step 4), then the replication role, with the
+password from step 4 above:</p>
+<pre class="bash"><code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin opsadmin --set-password
+sudo -u postgres psql -c &#39;\password opsadmin&#39;
+sudo -u postgres psql -c &#39;CREATE ROLE replicator REPLICATION LOGIN&#39;
+sudo -u postgres psql -c &#39;\password replicator&#39;</code></pre>
+<p><strong>On db2, make it the standby.</strong> This replaces db2's
+database files with a copy of db1's; the old ones are moved aside:</p>
+<pre class="bash"><code>sudo systemctl stop postgresql@18-main
+sudo mv /var/lib/postgresql/18/main /var/lib/postgresql/18/main.$(date +%Y%m%d-%H%M%S)
+sudo -u postgres pg_basebackup -h db1.example.com -U replicator -D /var/lib/postgresql/18/main \
+     -R -X stream -c fast -d &#39;sslmode=verify-full application_name=db2&#39;
+sudo systemctl start postgresql@18-main</code></pre>
+<p><code>-R</code> makes it a standby that follows db1. Check on
+<strong>db1</strong>:</p>
+<pre class="bash"><code>sudo -u postgres psql -c &#39;SELECT application_name, client_addr, state, sync_state, replay_lag FROM pg_stat_replication&#39;</code></pre>
+<pre class="text"><code> application_name | client_addr |   state   | sync_state |   replay_lag
+------------------+-------------+-----------+------------+-----------------
+ db2              | 192.0.2.12  | streaming | async      | 00:00:00.006296
+(1 row)</code></pre>
+<p>Once it's streaming, delete the moved-aside folder on db2
+(<code>sudo rm -rf /var/lib/postgresql/18/main.2*</code>).</p>
+</section>
+<section id="configure-radiator-for-two-servers" class="level3">
+<h3>Configure Radiator for two servers</h3>
+<p>On each Radiator server, install the CA certificate as in <a
+href="#postgresql-on-a-separate-server">PostgreSQL on a separate
+server</a>, list both database servers in <code>PGHOST</code>, and write
+Radiator's configuration (see <a
+href="#install-the-configuration">Install the configuration</a>):</p>
+<pre class="bash"><code>export PGHOST=db1.example.com,db2.example.com PGUSER=opsadmin PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt
+./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null
+sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator&#39;s password on the DBAuth line
+sudo systemctl restart radiator</code></pre>
+<p><code>config</code> writes:</p>
+<pre class="apache"><code>    DBSource     dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write
+    DBUsername   radiator
+    DBAuth       RADIATOR-PASSWORD
+
+    Timeout             2
+    ConnectTimeout      5
+    FailureBackoffTime  10</code></pre>
+<ul>
+<li><code>target_session_attrs=read-write</code> skips the standby,
+which only accepts reads. A server that doesn't answer is skipped
+too.</li>
+<li><code>connect_timeout=2</code> gives up on a server that doesn't
+answer after 2 s. <code>ConnectTimeout</code> (Radiator's limit for the
+whole connection attempt) must be longer than that times the number of
+servers.</li>
+<li><code>Timeout 2</code> gives up on a query after 2 s. Radiator's
+default is 60 s, and Radiator answers nothing else while it waits.</li>
+<li><code>FailureBackoffTime 10</code>: when no server accepts writes,
+Radiator rejects logins without trying for 10 s, then tries again. Its
+default is 600 s, which would leave logins failing for 10 minutes after
+the standby is promoted.</li>
+</ul>
+<p>For the admins, put both servers in <code>PGHOST</code> in
+<code>~/.profile</code>, as above. One <code>~/.pgpass</code> line with
+<code>*</code> as the host covers both:
+<code>*:5432:yubikey:opsadmin:YOUR-PASSWORD</code>. With two servers in
+<code>PGHOST</code>, the scripts connect to the one that accepts writes.
+If you also use <code>psql</code> directly, add
+<code>PGTARGETSESSIONATTRS=read-write</code> to the <code>export</code>
+line.</p>
+</section>
+<section id="check-replication" class="level3">
+<h3>Check replication</h3>
+<p>On the primary, the query above should show the standby as
+<code>streaming</code>. If it returns no row, the standby isn't
+receiving changes: look at the standby's log
+(<code>/var/log/postgresql/postgresql-18-main.log</code>). On the
+standby:</p>
+<pre class="bash"><code>sudo -u postgres psql -c &#39;SELECT status, sender_host, latest_end_time FROM pg_stat_wal_receiver&#39;</code></pre>
+<p>shows <code>streaming</code> and the primary's name. Check this from
+your monitoring: a standby that stopped receiving changes is noticed
+only at the next failover, when it lacks every login since then.</p>
+</section>
+<section id="fail-over" class="level3">
+<h3>Fail over</h3>
+<p>When the primary is down:</p>
+<ol type="1">
+<li><p><strong>Make sure it stays down.</strong> Power it off, or if you
+can still reach it, <code>sudo systemctl stop postgresql@18-main</code>.
+A primary that only hangs, or is cut off from you but not from a
+Radiator server, can come back and keep accepting logins from a Radiator
+server still connected to it.</p></li>
+<li><p>Promote the standby, on the standby:</p>
+<pre class="bash"><code>sudo pg_ctlcluster 18 main promote
+sudo -u postgres psql -Atc &#39;SELECT pg_is_in_recovery()&#39;     # f: it accepts writes now</code></pre></li>
+<li><p>Within 10 s every Radiator server uses it. Nothing changes on the
+Radiator servers or for the admins.</p></li>
+</ol>
+</section>
+<section id="bring-the-old-primary-back-as-the-standby" class="level3">
+<h3>Bring the old primary back as the standby</h3>
+<p>Don't start PostgreSQL on the old primary as it was. Make it a
+standby of the new primary, with the commands from <a
+href="#set-up-the-two-servers">Set up the two servers</a> ("On db2, make
+it the standby"), with the names swapped. For example, on db1 after db2
+was promoted:</p>
+<pre class="bash"><code>sudo systemctl stop postgresql@18-main
+sudo mv /var/lib/postgresql/18/main /var/lib/postgresql/18/main.$(date +%Y%m%d-%H%M%S)
+sudo -u postgres pg_basebackup -h db2.example.com -U replicator -D /var/lib/postgresql/18/main \
+     -R -X stream -c fast -d &#39;sslmode=verify-full application_name=db1&#39;
+sudo systemctl start postgresql@18-main</code></pre>
+<p>Then check on db2 that db1 is <code>streaming</code>. The copy takes
+seconds for a database of this size. Radiator servers keep using db2,
+even those that list db1 first.</p>
+</section>
+<section id="switch-over-for-maintenance" class="level3">
+<h3>Switch over for maintenance</h3>
+<p>To move the primary to the other server without losing any counter,
+for example before patching the primary:</p>
+<ol type="1">
+<li>On the primary: <code>sudo systemctl stop postgresql@18-main</code>.
+A clean stop sends every change to the standby first.</li>
+<li>On the standby:
+<code>sudo pg_ctlcluster 18 main promote</code>.</li>
+<li>Make the old primary a standby, as above.</li>
+</ol>
+<p>Logins are rejected from step 1 until a few seconds after step 2 (up
+to <code>FailureBackoffTime</code>).</p>
+</section>
+<section id="automatic-failover" class="level3">
+<h3>Automatic failover</h3>
+<p>The failover in this guide is done by a person, who confirms that the
+primary is down before promoting the standby. A tool that does it
+automatically must also stop the old primary from coming back as a
+primary, which needs a third member to tell a dead server from a broken
+network between two live ones. Ubuntu 26.04 packages three such tools:
+Patroni (with a three-member etcd cluster, for example on the two
+database servers and one Radiator server), pg_auto_failover (with a
+separate monitor), and repmgr (with a witness). Radiator's configuration
+stays the same with any of them, since it follows whichever server
+accepts writes. They aren't covered or tested here.</p>
+</section>
+</section>
 <section id="security" class="level2">
 <h2>Security</h2>
 <ul>
@@ -1287,6 +1621,10 @@ Radiator's database password</strong> for a remote PostgreSQL: mode
 single addresses in <code>pg_hba.conf</code>, <code>scram-sha-256</code>
 passwords, and <code>sslmode=verify-full</code> on the clients, so a
 server without your CA's certificate is refused.</li>
+<li><strong>A standby holds every AES key too</strong>, and the
+<code>replicator</code> role can copy the whole database: protect both
+database servers alike, and keep <code>~postgres/.pgpass</code> at mode
+<code>0600</code>.</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -1351,8 +1689,32 @@ characters, or Radiator can't reach the database (look for
 <tr>
 <td>Radiator logs <code>Could not connect to SQL database</code></td>
 <td>Check <code>DBSource</code>, <code>DBAuth</code>, the network and
-<code>pg_hba.conf</code>. Radiator then stops trying for 600 seconds, so
-after fixing it, <code>sudo systemctl restart radiator</code>.</td>
+<code>pg_hba.conf</code>. With the configuration from
+<code>config</code>, Radiator tries again after 10 seconds
+(<code>FailureBackoffTime</code>); a configuration without that line
+waits 600 seconds, so after fixing it,
+<code>sudo systemctl restart radiator</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Could not connect ... session is read-only</code></td>
+<td>That server is a standby. Normal for the standby when both servers
+are listed. If every server says so, no server is the primary: promote
+the standby (see <a href="#fail-over">Fail over</a>).</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Could not connect to any SQL database. Request is ignored</code></td>
+<td>No listed server accepts writes. Logins are rejected (not ignored)
+until one does.</td>
+</tr>
+<tr>
+<td>The primary's <code>pg_stat_replication</code> shows no standby</td>
+<td>The standby isn't receiving changes. Check its log, its
+<code>~postgres/.pgpass</code> and <code>pg_hba.conf</code>'s
+<code>replication</code> lines. If it was offline for longer than
+<code>wal_keep_size</code> covers, make it a standby again from
+scratch.</td>
 </tr>
 <tr>
 <td>A disabled user can still log in, and <code>active</code> shows
@@ -1481,10 +1843,14 @@ restart PostgreSQL.</td>
 <p>Global options go before the command. Other environment variables:
 <code>PGHOST</code>, <code>PGPORT</code>, <code>PGUSER</code>,
 <code>PGSSLMODE</code>, <code>PGSSLROOTCERT</code>,
-<code>PGSERVICE</code> (standard PostgreSQL settings; for a server other
-than the local socket, <code>config</code> copies <code>PGHOST</code>,
-<code>PGPORT</code>, <code>PGSSLMODE</code> and
-<code>PGSSLROOTCERT</code> into Radiator's <code>DBSource</code>),
+<code>PGSERVICE</code>, <code>PGCONNECT_TIMEOUT</code>,
+<code>PGTARGETSESSIONATTRS</code> (standard PostgreSQL settings; for a
+server other than the local socket, <code>config</code> copies
+<code>PGHOST</code>, <code>PGPORT</code>, <code>PGSSLMODE</code>,
+<code>PGSSLROOTCERT</code>, <code>PGCONNECT_TIMEOUT</code> (default 2)
+and <code>PGTARGETSESSIONATTRS</code> into Radiator's
+<code>DBSource</code>; with several hosts in <code>PGHOST</code>,
+<code>PGTARGETSESSIONATTRS</code> defaults to <code>read-write</code>),
 <code>PG_ADMIN_ROLE</code> (default <code>yubikey_admin</code>),
 <code>PG_RADIATOR_ROLE</code> (default <code>radiator</code>),
 <code>SQLITE3</code>, <code>PSQL</code>.</p>
@@ -1737,7 +2103,7 @@ and <code>CREATEROLE</code>
 without one they are skipped. They create and drop databases and roles
 named <code>yk_test_&lt;pid&gt;_*</code>.</p>
 <p><code>tests/radiator/run.sh DIR</code> tests against Radiator itself,
-in a container built from the Radiator packages in <code>DIR</code> (see
+in containers built from the Radiator packages in <code>DIR</code> (see
 <a href="#the-automated-test">The automated test</a>).</p>
 </section>
 <section id="references" class="level2">
@@ -1758,6 +2124,13 @@ Manager (<code>ykman</code>) documentation</a></li>
 18: SSL support</a> and <a
 href="https://www.postgresql.org/docs/18/auth-pg-hba-conf.html">the
 pg_hba.conf file</a></li>
+<li><a
+href="https://www.postgresql.org/docs/18/warm-standby.html">PostgreSQL
+18: log-shipping standby servers</a>, <a
+href="https://www.postgresql.org/docs/18/app-pgbasebackup.html"><code>pg_basebackup</code></a>
+and <a
+href="https://www.postgresql.org/docs/18/libpq-connect.html#LIBPQ-MULTIPLE-HOSTS">libpq
+connection strings with several hosts</a></li>
 </ul>
 </section>
     <footer>

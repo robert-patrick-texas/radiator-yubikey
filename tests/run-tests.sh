@@ -877,10 +877,12 @@ scenario_pg_offline() {
     for env in DB_BACKEND=pg PGHOST=db.example.com PGHOST=/var/run/postgresql \
                'PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require' \
                'PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt' PGSERVICE=yubikey \
-               'PGSERVICE=yubikey PGDATABASE=radius' PG_RADIATOR_ROLE=radiusd; do
+               'PGSERVICE=yubikey PGDATABASE=radius' PG_RADIATOR_ROLE=radiusd \
+               'PGHOST=db1.example.com,db2.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt' \
+               'PGHOST=db1,db2 PGCONNECT_TIMEOUT=3 PGTARGETSESSIONATTRS=primary' PGCONNECT_TIMEOUT=0; do
         read -ra assignments <<<"$env"
-        printf '$ %s yubikey-db.sh -b pg config | grep DB\n' "$env"
-        env "${assignments[@]}" "$SCRIPT" -b pg config | grep -E '^ +DB(Source|Username)'
+        printf '$ %s yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"\n' "$env"
+        env "${assignments[@]}" "$SCRIPT" -b pg config 2>&1 | grep -E '^ +(DB(Source|Username)|ConnectTimeout)|error'
         echo
     done
     printf '$ yubikey-db.sh -b pg -d radius config | grep DB\n'

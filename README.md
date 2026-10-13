@@ -17,6 +17,8 @@ These scripts:
 - list, enable, disable and delete users, and back up and restore everything
 - print the matching Radiator configuration
 - move an installation from SQLite to PostgreSQL while Radiator keeps running
+- follow a PostgreSQL primary and standby, so Radiator keeps working on the
+  standby after it is promoted
 
 Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**,
 including real Radiator logins in a container (`tests/radiator/run.sh`).
@@ -27,7 +29,8 @@ including real Radiator logins in a container (`tests/radiator/run.sh`).
 in a container, installing Radiator, programming YubiKeys, SQLite and
 PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
-moving to PostgreSQL, security, troubleshooting, and a reference.
+moving to PostgreSQL, two database servers with replication and failover,
+security, troubleshooting, and a reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.
@@ -72,7 +75,9 @@ sudo systemctl restart radiator
 ```
 
 For a PostgreSQL server shared by several Radiator servers, see
-[PostgreSQL on a separate server](docs/guide.md#postgresql-on-a-separate-server).
+[PostgreSQL on a separate server](docs/guide.md#postgresql-on-a-separate-server),
+and for a second database server that takes over when the first fails,
+[Two database servers](docs/guide.md#two-database-servers).
 
 ## Common tasks
 
@@ -98,14 +103,14 @@ For a PostgreSQL server shared by several Radiator servers, see
 | `users.example.csv` | Sample CSV file (test values only) |
 | `docs/guide.md` | The guide; `docs/build-guide.sh` makes `yubikey-db-guide.html` from it |
 | `tests/run-tests.sh` | Regression tests of the scripts against SQLite and PostgreSQL |
-| `tests/radiator/` | Tests against Radiator itself, in a container (bring your own Radiator packages) |
+| `tests/radiator/` | Tests against Radiator itself, in containers (bring your own Radiator packages) |
 | `tests/make-otp.sh` | Makes OTPs for test keys, for testing without a YubiKey |
 
 ## Testing
 
 ```bash
 tests/run-tests.sh                           # 33 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 78 checks of real Radiator logins, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 78 + 50 checks of real Radiator logins, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.
