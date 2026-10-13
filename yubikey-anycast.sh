@@ -4,7 +4,7 @@
 #                      only while its Radiator accepts YubiKey logins.
 #
 # VERSION
-#   1.3.0
+#   1.4.0
 #
 # HOW IT WORKS
 #   Every Radiator server has the same anycast addresses (one IPv4, one IPv6),
@@ -69,7 +69,7 @@ set -uo pipefail
 umask 077   # the key file holds the AES key and the PIN
 
 PROG=${0##*/}
-VERSION=1.3.0
+VERSION=1.4.0
 CONF=/etc/radiator/anycast.conf
 STATE_DIR=${ANYCAST_STATE_DIR:-/var/lib/yubikey-anycast}
 RUN_DIR=${ANYCAST_RUN_DIR:-/run/yubikey-anycast}

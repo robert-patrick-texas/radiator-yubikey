@@ -83,7 +83,7 @@ list both (PGHOST=db1,db2): changes then go to the one that accepts writes.
 [exit 0]
 
 $ yubikey-db.sh --version
-yubikey-db.sh 1.3.0
+yubikey-db.sh 1.4.0
 [exit 0]
 
 $ yubikey-db.sh 

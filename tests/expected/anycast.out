@@ -23,7 +23,7 @@ Example:
 [exit 3]
 
 $ yubikey-anycast.sh -V
-yubikey-anycast.sh 1.3.0
+yubikey-anycast.sh 1.4.0
 [exit 0]
 
 $ yubikey-anycast.sh bogus

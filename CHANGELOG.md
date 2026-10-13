@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.0 - 2026-10-13
 
 One anycast address for all sites: each server advertises it with BGP only
 while its Radiator accepts logins.
