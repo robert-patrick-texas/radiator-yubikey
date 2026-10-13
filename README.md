@@ -1,6 +1,6 @@
 # Radiator YubiKey Database Tools
 
-Version 1.2.1 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md)
+Version 1.3.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md)
 
 Offline YubiKey one-time-password (OTP) logins for
 [Radiator](https://radiatorsoftware.com/) RADIUS, with the YubiKeys in a local

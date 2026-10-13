@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-10-13
 
 Three sites with automatic failover: a tested setup with etcd, PostgreSQL
 under Patroni, and Radiator on each of three sites.
