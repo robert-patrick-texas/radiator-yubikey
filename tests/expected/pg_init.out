@@ -38,6 +38,9 @@ indexname
 yubikeys_pkey
 yubikeys_tokenid_key
 yubikeys_username
+# triggers
+tgname | definition
+yubikeys_counters_forward | CREATE TRIGGER yubikeys_counters_forward BEFORE UPDATE OF counter, low ON public.yubikeys FOR EACH ROW WHEN ((ROW(new.counter, new.low) <= ROW(old.counter, old.low))) EXECUTE FUNCTION yubikeys_counters_forward()
 # owners
 database_owner | table_owner
 <T>_admin | <T>_admin

@@ -20,7 +20,8 @@
 # after the primary dies and the standby is promoted, logins work again
 # within FailureBackoffTime and OTPs used before the failure stay used; a
 # server rebuilt as a standby is skipped; a hung primary costs a few seconds,
-# not minutes; a planned switchover loses nothing. Two checks show the risks the guide warns about: an old
+# not minutes; a planned switchover loses nothing; the same OTP sent to both
+# Radiator servers at the same moment is accepted once. Two checks show the risks the guide warns about: an old
 # primary started as it was accepts OTPs already used, and an OTP whose
 # counter update had not reached the standby is accepted once more after a
 # failover. Set KEEP=1 to leave the containers running afterwards.
@@ -122,6 +123,26 @@ streams_to() {
 
 ALICE="SELECT counter FROM yubikeys WHERE username = 'alice'"
 
+# race COUNTER: alice's OTP for COUNTER on rad1 and rad2 at the same moment,
+# while db1 (the primary) keeps her row locked for 1.8 s, so both servers
+# read the counters before either saves them. Sets ANSWERS to both answers,
+# sorted, and WAITING to the number of Radiator sessions waiting to save.
+ANSWERS='' WAITING=''
+race() {
+    local lock a b out
+    out=$(mktemp -d)
+    node db1 hold-row 1.8 & lock=$!
+    sleep 0.3
+    node rad1 login alice s3cr3t "$1" 0 6 | head -1 >"$out/1" & a=$!
+    node rad2 login alice s3cr3t "$1" 0 6 | head -1 >"$out/2" & b=$!
+    sleep 0.8
+    WAITING=$(node db1 sql yubikey "SELECT count(*) FROM pg_stat_activity
+                                     WHERE usename = 'radiator' AND wait_event_type = 'Lock'")
+    wait "$lock" "$a" "$b"
+    ANSWERS=$(sort "$out/1" "$out/2" | paste -sd ' ')
+    rm -rf -- "$out"
+}
+
 echo "== Setup: db1 primary, db2 streaming standby, two Radiator servers"
 node db1 pki
 node db1 db-setup db1
@@ -206,8 +227,10 @@ echo "== The primary (db1) hangs: it accepts connections but never answers"
 docker pause yk-ha-db1 >/dev/null
 login "OTP 8, the primary hangs"                "REJECT: Yubikey secret not found in database" rad1 8
 check "Radiator answered within 7 s (Timeout + connect_timeout)" yes "$([[ $MS -lt 7000 ]] && echo yes || echo "no, $MS ms")"
-login "OTP 8 again, during FailureBackoffTime"  "REJECT: Yubikey secret not found in database" rad1 8
-check "Radiator answered at once" yes "$([[ $MS -lt 1000 ]] && echo yes || echo "no, $MS ms")"
+# Each of Radiator's farm processes has its own connection and its own
+# FailureBackoffTime, so this one may try the servers itself.
+login "OTP 8 again"                             "REJECT: Yubikey secret not found in database" rad1 8
+check "Radiator answered within 7 s" yes "$([[ $MS -lt 7000 ]] && echo yes || echo "no, $MS ms")"
 docker kill yk-ha-db1 >/dev/null    # fenced: powered off before the standby is promoted
 node db2 promote
 login_until "OTP 8 after db2 is promoted" rad1 8
@@ -230,6 +253,20 @@ node db2 standby db2 db1
 check "db1 streams to db2" "db2|streaming|async" "$(streams_to db1)"
 check "rad1 uses db1" db1 "$(uses rad1)"
 check "rad2 uses db1" db1 "$(uses rad2)"
+
+echo
+echo "== The same OTP on both Radiator servers at the same moment"
+node db1 sql yubikey "DROP TRIGGER yubikeys_counters_forward ON yubikeys" >/dev/null
+race 20
+check "without the trigger (before 1.2.1): both accepted" "ACCEPT ACCEPT" "$ANSWERS"
+check "both servers waited to save" 2 "$WAITING"
+node rad1 admin init >/dev/null
+wait_for "the admin's init adds the trigger, and the standby has it" 1 db2 \
+    "SELECT count(*) FROM pg_trigger WHERE tgname = 'yubikeys_counters_forward'"
+race 21
+check "with the trigger: one accepted, one not answered" "ACCEPT NO REPLY" "$ANSWERS"
+check "both servers waited to save" 2 "$WAITING"
+login "OTP 22"                                  ACCEPT rad2 22
 
 echo
 printf 'Two database servers: %d passed, %d failed\n' "$pass" "$fail"

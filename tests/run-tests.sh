@@ -211,6 +211,9 @@ schema_pg() {
               WHERE conrelid = 'yubikeys'::regclass AND contype <> 'n' ORDER BY conname;"
     printf '# indexes\n'
     pgtable "SELECT indexname FROM pg_indexes WHERE tablename = 'yubikeys' ORDER BY indexname;"
+    printf '# triggers\n'
+    pgtable "SELECT tgname, pg_get_triggerdef(oid) AS definition FROM pg_trigger
+              WHERE tgrelid = 'yubikeys'::regclass AND NOT tgisinternal ORDER BY tgname;"
     printf '# owners\n'
     pgtable "SELECT (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()) AS database_owner,
                     (SELECT tableowner FROM pg_tables WHERE tablename = 'yubikeys') AS table_owner;"
@@ -263,6 +266,14 @@ EOF
 
 # Run SQL as the Radiator role over TCP, the way Radiator connects from
 # another host, and record the output: as_radiator SQL
+# Run one SQL statement on the SQLite database and print it, its output and
+# its exit status: as_sqlite SQL
+as_sqlite() {
+    local out rc=0
+    out=$(sqlite3 -batch "$DB" "$1" 2>&1) || rc=$?
+    printf '$ sqlite> %s\n%s%s[exit %d]\n\n' "$1" "$out" "${out:+$'\n'}" "$rc"
+}
+
 as_radiator() {
     local out rc=0
     out=$(PGPASSWORD=test-only psql -X -q --no-align --field-separator ' | ' --pset footer=off \
@@ -353,6 +364,27 @@ scenario_update() {
     run_from all.csv -d "$WORK/restored.db" import --from-export -
     "$SCRIPT" -d "$WORK/restored.db" export restored.csv >/dev/null 2>&1
     compare_exports all.csv restored.csv
+}
+
+# Counters only move forward. Each statement is Radiator's UpdateQuery from
+# 'config' with an OTP's counter and session counter filled in.
+scenario_counters() {
+    local q="update yubikeys set accessed=datetime(1791314814,'unixepoch'), high=0"
+    local k="where username='alice' and tokenId='vvccccbbcdef'"
+    run -d "$DB" init >/dev/null
+    run -d "$DB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t >/dev/null
+    as_sqlite "$q, counter=5, low=2 $k"     # saved
+    as_sqlite "$q, counter=5, low=2 $k"     # the same OTP again: refused
+    as_sqlite "$q, counter=5, low=1 $k"     # an older OTP: refused
+    as_sqlite "$q, counter=4, low=9 $k"     # refused
+    as_sqlite "$q, counter=5, low=3 $k"     # saved
+    as_sqlite "update yubikeys set active=0 $k"   # other columns: not affected
+    dump "$DB"
+    # A database made before 1.2.1 has no trigger: init adds it.
+    sqlite3 "$DB" "DROP TRIGGER yubikeys_counters_forward;"
+    as_sqlite "$q, counter=5, low=3 $k"
+    run -d "$DB" init
+    as_sqlite "$q, counter=5, low=3 $k"
 }
 
 scenario_verify() {
@@ -740,9 +772,13 @@ scenario_restore() {
     # With --replace, the export's values come back, but counters never move
     # backward: test.user is ahead in the database (99/1) and keeps it;
     # the old-format key is behind (2/0) and gets the export's 12/3.
-    sqlite3 "$DB" "UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00' WHERE username = 'test.user';
+    # Moving a counter back needs the trigger out of the way (it exists to
+    # refuse exactly that); init puts it back.
+    sqlite3 "$DB" "DROP TRIGGER yubikeys_counters_forward;
+        UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00' WHERE username = 'test.user';
         UPDATE yubikeys SET counter = 2, low = 0 WHERE username = 'DOMAIN\\old user';
         UPDATE yubikeys SET password = 'changed', active = 0 WHERE username = 'test.user2';"
+    "$SCRIPT" -d "$DB" init >/dev/null 2>&1
     run -d "$DB" import --from-export --replace source.csv
     dump "$DB"
     times_sqlite "$DB"
@@ -790,9 +826,11 @@ scenario_pg_restore() {
     compare_exports source.csv restored.csv
     times_pg
 
-    pgq "$PGDB" "UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00+00' WHERE username = 'test.user';
+    pgq "$PGDB" "ALTER TABLE yubikeys DISABLE TRIGGER yubikeys_counters_forward;
+        UPDATE yubikeys SET counter = 99, low = 1, accessed = '2026-10-12 11:00:00+00' WHERE username = 'test.user';
         UPDATE yubikeys SET counter = 2, low = 0 WHERE username = 'DOMAIN\\old user';
-        UPDATE yubikeys SET password = 'changed', active = 0 WHERE username = 'test.user2';"
+        UPDATE yubikeys SET password = 'changed', active = 0 WHERE username = 'test.user2';
+        ALTER TABLE yubikeys ENABLE TRIGGER yubikeys_counters_forward;"
     run -b pg -d "$PGDB" import --from-export --replace source.csv
     dump_pg
     times_pg
@@ -990,6 +1028,17 @@ scenario_pg_radiator() {
     as_radiator "update yubikeys set accessed=to_timestamp(1791314814), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
     run -b pg -d "$PGDB" list test.user2
 
+    # Counters only move forward: the same OTP saved twice (two logins at
+    # the same moment), or an older one, is refused.
+    as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=4, low=9, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=5, low=3, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    # A database made before 1.2.1 has no trigger: init adds it.
+    pgq "$PGDB" "DROP TRIGGER yubikeys_counters_forward ON yubikeys;"
+    as_radiator "update yubikeys set counter=5, low=3 where username='test.user2' and tokenId='cbdefghijklr'"
+    run -b pg -d "$PGDB" init
+    as_radiator "update yubikeys set counter=5, low=3 where username='test.user2' and tokenId='cbdefghijklr'"
+
     as_radiator "update yubikeys set active=1 where username='test.user2'"
     as_radiator "insert into yubikeys (username, tokenId, userId, secret) values ('x', 'x', 'x', 'x')"
     as_radiator "delete from yubikeys"
@@ -1122,7 +1171,7 @@ EOF
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     export restore restore_errors update verify wrapper
+     export restore restore_errors update counters verify wrapper
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)

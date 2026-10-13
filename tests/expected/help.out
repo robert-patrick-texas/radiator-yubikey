@@ -16,7 +16,8 @@ Commands:
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
         PostgreSQL: create the table and Radiator's grants in an existing
-        database (run as a member of the admin role).
+        database (run as a member of the admin role). Safe to re-run: it also
+        brings a database made by an older version up to date.
 
   init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
         Create the admin role (yubikey_admin), Radiator's login role
@@ -103,7 +104,8 @@ Commands:
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
         PostgreSQL: create the table and Radiator's grants in an existing
-        database (run as a member of the admin role).
+        database (run as a member of the admin role). Safe to re-run: it also
+        brings a database made by an older version up to date.
 
   init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
         Create the admin role (yubikey_admin), Radiator's login role

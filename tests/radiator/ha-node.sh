@@ -18,11 +18,13 @@
 #   rad-setup HOSTS          the admin's settings (PGHOST=HOSTS) and
 #                            Radiator's configuration from 'config'
 #   admin ARGS...            yubikey-db.sh ARGS with the admin's settings
+#   hold-row SECONDS         lock alice's row, without changing it
 #   rad-start                (re)start radiusd
-#   login USER PW COUNTER SESSION
-#                            log in with radpwtst; prints Radiator's answer
-#                            (ACCEPT, or REJECT: reason) and the time it
-#                            took in milliseconds, on two lines
+#   login USER PW COUNTER SESSION [TIMEOUT]
+#                            log in with radpwtst (waiting up to TIMEOUT
+#                            seconds, default 15); prints Radiator's answer
+#                            (ACCEPT, NO REPLY, or REJECT: reason) and the
+#                            time it took in milliseconds, on two lines
 
 set -euo pipefail
 
@@ -109,6 +111,12 @@ sql)
     runuser -u postgres -- psql -X -At -d "$1" -c "$2"
     ;;
 
+hold-row)
+    runuser -u postgres -- psql -X -q -d yubikey -c "BEGIN;
+        UPDATE yubikeys SET accessed = accessed WHERE username = 'alice';
+        SELECT pg_sleep($1); COMMIT;" >/dev/null
+    ;;
+
 rad-setup)
     install -m 0644 "$LAB/ca.crt" /etc/radiator/pg-ca.crt
     printf 'export PGHOST=%s PGUSER=opsadmin PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt DB_BACKEND=pg\n' \
@@ -144,11 +152,11 @@ rad-start)
     ;;
 
 login)
-    user=$1 pw=$2 counter=$3 session=$4
+    user=$1 pw=$2 counter=$3 session=$4 timeout=${5:-15}
     otp=$(/repo/tests/make-otp.sh vvccccbbcdef 4a6f8e2d1c3b $K1 "$counter" "$session")
     before=$(wc -l <"$LOG")
     start=$(date +%s%N)
-    out=$(perl $RAD/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -timeout 15 \
+    out=$(perl $RAD/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -timeout "$timeout" \
             -user "$user" -password "$pw:$otp" 2>&1) || true
     ms=$((($(date +%s%N) - start) / 1000000))
     if grep -q '^OK' <<<"$out"; then

@@ -340,7 +340,9 @@ CRC.</li>
 (<code>CheckSecretId</code>).</li>
 <li>It rejects the OTP unless its counters are ahead of the ones saved
 in the row, so a captured OTP can't be used twice, and then saves the
-new counters.</li>
+new counters. The database refuses to save counters that don't move
+forward, so even the same OTP sent to two Radiator servers at the same
+moment is accepted only once.</li>
 </ol>
 <p>Nothing is sent to Yubico. The catch is that Radiator must know each
 YubiKey's AES key, and Yubico keeps the factory key secret, so
@@ -474,7 +476,8 @@ group).</li>
 <tr>
 <td>Radiator server</td>
 <td>The Radiator packages, <code>libauth-yubikey-decrypter-perl</code>,
-<code>libcrypt-rijndael-perl</code>, and
+<code>libcrypt-rijndael-perl</code>,
+<code>libcache-fastmmap-perl</code>, and
 <code>libdbd-sqlite3-perl</code> + <code>sqlite3</code> (SQLite) or
 <code>libdbd-pg-perl</code> + <code>postgresql-client</code>
 (PostgreSQL)</td>
@@ -580,23 +583,26 @@ it.</p>
 <p><code>tests/radiator/run.sh</code> builds the same image and runs two
 tests of real Radiator logins:</p>
 <ul>
-<li><code>e2e.sh</code>, 78 checks in a throwaway container: SQLite with
+<li><code>e2e.sh</code>, 92 checks in a throwaway container: SQLite with
 and without <code>Require2Factor</code>, PostgreSQL over the local
-socket and over TLS, the example wrapper, and a cutover from SQLite to
-PostgreSQL while Radiator runs. For each login it checks Radiator's
-answer and the reason it logs, and that <code>verify</code> agrees.</li>
-<li><code>ha.sh</code>, 50 checks with four containers: two PostgreSQL
+socket and over TLS, the example wrapper, a cutover from SQLite to
+PostgreSQL while Radiator runs, and the same OTP sent twice at the same
+moment to two of Radiator's farm processes (accepted twice without the
+trigger, once with it). For each login it checks Radiator's answer and
+the reason it logs, and that <code>verify</code> agrees.</li>
+<li><code>ha.sh</code>, 56 checks with four containers: two PostgreSQL
 servers (primary and streaming standby, over TLS) and two Radiator
 servers, through a dead primary, a hung primary, failovers, an old
-primary coming back, a planned switchover, and the replay window (see <a
-href="#two-database-servers">Two database servers</a>).</li>
+primary coming back, a planned switchover, the replay window (see <a
+href="#two-database-servers">Two database servers</a>), and the same OTP
+sent to both Radiator servers at the same moment.</li>
 </ul>
 <pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # both, about 3 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
-<code>Radiator 4.30-1: 78 passed, 0 failed</code> and
-<code>Two database servers: 50 passed, 0 failed</code>. Run them again
+<code>Radiator 4.30-1: 92 passed, 0 failed</code> and
+<code>Two database servers: 56 passed, 0 failed</code>. Run them again
 with each new Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> leaves
 the four containers running afterwards, to look around.</p>
@@ -609,7 +615,7 @@ the four containers running afterwards, to look around.</p>
 <p>Install Radiator, the Perl modules its YubiKey support needs, and the
 database driver you use:</p>
 <pre class="bash"><code>sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb \
-                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl
+                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl
 sudo apt install libdbd-sqlite3-perl sqlite3          # SQLite
 sudo apt install libdbd-pg-perl postgresql-client     # PostgreSQL</code></pre>
 <p>The package creates the <code>radiator</code> user, installs Radiator
@@ -826,6 +832,14 @@ sudoedit /etc/radiator/radiator.conf</code></pre>
 and replace the <code>&lt;Client 192.0.2.10&gt;</code> example with one
 block per RADIUS client (VPN gateway, switch, wireless controller), each
 with its own long random secret.</p>
+<p><code>radiator.example.conf</code> runs four Radiator processes
+(<code>FarmSize 4</code>). Each answers one request at a time, so one
+slow database query, for example while a database server fails over, no
+longer holds up every other login. <code>DupCache shared</code> lets the
+processes recognize a request that a RADIUS client sent again to another
+process; it needs <code>libcache-fastmmap-perl</code> (installed above)
+and keeps a file of about 290 MB at
+<code>/var/lib/radiator/dupcache</code> while Radiator runs.</p>
 <p>Write the YubiKey clause from <code>yubikey-db.sh config</code> to
 <code>/etc/radiator/conf.d/yubikey.conf</code>, which
 <code>radiator.conf</code> includes. Create the file first, so it is
@@ -1218,6 +1232,17 @@ takes a consistent copy while Radiator runs; for PostgreSQL, use
 <code>pg_dump</code>. Every backup holds every AES key: keep it
 encrypted.</p>
 </section>
+<section id="after-upgrading-the-scripts" class="level3">
+<h3>After upgrading the scripts</h3>
+<p>Run <code>init</code> again
+(<code>sudo ./yubikey-db.sh init --owner radiator:radiator</code>, or
+<code>./yubikey-db.sh -b pg init</code> as an admin). It adds what a
+newer version needs to an existing database and changes nothing else.
+Version 1.2.1 adds the trigger that stops the same OTP being accepted
+twice at the same moment (see <a href="#database-layout">Database
+layout</a>). With two database servers, run it once, against the
+primary; the standby gets the change by replication.</p>
+</section>
 <section id="a-database-from-the-old-example-commands" class="level3">
 <h3>A database from the old example commands</h3>
 <p>The example statements that circulated before these scripts stored
@@ -1355,9 +1380,10 @@ replication.</p>
 <td>It <strong>rejects</strong> every login with
 <code>Yubikey secret not found in database</code>. The first login after
 the failure takes 2 to 5 s (up to 2 s waiting for a query, plus up to 2
-s for each server that doesn't answer). For the next 10 s
-(<code>FailureBackoffTime</code>) it rejects at once without trying,
-then tries again.</td>
+s for each server that doesn't answer), and so may the first one in each
+of Radiator's four farm processes. A process that has seen the failure
+rejects at once for the next 10 s (<code>FailureBackoffTime</code>)
+without trying, then tries again.</td>
 </tr>
 <tr>
 <td>The standby has been promoted</td>
@@ -1709,6 +1735,20 @@ the standby (see <a href="#fail-over">Fail over</a>).</td>
 until one does.</td>
 </tr>
 <tr>
+<td>Radiator logs <code>counter violation</code> and
+<code>Access ignored ... Database update failed</code></td>
+<td>The same OTP arrived twice at the same moment (a retransmission, two
+Radiator servers, or a replay attempt). The first was accepted; the
+second gets no answer. If it happens without a reason, find where the
+second request came from.</td>
+</tr>
+<tr>
+<td><code>radiusd</code> fails with
+<code>Can't locate Cache/FastMmap.pm</code></td>
+<td><code>DupCache shared</code> needs it:
+<code>sudo apt install libcache-fastmmap-perl</code>.</td>
+</tr>
+<tr>
 <td>The primary's <code>pg_stat_replication</code> shows no standby</td>
 <td>The standby isn't receiving changes. Check its log, its
 <code>~postgres/.pgpass</code> and <code>pg_hba.conf</code>'s
@@ -1867,7 +1907,8 @@ and <code>PGTARGETSESSIONATTRS</code> into Radiator's
 <td><code>init</code></td>
 <td><code>-o, --owner USER[:GROUP]</code></td>
 <td>SQLite: create the folder, file and table. PostgreSQL: create the
-table and grants in an existing database. Safe to re-run.</td>
+table and grants in an existing database. Safe to re-run; it also brings
+a database made by an older version up to date.</td>
 </tr>
 <tr>
 <td><code>init-pg</code></td>
@@ -2043,6 +2084,12 @@ table; its members manage users. <code>radiator</code> can
 <code>SELECT</code> username, password, active, tokenId, userId, secret
 and the counters, and <code>UPDATE</code> only accessed and the
 counters.</p>
+<p>In both databases, the trigger <code>yubikeys_counters_forward</code>
+refuses an <code>UPDATE</code> of <code>counter</code> or
+<code>low</code> that doesn't move them forward, with the error
+<code>counter violation: ... already used this OTP or a later one</code>.
+To reset a YubiKey's counters on purpose, replace its row
+(<code>add --replace</code>).</p>
 </section>
 <section id="export-format" class="level3">
 <h3>Export format</h3>
@@ -2080,13 +2127,18 @@ from a keyboard key) is ignored. The OTP is a replay unless its counter
 is above the stored <code>counter</code>, or equal with a session
 counter above <code>low</code>. A NULL counter skips this check.</li>
 <li><code>UpdateQuery</code> saves the counter, the session counter
-(<code>low</code>), 0 (<code>high</code>) and the time.</li>
+(<code>low</code>), 0 (<code>high</code>) and the time. If the save
+fails, Radiator ignores the request (no answer) with
+<code>Database update failed</code>. That is what happens to the second
+of two logins with the same OTP at the same moment: both pass the check
+in step 7 before either saves, and the database refuses the second
+save.</li>
 </ol>
 </section>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 33 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 34 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>. It needs <code>bash</code>,

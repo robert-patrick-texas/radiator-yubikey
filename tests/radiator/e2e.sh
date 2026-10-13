@@ -7,7 +7,9 @@
 # the expected one. It also checks that 'yubikey-db.sh verify' reaches the
 # same verdict as Radiator, and that the example wrapper's records work.
 # Covers SQLite (with and without Require2Factor), PostgreSQL over the local
-# socket and over TLS, and a cutover from SQLite to PostgreSQL.
+# socket and over TLS, a cutover from SQLite to PostgreSQL, and the same OTP
+# sent twice at the same moment to Radiator's farm (FarmSize, from
+# radiator.example.conf).
 #
 # OTPs come from tests/make-otp.sh: encrypted with openssl, independently of
 # both Radiator and verify.
@@ -83,6 +85,38 @@ verify_says() {
         echo REJECT
     fi
 }
+
+# race LOCK COUNTER: alice sends the OTP for COUNTER twice at the same moment,
+# while the shell command LOCK keeps the counters from being saved for 1.5 s,
+# so both requests (in two farm processes) read the counters before either
+# saves them. Sets ANSWERS to both answers, sorted: "ACCEPT ACCEPT", or
+# "ACCEPT NO-ANSWER" when the second save is refused (Radiator then ignores
+# the request), and WAITING to the number of Radiator sessions that waited
+# on the lock in PostgreSQL.
+ANSWERS='' WAITING=''
+race() {
+    local otp lock a b
+    otp=$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 "$2" 0)
+    eval "$1" & lock=$!
+    sleep 0.3
+    one_login "s3cr3t:$otp" >/tmp/race1 & a=$!
+    one_login "s3cr3t:$otp" >/tmp/race2 & b=$!
+    sleep 0.8
+    WAITING=$(su postgres -c "psql -X -At -d yubikey -c \"SELECT count(*) FROM pg_stat_activity
+                  WHERE usename = 'radiator' AND wait_event_type = 'Lock'\"" 2>/dev/null)
+    wait "$lock" "$a" "$b"
+    ANSWERS=$(sort /tmp/race1 /tmp/race2 | paste -sd ' ')
+}
+one_login() {
+    if perl "$RAD/radpwtst" -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct -timeout 6 \
+            -user alice -password "$1" 2>&1 | grep -q '^OK'; then
+        echo ACCEPT
+    else
+        echo NO-ANSWER
+    fi
+}
+PG_LOCK="su postgres -c \"psql -X -q -d yubikey -c \\\"BEGIN; UPDATE yubikeys SET accessed = accessed WHERE username = 'alice'; SELECT pg_sleep(1.5); COMMIT;\\\"\" >/dev/null"
+SQLITE_LOCK="su radiator -s /bin/sh -c \"printf 'BEGIN IMMEDIATE;\\n.shell sleep 1.5\\nCOMMIT;\\n' | sqlite3 $DB\""
 
 # check LABEL EXPECTED ACTUAL: count and print one result.
 check() {
@@ -262,6 +296,38 @@ login "on PostgreSQL, OTP used on SQLite after the copy" "REJECT: Replay attack 
 login "on PostgreSQL, next OTP"         ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 102 0)"
 login "on PostgreSQL, a migrated hex key" ACCEPT hexie s3cr3t "$(otp vvccccbbcdeg 4a6f8e2d1c3c $K2 2 0)"
 login "on PostgreSQL, 'false' became 0" "REJECT: Yubikey is not active" falsey s3cr3t "$(otp vvccccbbcdek 4a6f8e2d1c40 $K1 2 0)"
+
+echo
+echo "== The same OTP twice at the same moment, in two farm processes (FarmSize 4)"
+B=()
+make_conf
+start_radiator
+check "Radiator runs 4 farm processes" 4 "$(pgrep -c -P "$(pgrep -o -f '^perl .*/radiusd ')")"
+check "the shared duplicate cache is in /var/lib/radiator" yes \
+    "$([[ -f /var/lib/radiator/dupcache ]] && echo yes || echo no)"
+sqlite3 "$DB" "DROP TRIGGER yubikeys_counters_forward;"
+race "$SQLITE_LOCK" 200
+check "SQLite without the trigger (before 1.2.1): both accepted" "ACCEPT ACCEPT" "$ANSWERS"
+"$Y" init >/dev/null 2>&1
+check "SQLite: init adds the trigger" 1 \
+    "$(sqlite3 "$DB" "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'yubikeys_counters_forward';")"
+race "$SQLITE_LOCK" 201
+check "SQLite with the trigger: one accepted, one not answered" "ACCEPT NO-ANSWER" "$ANSWERS"
+check "Radiator's reason for the second" 1 "$(grep -c 'Access ignored for alice: Database update failed' "$LOG")"
+login "SQLite, the next OTP"            ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 202 0)"
+B=(-b pg)
+make_conf
+start_radiator
+su postgres -c "psql -X -q -d yubikey -c 'DROP TRIGGER yubikeys_counters_forward ON yubikeys'"
+race "$PG_LOCK" 200
+check "PostgreSQL without the trigger (before 1.2.1): both accepted" "ACCEPT ACCEPT" "$ANSWERS"
+check "both requests waited to save" 2 "$WAITING"
+"$Y" -b pg init >/dev/null
+race "$PG_LOCK" 201
+check "PostgreSQL with the trigger: one accepted, one not answered" "ACCEPT NO-ANSWER" "$ANSWERS"
+check "both requests waited to save" 2 "$WAITING"
+check "Radiator logged the refused save" 1 "$(grep -c 'counter violation: YubiKey vvccccbbcdef already used' "$LOG")"
+login "PostgreSQL, the next OTP"        ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 202 0)"
 
 echo
 printf 'Radiator %s: %d passed, %d failed\n' \

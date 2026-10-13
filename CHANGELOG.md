@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+The same OTP is now accepted only once even when it reaches two Radiator
+servers, or two Radiator processes, at the same moment; and
+`radiator.example.conf` runs a Radiator farm.
+
+### Fixed
+
+- **The same OTP could be accepted twice at the same moment.** Radiator reads
+  the counters, checks the OTP, then saves the counters with an `UPDATE` that
+  succeeds even when another login has just saved the same values. Two
+  requests with the same OTP that both read the counters before either
+  saved them were both accepted: on two Radiator servers sharing a
+  PostgreSQL database, or on two processes of one Radiator farm. A new
+  trigger, `yubikeys_counters_forward` (SQLite and PostgreSQL), refuses a
+  save that doesn't move the counters forward; Radiator then gives the
+  second request no answer (`Database update failed`). The tests reproduce
+  the race with a lock that holds both saves: before the trigger both
+  logins were accepted, with it exactly one.
+  **Existing databases: run `init` again** (`sudo ./yubikey-db.sh init
+  --owner radiator:radiator`, or `./yubikey-db.sh -b pg init` as an admin,
+  once against the primary) to add the trigger.
+
+### Changed
+
+- `radiator.example.conf` runs four Radiator processes (`FarmSize 4`), so
+  one slow database query no longer holds up every other login, with
+  `DupCache shared` so a retransmitted request is recognized by every
+  process. This needs `libcache-fastmmap-perl` (the Radiator package only
+  suggests it), and the cache file, about 290 MB, is kept at
+  `/var/lib/radiator/dupcache` rather than in `/tmp`, which may be held in
+  memory.
+- Each farm process has its own database connection and
+  `FailureBackoffTime`, so after a database failure the first login in each
+  process may take 2 to 5 s; logins work again sooner after a promotion
+  (3 to 5 s in the test).
+- `init` help and docs say that it also brings a database made by an older
+  version up to date.
+
+### Tests
+
+- `tests/run-tests.sh`: new `counters` scenario (SQLite), trigger checks in
+  `pg_radiator`, the trigger in the `pg_init` schema listing; 34 scenarios.
+- `tests/radiator/e2e.sh`: the race in two farm processes, SQLite and
+  PostgreSQL, with and without the trigger; 92 checks.
+- `tests/radiator/ha.sh`: the race across two Radiator servers, and `init`
+  from the admin's host adding the trigger on the primary (and, by
+  replication, the standby); 56 checks.
+
 ## 1.2.0 - 2026-10-12
 
 Two PostgreSQL servers: a primary and a streaming standby that Radiator

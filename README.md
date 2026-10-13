@@ -41,7 +41,8 @@ On an Ubuntu 26.04 server, with the Radiator packages from Radiator Software:
 
 ```bash
 sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb \
-                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libdbd-sqlite3-perl sqlite3
+                 libauth-yubikey-decrypter-perl libcrypt-rijndael-perl libcache-fastmmap-perl \
+                 libdbd-sqlite3-perl sqlite3
 sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/yubikey-db
 cd /opt/yubikey-db
 
@@ -109,8 +110,8 @@ and for a second database server that takes over when the first fails,
 ## Testing
 
 ```bash
-tests/run-tests.sh                           # 33 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 78 + 50 checks of real Radiator logins, in Docker
+tests/run-tests.sh                           # 34 scenarios; PostgreSQL ones need a local server
+tests/radiator/run.sh ~/radiator-packages    # 92 + 56 checks of real Radiator logins, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

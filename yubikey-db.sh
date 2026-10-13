@@ -39,7 +39,8 @@
 #   which can read the keys but change only the counters and access time.
 #
 # COMMANDS
-#   init      Create the database file and the yubikeys table (safe to re-run)
+#   init      Create the database file and the yubikeys table (safe to re-run;
+#             it also brings a database made by an older version up to date)
 #   init-pg   PostgreSQL only: create the roles and database, then the table
 #   add       Add one user/YubiKey (values from options, or prompted);
 #             --update updates it instead if the YubiKey is already there
@@ -183,7 +184,8 @@ Commands:
         the directory and file so Radiator can update counters (it needs write
         access to the directory too, for SQLite's journal file).
         PostgreSQL: create the table and Radiator's grants in an existing
-        database (run as a member of the admin role).
+        database (run as a member of the admin role). Safe to re-run: it also
+        brings a database made by an older version up to date.
 
   init-pg [-a|--admin LOGIN]... [--set-password]          (PostgreSQL only)
         Create the admin role ($PG_ADMIN_ROLE), Radiator's login role
@@ -716,7 +718,7 @@ sqlite_ensure_readable() {
 }
 
 # Table definition from the original example. The username index speeds up
-# Radiator's lookups by user.
+# Radiator's lookups by user. The trigger is explained at pg_schema.
 sqlite_schema() {
     cat <<'EOF'
 CREATE TABLE IF NOT EXISTS yubikeys (
@@ -734,6 +736,12 @@ CREATE TABLE IF NOT EXISTS yubikeys (
     primary key (userId)
 );
 CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
+CREATE TRIGGER IF NOT EXISTS yubikeys_counters_forward
+BEFORE UPDATE OF counter, low ON yubikeys
+FOR EACH ROW WHEN NEW.counter < OLD.counter OR (NEW.counter = OLD.counter AND NEW.low <= OLD.low)
+BEGIN
+    SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
+END;
 EOF
 }
 
@@ -968,6 +976,15 @@ pg_ensure_writable() {
 # password column is text, because a {crypt} hash is longer than 64
 # characters. Counters are NOT NULL because Radiator skips its replay check
 # when the counter is NULL.
+#
+# The trigger refuses to save counters that do not move forward. Radiator
+# reads the counters, checks the OTP, then saves them, so the same OTP sent
+# to two Radiator servers (or two farm instances) at the same moment could
+# pass both checks before either save. The second save now fails, and
+# Radiator gives that login no answer ("Database update failed"). The
+# message contains "violation" because Radiator then keeps its database
+# connection instead of reconnecting. The scripts never move counters back
+# with UPDATE ('--replace' deletes and inserts the row).
 pg_schema() {
     cat <<EOF
 CREATE TABLE IF NOT EXISTS yubikeys (
@@ -988,6 +1005,16 @@ REVOKE ALL ON yubikeys FROM PUBLIC;
 GRANT SELECT (username, password, active, tokenId, userId, secret, counter, low, high)
     ON yubikeys TO $PG_RADIATOR_ROLE;
 GRANT UPDATE (accessed, counter, low, high) ON yubikeys TO $PG_RADIATOR_ROLE;
+CREATE OR REPLACE FUNCTION yubikeys_counters_forward() RETURNS trigger LANGUAGE plpgsql AS \$\$
+BEGIN
+    RAISE EXCEPTION 'counter violation: YubiKey % already used this OTP or a later one', OLD.tokenId
+        USING ERRCODE = 'check_violation';
+END
+\$\$;
+CREATE OR REPLACE TRIGGER yubikeys_counters_forward
+    BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
+    WHEN ((NEW.counter, NEW.low) <= (OLD.counter, OLD.low))
+    EXECUTE FUNCTION yubikeys_counters_forward();
 EOF
 }
 

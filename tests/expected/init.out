@@ -23,6 +23,12 @@ CREATE TABLE yubikeys (
     primary key (userId)
 );
 CREATE INDEX yubikeys_username ON yubikeys (username);
+CREATE TRIGGER yubikeys_counters_forward
+BEFORE UPDATE OF counter, low ON yubikeys
+FOR EACH ROW WHEN NEW.counter < OLD.counter OR (NEW.counter = OLD.counter AND NEW.low <= OLD.low)
+BEGIN
+    SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
+END;
 
 $ yubikey-db.sh -d <WORK>/yubicred.db init
 yubikey-db.sh: warning: Radiator needs write access to <WORK>/yubicred.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
