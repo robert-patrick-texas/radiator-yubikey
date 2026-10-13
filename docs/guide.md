@@ -9,6 +9,9 @@ moving from SQLite to PostgreSQL, a second PostgreSQL server that takes over
 when the first fails, three sites with automatic failover, and one anycast
 address for all of them.
 
+The scripts, this guide and the releases are on GitHub:
+<https://github.com/robert-patrick-texas/radiator-yubikey>.
+
 Every procedure in this guide was run as written with **Radiator 4.30** on
 **Ubuntu 26.04 LTS** with **PostgreSQL 18** (and Ubuntu's Patroni 4.1 and
 etcd 3.5 for three sites, and FRR 10.5 for anycast), and
@@ -1178,9 +1181,9 @@ whichever server accepts writes.
 
 With Radiator servers on three sites, each site's server can also hold a
 copy of the database, and **Patroni** moves the primary to another site by
-itself when the primary fails. The example below has West (New Mexico),
-East1 (Maryland) and East2 (Washington DC), with a 55 ms round trip between
-West and the East sites and 4 ms between East1 and East2.
+itself when the primary fails. The example below has three sites, West,
+East1 and East2, with a 55 ms round trip between West and the East sites and
+4 ms between East1 and East2.
 `tests/radiator/geo.sh` runs everything in this section on three servers
 with those delays (see [Testing](#testing)).
 

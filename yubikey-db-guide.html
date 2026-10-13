@@ -106,6 +106,8 @@ header.hero h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 38px); line-heigh
 header.hero .lede { margin: 0; max-width: 70ch; font-size: 18px; color: var(--text-muted); }
 .meta { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; }
 .chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-muted); }
+a.chip { border-color: var(--accent); color: var(--accent); text-decoration: none; font-weight: 600; }
+a.chip:hover { background: var(--accent-soft); }
 
 nav.toc { padding-top: 32px; font-size: 14px; }
 @media (min-width: 1000px) {
@@ -265,6 +267,7 @@ accounts with yubikey-db.sh.</p>
       <span class="chip">PostgreSQL 18</span>
       <span class="chip">No cloud dependency</span>
       <span class="chip">Scripts version 1.3.0</span>
+      <a class="chip" href="https://github.com/robert-patrick-texas/radiator-yubikey">Source on GitHub</a>
     </div>
   </div>
 </header>
@@ -318,6 +321,8 @@ checking credentials, day-to-day maintenance, moving from SQLite to
 PostgreSQL, a second PostgreSQL server that takes over when the first
 fails, three sites with automatic failover, and one anycast address for
 all of them.</p>
+<p>The scripts, this guide and the releases are on GitHub: <a
+href="https://github.com/robert-patrick-texas/radiator-yubikey">https://github.com/robert-patrick-texas/radiator-yubikey</a>.</p>
 <p>Every procedure in this guide was run as written with
 <strong>Radiator 4.30</strong> on <strong>Ubuntu 26.04 LTS</strong> with
 <strong>PostgreSQL 18</strong> (and Ubuntu's Patroni 4.1 and etcd 3.5
@@ -1662,10 +1667,10 @@ writes.</p>
 <p>With Radiator servers on three sites, each site's server can also
 hold a copy of the database, and <strong>Patroni</strong> moves the
 primary to another site by itself when the primary fails. The example
-below has West (New Mexico), East1 (Maryland) and East2 (Washington DC),
-with a 55 ms round trip between West and the East sites and 4 ms between
-East1 and East2. <code>tests/radiator/geo.sh</code> runs everything in
-this section on three servers with those delays (see <a
+below has three sites, West, East1 and East2, with a 55 ms round trip
+between West and the East sites and 4 ms between East1 and East2.
+<code>tests/radiator/geo.sh</code> runs everything in this section on
+three servers with those delays (see <a
 href="#testing">Testing</a>).</p>
 <section id="how-three-sites-work" class="level3">
 <h3>How three sites work</h3>
@@ -3245,7 +3250,7 @@ connection strings with several hosts</a></li>
 </ul>
 </section>
     <footer>
-      <p>Generated from <code>docs/guide.md</code> in the radiator-yubikey repository. <a class="top-link" href="#content">Back to top</a></p>
+      <p>Generated from <code>docs/guide.md</code> in the <a href="https://github.com/robert-patrick-texas/radiator-yubikey">radiator-yubikey repository on GitHub</a>. <a class="top-link" href="#content">Back to top</a></p>
     </footer>
   </main>
 </div>

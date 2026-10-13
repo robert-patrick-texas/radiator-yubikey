@@ -104,6 +104,8 @@ header.hero h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 38px); line-heigh
 header.hero .lede { margin: 0; max-width: 70ch; font-size: 18px; color: var(--text-muted); }
 .meta { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 8px; font-size: 13px; }
 .chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text-muted); }
+a.chip { border-color: var(--accent); color: var(--accent); text-decoration: none; font-weight: 600; }
+a.chip:hover { background: var(--accent-soft); }
 
 nav.toc { padding-top: 32px; font-size: 14px; }
 @media (min-width: 1000px) {
@@ -261,6 +263,7 @@ footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border
       <span class="chip">PostgreSQL 18</span>
       <span class="chip">No cloud dependency</span>
       <span class="chip">Scripts version $version$</span>
+      <a class="chip" href="https://github.com/robert-patrick-texas/radiator-yubikey">Source on GitHub</a>
     </div>
   </div>
 </header>
@@ -274,7 +277,7 @@ $table-of-contents$
   <main id="content">
 $body$
     <footer>
-      <p>Generated from <code>docs/guide.md</code> in the radiator-yubikey repository. <a class="top-link" href="#content">Back to top</a></p>
+      <p>Generated from <code>docs/guide.md</code> in the <a href="https://github.com/robert-patrick-texas/radiator-yubikey">radiator-yubikey repository on GitHub</a>. <a class="top-link" href="#content">Back to top</a></p>
     </footer>
   </main>
 </div>

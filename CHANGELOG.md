@@ -29,6 +29,13 @@ while its Radiator accepts logins.
 - `tests/run-tests.sh`: the `anycast` and `anycast_run` scenarios, against a
   stand-in RADIUS server that checks requests as Radiator does.
 
+### Changed
+
+- The HTML guide links to the GitHub repository (header and footer), and
+  the guide names it in its introduction.
+- The guide and the three-site test call the sites only West, East1 and
+  East2, without their locations.
+
 ### Found while testing
 
 - Radiator 4.30 starts even when it can't listen on an address in

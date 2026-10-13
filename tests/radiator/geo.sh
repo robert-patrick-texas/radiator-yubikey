@@ -11,9 +11,9 @@
 # One container per site, on the Docker network yk-geo (172.31.97.0/24), each
 # running systemd with etcd, PostgreSQL 18 under Patroni (patroni@18-main)
 # and Radiator, as the guide's "Three sites" section sets them up:
-#   yk-geo-east1  172.31.97.11  east1.yk.test, Maryland: the usual primary
-#   yk-geo-east2  172.31.97.12  east2.yk.test, Washington DC
-#   yk-geo-west   172.31.97.13  west.yk.test, New Mexico: primary only as a
+#   yk-geo-east1  172.31.97.11  east1.yk.test: the usual primary
+#   yk-geo-east2  172.31.97.12  east2.yk.test
+#   yk-geo-west   172.31.97.13  west.yk.test: primary only as a
 #                               last resort (failover_priority 1, not 2)
 # Traffic control in each container adds the WAN: 55 ms round trip between
 # West and East, 4 ms between the East sites. Patroni keeps one standby
