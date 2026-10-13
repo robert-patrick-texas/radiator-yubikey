@@ -19,9 +19,12 @@ These scripts:
 - move an installation from SQLite to PostgreSQL while Radiator keeps running
 - follow a PostgreSQL primary and standby, so Radiator keeps working on the
   standby after it is promoted
+- run on three sites, with PostgreSQL under Patroni moving the primary by
+  itself and no OTP lost in a failover (a tested setup in the guide)
 
-Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**,
-including real Radiator logins in a container (`tests/radiator/run.sh`).
+Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**
+(with Patroni 4.1 and etcd 3.5 for three sites), including real Radiator
+logins in containers (`tests/radiator/run.sh`).
 
 ## Documentation
 
@@ -30,7 +33,8 @@ in a container, installing Radiator, programming YubiKeys, SQLite and
 PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, two database servers with replication and failover,
-security, troubleshooting, and a reference.
+three sites with automatic failover, security, troubleshooting, and a
+reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.
@@ -76,9 +80,11 @@ sudo systemctl restart radiator
 ```
 
 For a PostgreSQL server shared by several Radiator servers, see
-[PostgreSQL on a separate server](docs/guide.md#postgresql-on-a-separate-server),
-and for a second database server that takes over when the first fails,
-[Two database servers](docs/guide.md#two-database-servers).
+[PostgreSQL on a separate server](docs/guide.md#postgresql-on-a-separate-server);
+for a second database server that takes over when the first fails,
+[Two database servers](docs/guide.md#two-database-servers); and for a
+database server on each of three sites, with automatic failover,
+[Three sites](docs/guide.md#three-sites).
 
 ## Common tasks
 
@@ -111,7 +117,7 @@ and for a second database server that takes over when the first fails,
 
 ```bash
 tests/run-tests.sh                           # 34 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 92 + 56 checks of real Radiator logins, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 90 checks of real Radiator logins, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+Three sites with automatic failover: a tested setup with etcd, PostgreSQL
+under Patroni, and Radiator on each of three sites.
+
+### Added
+
+- Guide: "Three sites": how etcd, Patroni and quorum commit keep one primary
+  and lose no OTP in a failover; what users see in each failure, as
+  measured; the setup (packages, certificates, etcd, Patroni, the database,
+  Radiator); switchovers, reboots, copying a standby again; what happens
+  when a site is cut off. West, 55 ms from the East sites, becomes the
+  primary only as a last resort (`failover_priority`). Troubleshooting rows
+  for four Patroni problems found while building it, and security notes.
+- `tests/radiator/geo.sh` (with `geo-node.sh`): 90 checks with three
+  systemd containers, one per site, and traffic control adding the WAN
+  delays. It measures login times per site, and goes through a reboot of
+  each server, a power loss and a Patroni crash on the primary, West cut
+  off, the primary's site cut off, the link between the East sites broken,
+  a standby copied again, and two servers down at once. `run.sh DIR geo`
+  runs it alone; the test image also has Patroni, etcd, iproute2 and curl.
+
+### Found while testing
+
+- Patroni's check of whether a former primary must be rewound connects to
+  `localhost` with the replication settings; with `sslmode=verify-full`
+  that fails, and a former primary with a commit no standby confirmed never
+  rejoins. The guide's configuration uses the local socket for it
+  (`use_unix_socket_repl`).
+- Debian's `patroni@` unit doesn't restart Patroni after a crash, leaving
+  PostgreSQL running unattended; the guide adds `Restart=on-failure`.
+- The `patroni` package doesn't install `python3-etcd`, which it needs for
+  etcd, and Patroni (Python 3.14) refuses a CA certificate without
+  `keyUsage`.
+
 ## 1.2.1 - 2026-10-13
 
 The same OTP is now accepted only once even when it reaches two Radiator

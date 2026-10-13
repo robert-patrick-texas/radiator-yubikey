@@ -5,12 +5,13 @@ A how-to guide for offline YubiKey one-time-password (OTP) logins on
 local SQLite database or a shared PostgreSQL database, managed with the scripts
 in this repository. It covers a lab you can build in a container, a server
 installation, adding accounts, checking credentials, day-to-day maintenance,
-moving from SQLite to PostgreSQL, and a second PostgreSQL server that takes
-over when the first fails.
+moving from SQLite to PostgreSQL, a second PostgreSQL server that takes over
+when the first fails, and three sites with automatic failover.
 
 Every procedure in this guide was run as written with **Radiator 4.30** on
-**Ubuntu 26.04 LTS** with **PostgreSQL 18**, and `tests/radiator/run.sh`
-repeats the checks (see [Testing](#testing)).
+**Ubuntu 26.04 LTS** with **PostgreSQL 18** (and Ubuntu's Patroni 4.1 and
+etcd 3.5 for three sites), and `tests/radiator/run.sh` repeats the checks
+(see [Testing](#testing)).
 
 <!-- toc -->
 ## Contents
@@ -27,11 +28,12 @@ repeats the checks (see [Testing](#testing)).
 10. [Maintain accounts](#maintain-accounts)
 11. [Move from SQLite to PostgreSQL](#move-from-sqlite-to-postgresql)
 12. [Two database servers](#two-database-servers)
-13. [Security](#security)
-14. [Troubleshooting](#troubleshooting)
-15. [Reference](#reference)
-16. [Testing](#testing)
-17. [References](#references)
+13. [Three sites](#three-sites)
+14. [Security](#security)
+15. [Troubleshooting](#troubleshooting)
+16. [Reference](#reference)
+17. [Testing](#testing)
+18. [References](#references)
 <!-- /toc -->
 
 ## How it works
@@ -80,7 +82,7 @@ the database.
 | Several Radiator servers | Each has its own file and its own counters, so an OTP used on one server is still accepted on another | One set of counters, so an OTP works only once anywhere |
 | Who can change what | Anyone who can write the file | Radiator's login can read keys and update only counters; admins are members of an admin role |
 | To run | Nothing more | A PostgreSQL 18 server, on the Radiator server or elsewhere (over TLS) |
-| If the database server fails | — | A second server can take over (see [Two database servers](#two-database-servers)) |
+| If the database server fails | — | A second server can take over (see [Two database servers](#two-database-servers)), or with three sites, Patroni moves the primary by itself (see [Three sites](#three-sites)) |
 
 Start with SQLite for one Radiator server. Use PostgreSQL when more than one
 Radiator server checks the same YubiKeys. You can move later (see
@@ -112,7 +114,8 @@ Radiator server checks the same YubiKeys. You can move later (see
 
 A lab shows the whole setup working before you touch a server, and needs no
 YubiKey: `tests/make-otp.sh` makes OTPs for test keys. The container is
-Ubuntu 26.04 with Radiator, SQLite and PostgreSQL 18.
+Ubuntu 26.04 with Radiator, SQLite and PostgreSQL 18 (and Patroni and etcd,
+which only the [three-site test](#the-automated-test) uses).
 
 ### Build the lab image
 
@@ -221,8 +224,8 @@ Leave the container with `exit`; `--rm` deletes it.
 
 ### The automated test
 
-`tests/radiator/run.sh` builds the same image and runs two tests of real
-Radiator logins:
+`tests/radiator/run.sh` builds the same image, with Patroni and etcd added,
+and runs three tests of real Radiator logins:
 
 - `e2e.sh`, 92 checks in a throwaway container: SQLite with and without
   `Require2Factor`, PostgreSQL over the local socket and over TLS, the example
@@ -236,17 +239,30 @@ Radiator logins:
   planned switchover, the replay window (see
   [Two database servers](#two-database-servers)), and the same OTP sent to
   both Radiator servers at the same moment.
+- `geo.sh`, 90 checks with three containers, one per site, each running
+  systemd with etcd, PostgreSQL under Patroni and Radiator, set up as in
+  [Three sites](#three-sites), with traffic control adding the WAN delays
+  (55 ms between West and East, 4 ms between the East sites). It measures
+  login times, then reboots each server in turn, cuts the primary's power,
+  kills Patroni on the primary, cuts West off, cuts the primary's site off,
+  breaks the link between the East sites, copies a standby again, and takes
+  two servers down at once. Each time it checks which logins are accepted,
+  that no OTP accepted before is accepted again, and that the cluster
+  recovers. The containers have the `SYS_ADMIN` capability (for systemd) and
+  `NET_ADMIN` (for traffic control in their own network), but aren't
+  privileged.
 
 ```bash
-tests/radiator/run.sh ~/radiator-packages        # both, about 3 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e)
+tests/radiator/run.sh ~/radiator-packages        # all three, about 13 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, or geo)
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
-`Radiator 4.30-1: 92 passed, 0 failed` and
-`Two database servers: 56 passed, 0 failed`. Run them again with each new
-Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1`
-leaves the four containers running afterwards, to look around.
+`Radiator 4.30-1: 92 passed, 0 failed`,
+`Two database servers: 56 passed, 0 failed` and
+`Three sites: 90 passed, 0 failed`. Run them again with each new
+Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
+`geo.sh`) leaves the containers running afterwards, to look around.
 
 ## Install on the servers
 
@@ -1135,16 +1151,436 @@ Logins are rejected from step 1 until a few seconds after step 2 (up to
 
 ### Automatic failover
 
-The failover in this guide is done by a person, who confirms that the
+The failover in this section is done by a person, who confirms that the
 primary is down before promoting the standby. A tool that does it
 automatically must also stop the old primary from coming back as a primary,
 which needs a third member to tell a dead server from a broken network
-between two live ones. Ubuntu 26.04 packages three such tools: Patroni (with
-a three-member etcd cluster, for example on the two database servers and one
-Radiator server), pg_auto_failover (with a separate monitor), and repmgr
-(with a witness). Radiator's configuration stays the same with any of them,
-since it follows whichever server accepts writes. They aren't covered or
-tested here.
+between two live ones. [Three sites](#three-sites) does this with Patroni
+and etcd on three servers. Ubuntu 26.04 also packages pg_auto_failover (with
+a separate monitor) and repmgr (with a witness), which aren't covered here.
+Radiator's configuration is the same with any of them, since it follows
+whichever server accepts writes.
+
+## Three sites
+
+With Radiator servers on three sites, each site's server can also hold a
+copy of the database, and **Patroni** moves the primary to another site by
+itself when the primary fails. The example below has West (New Mexico),
+East1 (Maryland) and East2 (Washington DC), with a 55 ms round trip between
+West and the East sites and 4 ms between East1 and East2.
+`tests/radiator/geo.sh` runs everything in this section on three servers
+with those delays (see [Testing](#testing)).
+
+### How three sites work
+
+- **Each site's server runs the same three services:** etcd, PostgreSQL
+  under Patroni, and Radiator.
+- **etcd** is a small key-value store that the three servers keep
+  identical: a change counts only when two of the three agree. Patroni keeps
+  the name of the primary in it as a **lease** that the primary renews every
+  10 s and that expires 30 s after the last renewal.
+- **Patroni** starts and stops PostgreSQL. The server holding the lease is
+  the primary; the other two stream every change from it. When the lease
+  expires, the most up-to-date standby takes it and is promoted. A server
+  that can't reach either of the others can't renew or take the lease, and
+  its Patroni stops its PostgreSQL before the lease runs out. Nobody
+  promotes anything by hand.
+- **Quorum commit** (`synchronous_mode: quorum`): the primary confirms a
+  change only after one of the two standbys has saved it. Every login that
+  Radiator accepted is on two sites, so a failover loses no OTP: the
+  [replay window](#the-replay-window) of two servers is closed. East2,
+  4 ms away, usually confirms first; while East2 is down, West does. And a
+  primary that the standbys no longer follow can't confirm any login.
+- **West becomes the primary only as a last resort:** its
+  `failover_priority` is 1, the East sites' is 2. When East2 and West are
+  equally up to date, East2 is promoted.
+- **Every Radiator server lists all three servers** (`PGHOST=east1,east2,west`)
+  and uses whichever is the primary, as with
+  [two servers](#configure-radiator-for-two-servers). Nothing changes on the
+  Radiator servers when the primary moves.
+- **A former primary rejoins by itself.** If it has changes that no standby
+  confirmed (counter updates for logins it never answered), Patroni removes
+  them with `pg_rewind` and makes it a standby.
+
+The cost is distance: every login at West goes to the primary in the East.
+
+### What users see on three sites
+
+Measured by the test:
+
+| Situation | Logins |
+|---|---|
+| Normal | East1 about 15 ms, East2 about 25 ms, West about 125 ms: two round trips to East1 more. In the test, the East times are mostly disk writes on the primary and on East2. The first login handled by each of Radiator's four processes also opens its connection to PostgreSQL: about 0.5 s at West. |
+| West or East2 reboots | No login fails. While East2 is down, West confirms the primary's commits, so logins at the East sites take about 70 ms. |
+| East1 (the primary) reboots | Rejected for about 6 s, while Patroni stops PostgreSQL and East2 takes over. No OTP is lost. |
+| A planned switchover | Rejected for about 5 s. No OTP is lost. |
+| East1 loses power | Rejected for about 35 s, until the lease expires and East2 is promoted. No OTP is lost. |
+| Patroni crashes on the primary | Nothing: systemd starts it again, and it keeps the lease. |
+| West is cut off from both East sites | No change at the East sites. At West, every login is rejected (`Yubikey secret not found in database`) after 4 to 6 s, until the network is back. West stays a standby and catches up within a minute afterwards. |
+| East1's site is cut off from the others | At East1: no answer at first, then rejected. Elsewhere: rejected for about 45 s, then East2 is the primary. |
+| The link between East1 and East2 fails | Logins at East1 and West work; East1's take about 85 ms, because West now confirms them. At East2 they are rejected until the link is back. |
+| East2 and West down at once | East1 alone has no majority and stops being the primary: every login is rejected until one of them is back. |
+
+As with two servers, Radiator rejects logins while it can't reach a primary;
+network devices that try their local accounts only when no RADIUS server
+answers won't fall back to them. Logging in at a site that can reach no
+primary, such as West when it is cut off, would need a copy of the keys on
+that site, which this setup doesn't have.
+
+### Before you start
+
+- **Names and addresses.** Below: `east1.example.com` (`192.0.2.31`),
+  `east2.example.com` (`198.51.100.32`) and `west.example.com`
+  (`203.0.113.33`). Each name must resolve on all three servers, including
+  while the others are down: put them in `/etc/hosts` if your DNS lives on
+  one site.
+- **Firewall.** Between the three servers: TCP 2379 and 2380 (etcd), 5432
+  (PostgreSQL) and 8008 (Patroni). From the admins' machines: 5432.
+- **Maintenance one server at a time.** Two servers down at once leave no
+  primary.
+
+### Set up the three servers
+
+**1. On all three servers**, install the packages, in addition to Radiator
+and its modules from [Install on the servers](#install-on-the-servers):
+
+```bash
+sudo apt install postgresql postgresql-client libdbd-pg-perl \
+                 etcd-server etcd-client patroni python3-etcd
+```
+
+Patroni needs `python3-etcd` for etcd, but its package doesn't install it.
+
+**2. Make a CA and one certificate per server.** etcd, Patroni and PostgreSQL
+use them for TLS in both directions, so each certificate has the server's
+name and address, and is valid for servers and clients. On an admin machine:
+
+```bash
+openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj "/CN=YubiKey DB cluster CA" \
+        -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -keyout ca.key -out ca.crt
+mkcert() {   # mkcert NAME ADDRESS
+    openssl req -newkey rsa:3072 -nodes -subj "/CN=$1" \
+            -addext "subjectAltName=DNS:$1,IP:$2" \
+            -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth,clientAuth" -keyout "${1%%.*}.key" -out "${1%%.*}.csr"
+    openssl x509 -req -in "${1%%.*}.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 \
+            -copy_extensions copy -out "${1%%.*}.crt"
+}
+mkcert east1.example.com 192.0.2.31
+mkcert east2.example.com 198.51.100.32
+mkcert west.example.com 203.0.113.33
+```
+
+Copy `ca.crt` and each server's own `.crt` and `.key` to it, and keep
+`ca.key` offline. Any certificate this CA signs can change the cluster's
+state in etcd, so use this CA only for these three servers. Patroni refuses
+a CA certificate without the `keyUsage` line (Python 3.13 and later).
+
+**3. etcd, on each server.** The package started a single-server etcd; stop
+it, remove its data, and configure this server's member. On east1 (on the
+others, change `ETCD_NAME`, the four addresses, and the file names):
+
+```bash
+sudo systemctl stop etcd
+sudo rm -rf /var/lib/etcd/default
+sudo install -d -m 0750 -o root -g etcd /etc/etcd/tls
+sudo install -m 0644 ca.crt /etc/etcd/tls/ca.crt
+sudo install -m 0644 east1.crt /etc/etcd/tls/server.crt
+sudo install -m 0640 -o root -g etcd east1.key /etc/etcd/tls/server.key
+sudo tee /etc/default/etcd >/dev/null <<'EOF'
+ETCD_NAME=east1
+ETCD_DATA_DIR=/var/lib/etcd/default
+ETCD_LISTEN_PEER_URLS=https://192.0.2.31:2380
+ETCD_LISTEN_CLIENT_URLS=https://192.0.2.31:2379
+ETCD_INITIAL_ADVERTISE_PEER_URLS=https://192.0.2.31:2380
+ETCD_ADVERTISE_CLIENT_URLS=https://192.0.2.31:2379
+ETCD_INITIAL_CLUSTER=east1=https://192.0.2.31:2380,east2=https://198.51.100.32:2380,west=https://203.0.113.33:2380
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_INITIAL_CLUSTER_TOKEN=yubikey-db
+ETCD_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_CLIENT_CERT_AUTH=true
+ETCD_PEER_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_PEER_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_PEER_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_PEER_CLIENT_CERT_AUTH=true
+EOF
+```
+
+Then run `sudo systemctl start etcd` on all three at about the same time:
+it waits until two members have started. Check from any of them:
+
+```bash
+sudo etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt --key /etc/etcd/tls/server.key \
+     --endpoints https://192.0.2.31:2379 endpoint health --cluster
+```
+
+```text
+https://192.0.2.31:2379 is healthy: successfully committed proposal: took = 34.243943ms
+https://198.51.100.32:2379 is healthy: successfully committed proposal: took = 39.014402ms
+https://203.0.113.33:2379 is healthy: successfully committed proposal: took = 294.70611ms
+```
+
+**4. Patroni, on each server.** Patroni creates and runs PostgreSQL from now
+on, so remove the cluster the `postgresql` package created (it holds no data
+yet), and give Patroni the certificate:
+
+```bash
+sudo pg_dropcluster --stop 18 main
+sudo install -d -m 0750 -o root -g postgres /etc/patroni/tls
+sudo install -m 0644 ca.crt /etc/patroni/tls/ca.crt
+sudo install -m 0644 east1.crt /etc/patroni/tls/server.crt
+sudo install -m 0640 -o root -g postgres east1.key /etc/patroni/tls/server.key
+sudo install -m 0640 -o root -g postgres /dev/null /etc/patroni/18-main.yml
+sudoedit /etc/patroni/18-main.yml
+```
+
+with this content on east1. On the others, change `name`, the address and
+name under `restapi` and `connect_address`, and, on West only,
+`failover_priority: 1`. Choose three passwords (the REST API's, the
+replication role's and the rewind role's) and use the same ones on all
+three servers:
+
+```yaml
+# The Debian helper scripts below take the version and cluster from the scope.
+scope: 18-main
+namespace: /postgresql-common/
+name: east1
+
+restapi:
+  listen: 192.0.2.31:8008
+  connect_address: east1.example.com:8008
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+  cafile: /etc/patroni/tls/ca.crt
+  authentication:
+    username: patroni
+    password: REST-API-PASSWORD
+
+ctl:
+  cacert: /etc/patroni/tls/ca.crt
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+
+etcd3:
+  hosts: 192.0.2.31:2379,198.51.100.32:2379,203.0.113.33:2379
+  protocol: https
+  cacert: /etc/patroni/tls/ca.crt
+  cert: /etc/patroni/tls/server.crt
+  key: /etc/patroni/tls/server.key
+
+bootstrap:
+  method: pg_createcluster
+  pg_createcluster:
+    command: /usr/share/patroni/pg_createcluster_patroni
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    synchronous_mode: quorum
+    synchronous_node_count: 1
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        ssl: 'on'
+        ssl_cert_file: /etc/patroni/tls/server.crt
+        ssl_key_file: /etc/patroni/tls/server.key
+        max_slot_wal_keep_size: 8GB
+
+postgresql:
+  create_replica_method:
+    - pg_clonecluster
+  pg_clonecluster:
+    command: /usr/share/patroni/pg_clonecluster_patroni
+  listen: '*:5432'
+  connect_address: east1.example.com:5432
+  # Patroni's own connections to this server use its socket: TLS with
+  # verify-full fails for "localhost".
+  use_unix_socket: true
+  use_unix_socket_repl: true
+  data_dir: /var/lib/postgresql/18/main
+  bin_dir: /usr/lib/postgresql/18/bin
+  config_dir: /etc/postgresql/18/main
+  pgpass: /var/lib/postgresql/18-main.pgpass
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator
+      password: REPLICATION-PASSWORD
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+    rewind:
+      username: rewinder
+      password: REWIND-PASSWORD
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    logging_collector: 'on'
+    log_directory: /var/log/postgresql
+    log_filename: postgresql-18-main.log
+  pg_hba:
+    - local   all         all                     peer
+    - local   replication replicator              scram-sha-256
+    - hostssl replication replicator 192.0.2.31/32 scram-sha-256
+    - hostssl postgres    rewinder   192.0.2.31/32 scram-sha-256
+    - hostssl yubikey     radiator   192.0.2.31/32 scram-sha-256
+    - hostssl yubikey     opsadmin   192.0.2.31/32 scram-sha-256
+    - hostssl replication replicator 198.51.100.32/32 scram-sha-256
+    - hostssl postgres    rewinder   198.51.100.32/32 scram-sha-256
+    - hostssl yubikey     radiator   198.51.100.32/32 scram-sha-256
+    - hostssl yubikey     opsadmin   198.51.100.32/32 scram-sha-256
+    - hostssl replication replicator 203.0.113.33/32 scram-sha-256
+    - hostssl postgres    rewinder   203.0.113.33/32 scram-sha-256
+    - hostssl yubikey     radiator   203.0.113.33/32 scram-sha-256
+    - hostssl yubikey     opsadmin   203.0.113.33/32 scram-sha-256
+
+watchdog:
+  mode: off
+
+tags:
+  failover_priority: 2
+```
+
+What the settings do:
+
+- `ttl`, `loop_wait`, `retry_timeout` are Patroni's defaults: the lease
+  lasts 30 s, the primary renews it every 10 s, and stops being the primary
+  if it can't reach etcd for 10 s. Shorter values fail over sooner after a
+  power loss but risk failovers on a slow network.
+- `synchronous_mode: quorum` with `synchronous_node_count: 1`: one of the
+  two standbys confirms every commit (see [How three sites work](#how-three-sites-work)).
+- `use_slots` and `max_slot_wal_keep_size`: the primary keeps the changes
+  a standby hasn't received yet, up to 8 GB, so a standby that was down for
+  days catches up. Make sure the disk has room for it.
+- `use_pg_rewind`: a former primary is rewound, not copied again.
+- The `pg_hba` lines replace `pg_hba.conf` on every server: replication and
+  rewind between the three servers, and `radiator` and `opsadmin` from the
+  Radiator servers. Add a `hostssl yubikey opsadmin` line for each other
+  machine the admins work from.
+- `watchdog: mode: off`. Quorum commit already stops a server that lost the
+  lease from confirming anything; a watchdog device would also restart a
+  server whose Patroni hangs. It isn't covered here.
+
+Debian's `patroni@` unit leaves Patroni stopped if it crashes, with
+PostgreSQL still running unattended. Have systemd restart it, and enable it:
+
+```bash
+sudo mkdir -p /etc/systemd/system/patroni@18-main.service.d
+printf '[Service]\nRestart=on-failure\n' | sudo tee /etc/systemd/system/patroni@18-main.service.d/restart.conf >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable patroni@18-main
+```
+
+**5. Start Patroni**, first on east1, which creates the database:
+`sudo systemctl start patroni@18-main`. When `patronictl` (below) shows
+east1 as `Leader`, start it on east2 and west too. Each copies the database
+from east1 and starts streaming:
+
+```bash
+sudo patronictl -c /etc/patroni/18-main.yml list
+```
+
+```text
++ Cluster: 18-main (7696030870670149068) -----------------+----+-------------+-----+------------+-----+----------------------+
+| Member | Host              | Role           | State     | TL | Receive LSN | Lag | Replay LSN | Lag | Tags                 |
++--------+-------------------+----------------+-----------+----+-------------+-----+------------+-----+----------------------+
+| east1  | east1.example.com | Leader         | running   |  1 |             |     |            |     | failover_priority: 2 |
+| east2  | east2.example.com | Quorum Standby | streaming |  1 |   0/5000060 |   0 |  0/5000060 |   0 | failover_priority: 2 |
+| west   | west.example.com  | Quorum Standby | streaming |  1 |   0/5000060 |   0 |  0/5000060 |   0 | failover_priority: 1 |
++--------+-------------------+----------------+-----------+----+-------------+-----+------------+-----+----------------------+
+```
+
+`Quorum Standby` means it can confirm the primary's commits. Patroni has
+created the `replicator` and `rewinder` roles itself.
+
+**6. The yubikey database, on the primary (east1).** Create the roles and
+the database, set Radiator's password, and give the admin a password, as in
+[PostgreSQL on a separate server](#postgresql-on-a-separate-server)
+(step 4):
+
+```bash
+sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin opsadmin --set-password
+sudo -u postgres psql -c '\password opsadmin'
+```
+
+The standbys receive all of it.
+
+**7. Radiator, on each server.** Install the CA certificate, list all three
+servers, and write Radiator's configuration, as in
+[Configure Radiator for two servers](#configure-radiator-for-two-servers):
+
+```bash
+sudo install -m 0644 ca.crt /etc/radiator/pg-ca.crt
+export PGHOST=east1.example.com,east2.example.com,west.example.com PGUSER=opsadmin \
+       PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt
+./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf >/dev/null
+sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator's password on the DBAuth line
+sudo systemctl enable --now radiator
+```
+
+`config` writes `host=east1.example.com,east2.example.com,west.example.com`
+with `target_session_attrs=read-write`, `connect_timeout=2` and
+`ConnectTimeout 7`. List the servers in the same order everywhere, the
+usual primary first: West's Radiator then connects straight to East1. Put
+the same `PGHOST` in the admins' `~/.profile`, with a `~/.pgpass` line
+`*:5432:yubikey:opsadmin:YOUR-PASSWORD`.
+
+### Run the three sites
+
+- **Check the cluster** with `sudo patronictl -c /etc/patroni/18-main.yml list`
+  on any server: one `Leader`, two `Quorum Standby` members `streaming`, with
+  a lag near 0. Monitor the same from outside with Patroni's REST API:
+  `https://SERVER:8008/primary` answers 200 only on the primary,
+  `/replica` only on a streaming standby, and `/health` on any server whose
+  PostgreSQL runs. For example:
+  `curl -s -o /dev/null -w '%{http_code}\n' --cacert ca.crt https://east1.example.com:8008/primary`.
+- **Reboot one server at a time**, and check the cluster in between. A
+  standby can simply be rebooted. Rebooting the primary hands the lease to
+  East2 while Patroni shuts down.
+- **Move the primary** with a planned switchover, which loses nothing and
+  rejects logins for a few seconds:
+
+  ```bash
+  sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east2 --force
+  ```
+
+  After a failover, move it back to East1 the same way once East1 is a
+  `Quorum Standby` again. Until then East1 is a standby, and if East2 fails
+  too, West becomes the primary.
+- **Don't start PostgreSQL yourself** (`pg_ctlcluster` or
+  `postgresql@18-main`) on these servers. Patroni does, as a primary or a
+  standby, and stops it when it must.
+- **Copy a standby again** from the primary, if it can't catch up (it was
+  down for longer than 8 GB of changes, about a million logins) or its disk
+  was replaced:
+
+  ```bash
+  sudo patronictl -c /etc/patroni/18-main.yml reinit 18-main west --force --wait
+  ```
+
+### When a site is cut off
+
+- **West cut off from both East sites:** East1 keeps the lease and East2
+  confirms its commits; nothing changes at the East sites. West can't reach
+  a primary: its logins are rejected. Its PostgreSQL stays a standby, so
+  there is no second primary. When the network is back, it catches up by
+  itself.
+- **East1 (the primary) cut off from both others:** its Patroni can't renew
+  the lease and stops PostgreSQL within about 10 s. A login on East1 in that
+  moment gets no answer, because no standby confirms its commit. When the
+  lease expires, East2 is promoted, and logins work again everywhere except
+  at East1. When the network is back, East1 is rewound and rejoins as a
+  standby; move the primary back to it.
+- **The link between East1 and East2 fails, both still reaching West:**
+  East1 keeps the lease (etcd still has a majority through West), and West
+  confirms its commits, so logins at East1 take a WAN round trip longer.
+  East2 can't reach the primary: its logins are rejected until the link is
+  back.
 
 ## Security
 
@@ -1174,6 +1610,14 @@ tested here.
 - **A standby holds every AES key too**, and the `replicator` role can copy
   the whole database: protect both database servers alike, and keep
   `~postgres/.pgpass` at mode `0600`.
+- **Three sites:** each server holds every AES key, so protect all three
+  alike. Any certificate signed by the cluster's CA can change which server
+  is the primary, through etcd: use that CA only for these three servers and
+  keep `ca.key` offline. `/etc/patroni/18-main.yml` holds the replication,
+  rewind and REST API passwords: mode `0640`, owner `root:postgres`.
+  Patroni's REST API answers health checks without a password but takes
+  commands, such as a switchover, only with it; open port 8008 only to the
+  three servers and your monitoring.
 - The scripts pass AES keys and PINs to `sqlite3` and `psql` through their
   input, never on a command line, and quote every value. PINs are stored as
   salted SHA-512 `{crypt}` hashes (`-H clear` stores plain text, if something
@@ -1198,6 +1642,10 @@ doesn't, the problem is in Radiator's configuration or the network.
 | Radiator logs `Could not connect to any SQL database. Request is ignored` | No listed server accepts writes. Logins are rejected (not ignored) until one does. |
 | Radiator logs `counter violation` and `Access ignored ... Database update failed` | The same OTP arrived twice at the same moment (a retransmission, two Radiator servers, or a replay attempt). The first was accepted; the second gets no answer. If it happens without a reason, find where the second request came from. |
 | `radiusd` fails with `Can't locate Cache/FastMmap.pm` | `DupCache shared` needs it: `sudo apt install libcache-fastmmap-perl`. |
+| Patroni logs `CA cert does not include key usage extension` | The CA certificate has no `keyUsage`, which Python 3.13 and later require. Make the CA as in [Set up the three servers](#set-up-the-three-servers) (step 2). |
+| Patroni stops with `Can not find suitable configuration of distributed configuration store` and `Available implementations: consul, kubernetes` | `python3-etcd` is missing: `sudo apt install python3-etcd`. |
+| Patroni logs `Error: invalid version` when it creates the database | Debian's `pg_createcluster_patroni` takes the PostgreSQL version and cluster name from `scope`: use `scope: 18-main`. |
+| A former primary stays `running` instead of `streaming`, and Patroni logs `Can not fetch local timeline and lsn from replication connection` with `does not match host name "localhost"` | Patroni can't tell whether the server must be rewound, because its replication connection to itself uses TLS. Add `use_unix_socket_repl: true` and the `local replication replicator` line (step 4 of [Set up the three servers](#set-up-the-three-servers)). |
 | The primary's `pg_stat_replication` shows no standby | The standby isn't receiving changes. Check its log, its `~postgres/.pgpass` and `pg_hba.conf`'s `replication` lines. If it was offline for longer than `wal_keep_size` covers, make it a standby again from scratch. |
 | A disabled user can still log in, and `active` shows `false` | The row came from the old example commands; Radiator treats the text `false` as active. Run `disable`. |
 | `Log could not append ... Permission denied` | `radiusd` was run as root once. `sudo chown radiator:radiator /var/log/radiator/*`. |
