@@ -298,6 +298,7 @@ PostgreSQL</a></li>
 <li><a href="#two-database-servers" id="toc-two-database-servers">Two
 database servers</a></li>
 <li><a href="#three-sites" id="toc-three-sites">Three sites</a></li>
+<li><a href="#anycast" id="toc-anycast">Anycast</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
 id="toc-troubleshooting">Troubleshooting</a></li>
@@ -315,12 +316,14 @@ database, managed with the scripts in this repository. It covers a lab
 you can build in a container, a server installation, adding accounts,
 checking credentials, day-to-day maintenance, moving from SQLite to
 PostgreSQL, a second PostgreSQL server that takes over when the first
-fails, and three sites with automatic failover.</p>
+fails, three sites with automatic failover, and one anycast address for
+all of them.</p>
 <p>Every procedure in this guide was run as written with
 <strong>Radiator 4.30</strong> on <strong>Ubuntu 26.04 LTS</strong> with
 <strong>PostgreSQL 18</strong> (and Ubuntu's Patroni 4.1 and etcd 3.5
-for three sites), and <code>tests/radiator/run.sh</code> repeats the
-checks (see <a href="#testing">Testing</a>).</p>
+for three sites, and FRR 10.5 for anycast), and
+<code>tests/radiator/run.sh</code> repeats the checks (see <a
+href="#testing">Testing</a>).</p>
 <section id="how-it-works" class="level2">
 <h2>How it works</h2>
 <p>Each time someone touches a YubiKey, it types a 44-character OTP. The
@@ -381,6 +384,13 @@ variables at the top of the file.</td>
 <td><code>radiator.example.conf</code></td>
 <td>A Radiator configuration for YubiKey logins, to replace the
 package's sample.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh</code></td>
+<td>Puts the anycast addresses on the loopback interface, for FRR to
+advertise, only while the local Radiator accepts logins (see <a
+href="#anycast">Anycast</a>); with <code>yubikey-anycast.service</code>
+and <code>yubikey-anycast.example.conf</code>.</td>
 </tr>
 <tr>
 <td><code>users.example.csv</code></td>
@@ -497,6 +507,10 @@ group).</li>
 <td><code>postgresql</code></td>
 </tr>
 <tr>
+<td>Each server, for anycast</td>
+<td><code>frr</code></td>
+</tr>
+<tr>
 <td>Workstation that programs keys</td>
 <td><code>ykman</code></td>
 </tr>
@@ -586,7 +600,7 @@ it.</p>
 <section id="the-automated-test" class="level3">
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
-Patroni and etcd added, and runs three tests of real Radiator
+Patroni, etcd and FRR added, and runs three tests of real Radiator
 logins:</p>
 <ul>
 <li><code>e2e.sh</code>, 92 checks in a throwaway container: SQLite with
@@ -602,19 +616,28 @@ servers, through a dead primary, a hung primary, failovers, an old
 primary coming back, a planned switchover, the replay window (see <a
 href="#two-database-servers">Two database servers</a>), and the same OTP
 sent to both Radiator servers at the same moment.</li>
-<li><code>geo.sh</code>, 90 checks with three containers, one per site,
-each running systemd with etcd, PostgreSQL under Patroni and Radiator,
-set up as in <a href="#three-sites">Three sites</a>, with traffic
-control adding the WAN delays (55 ms between West and East, 4 ms between
-the East sites). It measures login times, then reboots each server in
-turn, cuts the primary's power, kills Patroni on the primary, cuts West
-off, cuts the primary's site off, breaks the link between the East
-sites, copies a standby again, and takes two servers down at once. Each
-time it checks which logins are accepted, that no OTP accepted before is
-accepted again, and that the cluster recovers. The containers have the
-<code>SYS_ADMIN</code> capability (for systemd) and
-<code>NET_ADMIN</code> (for traffic control in their own network), but
-aren't privileged.</li>
+<li><code>geo.sh</code>, 134 checks with three containers, one per site,
+each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
+and <code>yubikey-anycast.sh</code>, set up as in <a
+href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
+with traffic control adding the WAN delays (55 ms between West and East,
+4 ms between the East sites). A fourth container stands in for West's
+router (FRR), and a fifth, behind it, is a RADIUS client that logs in at
+the anycast addresses, over IPv4 and IPv6. It measures login times, then
+stops West's Radiator and West's check, reboots each server in turn,
+cuts West's and then the primary's power, kills Patroni on the primary,
+cuts West off, cuts the primary's site off, breaks the link between the
+East sites, copies a standby again, and takes two servers down at once.
+Each time it checks which logins are accepted, that no OTP accepted
+before is accepted again, that the cluster recovers, which servers the
+router has anycast routes from, and which server answers the client. The
+containers have the <code>SYS_ADMIN</code> capability (for systemd) and
+<code>NET_ADMIN</code> (for traffic control and addresses in their own
+network), but aren't privileged. Docker sets the two kernel settings of
+<a href="#set-up-anycast-on-each-server">Set up anycast on each
+server</a>, step 2, in the containers (<code>--sysctl</code>); the
+step's commands themselves were run in a container whose kernel settings
+it could change for its own network only.</li>
 </ul>
 <pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all three, about 13 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, or geo)</code></pre>
@@ -622,7 +645,7 @@ tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, or geo)</
 and ends with a count, such as
 <code>Radiator 4.30-1: 92 passed, 0 failed</code>,
 <code>Two database servers: 56 passed, 0 failed</code> and
-<code>Three sites: 90 passed, 0 failed</code>. Run them again with each
+<code>Three sites: 134 passed, 0 failed</code>. Run them again with each
 new Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -1753,9 +1776,11 @@ is rejected until one of them is back.</td>
 </table>
 <p>As with two servers, Radiator rejects logins while it can't reach a
 primary; network devices that try their local accounts only when no
-RADIUS server answers won't fall back to them. Logging in at a site that
-can reach no primary, such as West when it is cut off, would need a copy
-of the keys on that site, which this setup doesn't have.</p>
+RADIUS server answers won't fall back to them. (With <a
+href="#anycast">anycast</a>, a site that can't log anyone in stops
+answering instead.) Logging in at a site that can reach no primary, such
+as West when it is cut off, would need a copy of the keys on that site,
+which this setup doesn't have.</p>
 </section>
 <section id="before-you-start" class="level3">
 <h3>Before you start</h3>
@@ -2091,6 +2116,358 @@ rejected until the link is back.</li>
 </ul>
 </section>
 </section>
+<section id="anycast" class="level2">
+<h2>Anycast</h2>
+<p>With anycast, every Radiator server has the same IPv4 and IPv6
+address on its loopback interface, and <strong>FRR</strong> advertises
+it to the site's router with BGP. The network devices are given that one
+address as their RADIUS server and reach their own site's server. When a
+server can't log anyone in, it stops advertising the address, and its
+site's devices reach another site.</p>
+<p><code>yubikey-anycast.sh</code> decides: every 5 s it logs in to the
+local Radiator, with a key of its own that works like a YubiKey's. The
+example below adds anycast to the three sites of the previous section.
+<code>tests/radiator/geo.sh</code> runs it with an FRR router in front
+of the three servers (see <a href="#testing">Testing</a>).</p>
+<section id="how-anycast-works" class="level3">
+<h3>How anycast works</h3>
+<ul>
+<li><strong>One address for all servers:</strong>
+<code>192.0.2.153</code> and <code>2001:db8:153::153</code> below, in
+none of your networks. Each server's FRR advertises them to its site's
+router, as <code>/32</code> and <code>/128</code>, while they are on the
+server's <code>lo</code>. Each router prefers its own server, so devices
+use their own site.</li>
+<li><strong>The check puts them on <code>lo</code> and takes them
+off.</strong> Every 5 s it logs in to Radiator through 127.0.0.1 as
+<code>anycast-</code> and the server's name (for example
+<code>anycast-west</code>), with a PIN and an OTP made from its own key,
+and checks that Radiator listens on the anycast addresses. A login
+succeeds only if Radiator works, reaches the primary, and the primary
+saved the OTP's counter. After 2 good checks in a row the addresses go
+on <code>lo</code>, and FRR advertises them. After 3 failed checks they
+come off, and FRR withdraws them.</li>
+<li><strong>Nothing is advertised unless the check says so.</strong> The
+addresses aren't in the server's network configuration, and FRR's
+configuration never changes: FRR advertises what is on <code>lo</code>,
+even after it restarts. A server that reboots, or whose check stops or
+crashes, advertises nothing until its check has passed twice again.
+Stopping the check (<code>systemctl stop yubikey-anycast</code>)
+withdraws the addresses at once, which is how to take a server out for
+maintenance.</li>
+<li><strong>BFD</strong> tells the router that a server is gone within a
+second, instead of after BGP's hold time (minutes, by default).</li>
+<li><strong>Radiator listens on the anycast addresses even while they
+aren't on <code>lo</code>.</strong> Two kernel settings
+(<code>ip_nonlocal_bind</code>) allow that, so a Radiator that starts
+while its server is withdrawn answers as soon as the addresses are back.
+Its <code>BindAddress</code> lists them, so the reply to a request sent
+to an anycast address comes from that address: network devices drop a
+reply from any other address.</li>
+<li><strong>The check's user works nowhere else.</strong> Radiator
+accepts <code>anycast-*</code> users only from 127.0.0.1, and doesn't
+write their logins to the authentication log.</li>
+</ul>
+<p>The check withdraws a server whenever its logins fail, whatever the
+reason. While no server can log anyone in, for example while Patroni
+replaces a primary that lost power, every server withdraws after 3
+checks, and devices get <strong>no answer</strong> instead of a reject
+until a server's check passes again. A network device that falls back to
+its local accounts when no RADIUS server answers will do so during that
+time.</p>
+</section>
+<section id="what-devices-see-with-anycast" class="level3">
+<h3>What devices see with anycast</h3>
+<p>Measured by the test, with the router preferring West, then East1,
+then East2:</p>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Logins at the anycast address</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Normal</td>
+<td>Answered by West, from the anycast address, over IPv4 and IPv6.</td>
+</tr>
+<tr>
+<td>West's Radiator stops</td>
+<td>No answer for about 13 s (3 failed checks), then East1 answers. West
+is back 8 or 9 s after Radiator starts again.</td>
+</tr>
+<tr>
+<td>West's check is stopped (maintenance)</td>
+<td>East1 answers at once.</td>
+</tr>
+<tr>
+<td>West reboots</td>
+<td>East1 answers while West is down: West's check stops first, and its
+BGP session closes. West is back once its check passes twice.</td>
+</tr>
+<tr>
+<td>West loses power</td>
+<td>The router drops West within a second (BFD); East1 answers.</td>
+</tr>
+<tr>
+<td>West can't reach the primary (cut off from the East sites)</td>
+<td>Rejected for about 15 s, then East1 answers, if the devices can
+still reach it. West is back two checks after it can log in again.</td>
+</tr>
+<tr>
+<td>The primary (East1) loses power</td>
+<td>Rejected at first; West and East2 withdraw 10 to 17 s after the
+power loss (3 failed checks), and there is no answer until they
+advertise again, about 40 s after it.</td>
+</tr>
+<tr>
+<td>East2 and West down at once</td>
+<td>East1 withdraws too: no answer until one of them is back.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="before-you-start-1" class="level3">
+<h3>Before you start</h3>
+<ul>
+<li><strong>The anycast addresses:</strong> one IPv4 and one IPv6
+address for RADIUS, the same on every server, in none of your networks:
+<code>192.0.2.153</code> and <code>2001:db8:153::153</code> below.</li>
+<li><strong>Each server's own IPv6 address</strong>, for its BGP session
+over IPv6: <code>2001:db8:31::31</code> (east1),
+<code>2001:db8:32::32</code> (east2) and <code>2001:db8:33::33</code>
+(west) below. Their routers are <code>192.0.2.1</code> and
+<code>2001:db8:31::1</code>, <code>198.51.100.1</code> and
+<code>2001:db8:32::1</code>, and <code>203.0.113.1</code> and
+<code>2001:db8:33::1</code>.</li>
+<li><strong>The cluster stays on IPv4.</strong> The three servers' names
+in <code>/etc/hosts</code> have IPv4 addresses only; etcd, Patroni and
+PostgreSQL keep using those. If a name also resolves to an IPv6 address,
+PostgreSQL may refuse the connection
+(<code>no pg_hba.conf entry for host "2001:..."</code>).</li>
+<li><strong>AS numbers:</strong> the servers use one private AS,
+<code>65053</code> below, the same on all three; the routers use yours,
+<code>64500</code> below.</li>
+<li><strong>Firewall:</strong> between each server and its router, TCP
+179 (BGP) and UDP 3784 (BFD). From the devices to the anycast addresses,
+UDP 1812.</li>
+<li><strong>The devices</strong> get the anycast addresses as their
+RADIUS server. Each server still needs a <code>&lt;Client&gt;</code> for
+each device, with the same secret on every server.</li>
+</ul>
+</section>
+<section id="set-up-anycast-on-each-server" class="level3">
+<h3>Set up anycast on each server</h3>
+<p><strong>1. Install FRR</strong> and copy three files from this
+repository:</p>
+<pre class="bash"><code>sudo apt install frr
+sudo install -m 0755 yubikey-anycast.sh /usr/local/sbin/yubikey-anycast.sh
+sudo install -m 0644 yubikey-anycast.service /etc/systemd/system/
+sudo install -m 0600 yubikey-anycast.example.conf /etc/radiator/anycast.conf
+sudo systemctl daemon-reload</code></pre>
+<p><strong>2. Let Radiator listen on the anycast addresses</strong>
+while they aren't on <code>lo</code>:</p>
+<pre class="bash"><code>printf &#39;net.ipv4.ip_nonlocal_bind = 1\nnet.ipv6.ip_nonlocal_bind = 1\n&#39; \
+    | sudo tee /etc/sysctl.d/60-radiator-anycast.conf
+sudo sysctl -p /etc/sysctl.d/60-radiator-anycast.conf</code></pre>
+<p><strong>3. Radiator.</strong> <code>radiator.example.conf</code> has
+the two <code>&lt;Handler&gt;</code> clauses for the check's users,
+before the one for everyone else; copy them into an older
+<code>radiator.conf</code>. Then set <code>BindAddress</code> (commented
+out in the example) to 127.0.0.1, the server's own addresses and the
+anycast addresses. On west:</p>
+<pre class="apache"><code>BindAddress     127.0.0.1, 203.0.113.33, ipv6:2001:db8:33::33, 192.0.2.153, ipv6:2001:db8:153::153</code></pre>
+<pre class="bash"><code>sudo systemctl restart radiator
+ss -Hlun &#39;sport = :1812&#39;</code></pre>
+<p><code>ss</code> lists one socket for each of the five addresses.
+Without <code>BindAddress</code>, Radiator listens on all addresses, and
+its replies to requests sent to an anycast address come from the
+server's own address.</p>
+<p><strong>4. FRR.</strong> Turn on its BGP and BFD daemons:</p>
+<pre class="bash"><code>sudo sed -i &#39;s/^bgpd=no/bgpd=yes/; s/^bfdd=no/bfdd=yes/&#39; /etc/frr/daemons
+sudoedit /etc/frr/frr.conf</code></pre>
+<p><code>/etc/frr/frr.conf</code>, on west (on the others, change the
+name, the <code>router-id</code> and the router's addresses):</p>
+<pre class="text"><code>frr defaults traditional
+hostname west
+log syslog informational
+!
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+route-map RADIUS-ANYCAST permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map RADIUS-ANYCAST permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 65053
+ bgp router-id 203.0.113.33
+ no bgp default ipv4-unicast
+ neighbor 203.0.113.1 remote-as 64500
+ neighbor 203.0.113.1 bfd
+ neighbor 2001:db8:33::1 remote-as 64500
+ neighbor 2001:db8:33::1 bfd
+ !
+ address-family ipv4 unicast
+  network 192.0.2.153/32
+  neighbor 203.0.113.1 activate
+  neighbor 203.0.113.1 route-map NOTHING in
+  neighbor 203.0.113.1 route-map RADIUS-ANYCAST out
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  network 2001:db8:153::153/128
+  neighbor 2001:db8:33::1 activate
+  neighbor 2001:db8:33::1 route-map NOTHING in
+  neighbor 2001:db8:33::1 route-map RADIUS-ANYCAST out
+ exit-address-family
+exit</code></pre>
+<ul>
+<li>FRR advertises a <code>network</code> only while the server has a
+route for it: here, while the address is on <code>lo</code>. (That is
+FRR's <code>bgp network import-check</code>, on by default.)</li>
+<li>The server sends its router the two anycast routes and nothing else
+(<code>RADIUS-ANYCAST out</code>), and takes none from it
+(<code>NOTHING in</code>). FRR ignores an eBGP neighbor without these
+route maps.</li>
+<li>One session per address family
+(<code>no bgp default ipv4-unicast</code>): IPv4 routes over the IPv4
+session, IPv6 routes over the IPv6 one.</li>
+</ul>
+<pre class="bash"><code>sudo chown frr:frr /etc/frr/frr.conf
+sudo chmod 0640 /etc/frr/frr.conf
+sudo systemctl restart frr
+sudo vtysh -c &#39;show bgp summary&#39; -c &#39;show bfd peers brief&#39;</code></pre>
+<p>Both sessions should be up (a time under <code>Up/Down</code>) and
+both BFD peers <code>up</code>, with 0 routes sent (<code>PfxSnt</code>)
+until the check runs.</p>
+<p><strong>5. The check.</strong> Put the anycast addresses and the
+secret of <code>&lt;Client 127.0.0.1&gt;</code> in
+<code>/etc/radiator/anycast.conf</code>
+(<code>sudoedit /etc/radiator/anycast.conf</code>). Then give the check
+its key, in the database, as the admin (with the <code>PGHOST</code> and
+<code>~/.pgpass</code> from <a href="#set-up-the-three-servers">Set up
+the three servers</a>, step 7), try it, and start it:</p>
+<pre class="bash"><code>sudo yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
+sudo yubikey-anycast.sh check
+sudo systemctl enable --now yubikey-anycast</code></pre>
+<p><code>enroll</code> makes a key, a PIN and the user
+<code>anycast-west</code>, keeps them in
+<code>/var/lib/yubikey-anycast/key</code> (mode <code>0600</code>), and
+prints them as one CSV line for <code>import</code>, through the pipe,
+never on a command line. <code>check</code> prints
+<code>ACCEPT in 148 ms</code> (at West). About 10 s after the start, the
+addresses are on <code>lo</code>, and the router has the routes:</p>
+<pre class="text"><code>$ sudo yubikey-anycast.sh status
+advertised since 2026-10-13 12:26:43 UTC
+last check: ACCEPT in 127 ms, 1 s ago
+on lo: 192.0.2.153 2001:db8:153::153
+OTPs left: 8386814 (485 days at one check every 5 s)</code></pre>
+<p>On the server, <code>sudo vtysh -c 'show bgp summary'</code> now
+shows 1 route sent (<code>PfxSnt</code>) on each session.</p>
+</section>
+<section id="the-routers" class="level3">
+<h3>The routers</h3>
+<p>Each site's router needs:</p>
+<ul>
+<li><strong>A BGP session with its server over IPv4 and over
+IPv6</strong>, with BFD, in the server's AS (<code>65053</code>).</li>
+<li><strong>A filter:</strong> accept only <code>192.0.2.153/32</code>
+and <code>2001:db8:153::153/128</code> from the server, at most one
+route per session, and send it nothing (it would ignore anything
+anyway).</li>
+<li><strong>The anycast routes passed on to the other sites'
+routers</strong>, like your other routes, so that each router has all
+three servers' routes and prefers its own: a route from a router's own
+eBGP neighbor already wins over the same route learned from another
+router; or set a local preference.</li>
+<li><strong>No default route for the anycast addresses:</strong> when no
+server advertises them, a static route with a high distance can reject
+them, rather than send them to the internet.</li>
+</ul>
+<p>In the test, one FRR router stands in for West's and peers with all
+three servers. For west, its configuration is:</p>
+<pre class="text"><code>ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+ip route 192.0.2.153/32 reject 250
+ipv6 route 2001:db8:153::153/128 reject 250
+!
+route-map FROM-WEST permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+ set local-preference 300
+exit
+route-map FROM-WEST permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+ set local-preference 300
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 64500
+ no bgp default ipv4-unicast
+ neighbor 203.0.113.33 remote-as 65053
+ neighbor 203.0.113.33 bfd
+ neighbor 2001:db8:33::33 remote-as 65053
+ neighbor 2001:db8:33::33 bfd
+ address-family ipv4 unicast
+  neighbor 203.0.113.33 activate
+  neighbor 203.0.113.33 route-map FROM-WEST in
+  neighbor 203.0.113.33 route-map NOTHING out
+  neighbor 203.0.113.33 maximum-prefix 1
+ exit-address-family
+ address-family ipv6 unicast
+  neighbor 2001:db8:33::33 activate
+  neighbor 2001:db8:33::33 route-map FROM-WEST in
+  neighbor 2001:db8:33::33 route-map NOTHING out
+  neighbor 2001:db8:33::33 maximum-prefix 1
+ exit-address-family
+exit</code></pre>
+<p>East1's and East2's servers have the same lines, with local
+preferences 200 and 100.</p>
+</section>
+<section id="run-anycast" class="level3">
+<h3>Run anycast</h3>
+<ul>
+<li><p><strong>See what a server advertises:</strong>
+<code>sudo yubikey-anycast.sh status</code> (it exits 0 only while the
+addresses are on <code>lo</code>, for monitoring), and
+<code>journalctl -u yubikey-anycast</code>, which logs each change and
+each new kind of check result:</p>
+<pre class="text"><code>started: anycast-west logs in every 5 s; 192.0.2.153 2001:db8:153::153 on lo after 2 good checks, off after 3 failed; 8388095 OTPs left (485 days)
+check: ACCEPT in 580 ms
+advertising 192.0.2.153 2001:db8:153::153: 2 good checks
+check: NO REPLY: Connection refused
+withdrawing 192.0.2.153 2001:db8:153::153: 3 failed checks</code></pre>
+<p>(The first login of each of Radiator's processes at West takes about
+0.5 s, while it connects to the primary. Radiator was stopped before the
+fourth line.)</p>
+<p>On a router, <code>show bgp ipv4 unicast 192.0.2.153/32</code> lists
+the servers that advertise it.</p></li>
+<li><p><strong>Before maintenance on a server, stop its check:</strong>
+<code>sudo systemctl stop yubikey-anycast</code>. Its site's devices
+move to another site at once. Start it when you are done; the server is
+back after two good checks. A reboot does this by itself: the check
+stops before Radiator and FRR do.</p></li>
+<li><p><strong>Replace the check's key when it runs out.</strong> Like a
+YubiKey's, its OTPs have counters that only go up: one key lasts about
+485 days at one check every 5 s. <code>status</code> shows how many OTPs
+are left, and the log warns when fewer than 30 days remain. Stop the
+check, run the <code>enroll</code> and <code>check</code> lines of step
+5 again, and start it. <code>enroll</code> keeps the public ID, so
+<code>import --replace</code> replaces the old key.</p></li>
+<li><p><strong>Taking a server away for good:</strong>
+<code>sudo systemctl disable --now yubikey-anycast</code>, then remove
+its check's user:
+<code>./yubikey-db.sh -b pg delete anycast-west</code>.</p></li>
+</ul>
+</section>
+</section>
 <section id="security" class="level2">
 <h2>Security</h2>
 <ul>
@@ -2138,6 +2515,17 @@ REST API passwords: mode <code>0640</code>, owner
 <code>root:postgres</code>. Patroni's REST API answers health checks
 without a password but takes commands, such as a switchover, only with
 it; open port 8008 only to the three servers and your monitoring.</li>
+<li><strong>Anycast:</strong> <code>/var/lib/yubikey-anycast/key</code>
+holds a working login, the check's PIN and AES key: mode
+<code>0600</code>, root only. Radiator accepts the check's users
+(<code>anycast-*</code>) only from 127.0.0.1, because of the first
+<code>&lt;Handler&gt;</code> in <code>radiator.example.conf</code>; keep
+it before the one for everyone else.
+<code>/etc/radiator/anycast.conf</code> holds the secret of
+<code>&lt;Client 127.0.0.1&gt;</code>: mode <code>0600</code>. Each
+router accepts only the two anycast routes from its server. If your
+routers require BGP passwords, FRR sets them with
+<code>neighbor ADDRESS password</code> (the test doesn't use them).</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -2228,6 +2616,56 @@ until one does.</td>
 Radiator servers, or a replay attempt). The first was accepted; the
 second gets no answer. If it happens without a reason, find where the
 second request came from.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh check</code> prints
+<code>ACCEPT ..., but Radiator does not listen on 192.0.2.153 ...</code></td>
+<td><code>BindAddress</code> doesn't list the anycast addresses, or
+Radiator logged
+<code>Could not bind authentication socket: Cannot assign requested address</code>
+at its start (it then runs without them): set
+<code>ip_nonlocal_bind</code> (<a
+href="#set-up-anycast-on-each-server">Set up anycast on each server</a>,
+step 2) and restart Radiator.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh check</code> prints
+<code>NO REPLY within 3 s</code></td>
+<td>The <code>SECRET</code> in <code>/etc/radiator/anycast.conf</code>
+isn't the one of <code>&lt;Client 127.0.0.1&gt;</code> (Radiator drops
+the request without a log line).</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh check</code> prints
+<code>NO REPLY: Connection refused</code></td>
+<td>Radiator isn't running, or <code>BindAddress</code> doesn't list
+127.0.0.1.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh check</code> prints
+<code>REJECT ...: Yubikey secret not found in database</code></td>
+<td>The check's key isn't in the database (run the <code>enroll</code>
+line of step 5 again), or Radiator can't reach the primary.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh check</code> prints
+<code>REJECT ...: Replay attack detected</code></td>
+<td>The counter file is older than the database, for example restored
+from a backup. The running check skips ahead by itself after a few
+checks; or make a new key with <code>enroll</code>.</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh: error: net.ipv4.ip_nonlocal_bind is not 1</code></td>
+<td>Step 2 of <a href="#set-up-anycast-on-each-server">Set up anycast on
+each server</a>.</td>
+</tr>
+<tr>
+<td>The check says <code>advertised</code>, but the router has no
+route</td>
+<td>On the server, <code>sudo vtysh -c 'show bgp summary'</code>: a
+session that isn't <code>Established</code> (firewall, AS numbers,
+addresses), or <code>(Policy)</code>, which means a route map is
+missing.</td>
 </tr>
 <tr>
 <td><code>radiusd</code> fails with
@@ -2521,6 +2959,103 @@ user and public ID)</td>
 </tbody>
 </table>
 </section>
+<section id="yubikey-anycastsh" class="level3">
+<h3><code>yubikey-anycast.sh</code></h3>
+<pre class="text"><code>yubikey-anycast.sh [-c FILE] COMMAND</code></pre>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enroll</code></td>
+<td>Make a new key, PIN and user (<code>anycast-</code> and the host
+name) for the check, keep them in
+<code>/var/lib/yubikey-anycast/key</code>, and print them as CSV for
+<code>yubikey-db.sh import --replace -</code>. Keeps the public ID of an
+earlier key. Not while the check runs.</td>
+</tr>
+<tr>
+<td><code>check</code></td>
+<td>Log in once, and check that Radiator listens on the anycast
+addresses; exits 0 if both work. Not while the check runs.</td>
+</tr>
+<tr>
+<td><code>run</code></td>
+<td>The check, as <code>yubikey-anycast.service</code> runs it.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>Whether the addresses are on <code>lo</code>, since when, the last
+check, and the OTPs left. Exits 0 only while they are on
+<code>lo</code>.</td>
+</tr>
+<tr>
+<td><code>withdraw</code></td>
+<td>Take the addresses off <code>lo</code> (the service does this when
+it stops).</td>
+</tr>
+</tbody>
+</table>
+<p><code>-c FILE</code> reads the settings from FILE instead of
+<code>/etc/radiator/anycast.conf</code>. Settings
+(<code>NAME=value</code> lines, never run as shell code):</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ADDRESSES</code></td>
+<td></td>
+<td>The anycast addresses, IPv4 and IPv6, separated by spaces</td>
+</tr>
+<tr>
+<td><code>SECRET</code></td>
+<td></td>
+<td>The secret of Radiator's <code>&lt;Client 127.0.0.1&gt;</code></td>
+</tr>
+<tr>
+<td><code>PORT</code></td>
+<td><code>1812</code></td>
+<td>Radiator's authentication port</td>
+</tr>
+<tr>
+<td><code>INTERVAL</code></td>
+<td><code>5</code></td>
+<td>Seconds between checks</td>
+</tr>
+<tr>
+<td><code>TIMEOUT</code></td>
+<td><code>3</code></td>
+<td>Seconds to wait for Radiator's answer (at most
+<code>INTERVAL</code>)</td>
+</tr>
+<tr>
+<td><code>FALL</code></td>
+<td><code>3</code></td>
+<td>Failed checks in a row that take the addresses off
+<code>lo</code></td>
+</tr>
+<tr>
+<td><code>RISE</code></td>
+<td><code>2</code></td>
+<td>Good checks in a row that put them back</td>
+</tr>
+</tbody>
+</table>
+<p>It exits with 0 on success, 1 when a check fails (<code>check</code>)
+or the addresses aren't on <code>lo</code> (<code>status</code>), and 3
+for a problem with the settings, the key or the system, which the
+service then doesn't restart on.</p>
+</section>
 <section id="testsmake-otpsh" class="level3">
 <h3><code>tests/make-otp.sh</code></h3>
 <pre class="text"><code>tests/make-otp.sh PUBLIC_ID PRIVATE_ID AES_KEY COUNTER [SESSION]</code></pre>
@@ -2658,13 +3193,17 @@ save.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 34 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 36 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
-<code>tests/expected/</code>. It needs <code>bash</code>,
+<code>tests/expected/</code>. The two <code>anycast</code> scenarios run
+<code>yubikey-anycast.sh</code> against a stand-in RADIUS server, which
+checks each request the way Radiator does, and stand-ins for
+<code>ip</code> and <code>ss</code>. It needs <code>bash</code>,
 <code>sqlite3</code>, <code>perl</code>, and, for the
-<code>verify</code> scenarios, <code>openssl</code> and
-<code>libcrypt-rijndael-perl</code>; it runs as a normal user.</p>
+<code>verify</code> and <code>anycast</code> scenarios,
+<code>openssl</code> and <code>libcrypt-rijndael-perl</code>; it runs as
+a normal user.</p>
 <pre class="bash"><code>tests/run-tests.sh                 # every scenario
 tests/run-tests.sh add verify      # some scenarios
 tests/run-tests.sh --update        # accept a deliberate change; then review it with git diff</code></pre>

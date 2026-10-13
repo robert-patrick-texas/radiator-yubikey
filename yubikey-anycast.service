@@ -1,0 +1,46 @@
+# yubikey-anycast.service - Runs yubikey-anycast.sh, which puts Radiator's
+# anycast addresses on lo, for FRR to advertise, only while this server's
+# Radiator accepts YubiKey logins. Install it with the script:
+#
+#   sudo install -m 0755 yubikey-anycast.sh /usr/local/sbin/yubikey-anycast.sh
+#   sudo install -m 0644 yubikey-anycast.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Stopping it takes the addresses off lo: the site's router then sends RADIUS
+# to another site. At shutdown it stops before Radiator and FRR.
+
+[Unit]
+Description=Advertise Radiator's anycast addresses while YubiKey logins work
+Documentation=https://robert-patrick-texas.github.io/radiator-yubikey/#anycast
+After=network-online.target radiator.service frr.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/yubikey-anycast.sh run
+ExecStopPost=/usr/local/sbin/yubikey-anycast.sh withdraw
+Restart=always
+RestartSec=5
+# Exit status 3: a problem with the settings or the key, which a restart
+# won't fix.
+RestartPreventExitStatus=3
+StateDirectory=yubikey-anycast
+StateDirectoryMode=0700
+RuntimeDirectory=yubikey-anycast
+# Root, with only the capability to add and remove addresses.
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

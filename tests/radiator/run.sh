@@ -7,16 +7,16 @@
 #   of this repository: radiator_<version>_all.deb and
 #   radiator-radius-utilxs_<version>_amd64.deb.
 #
-# Builds an Ubuntu 26.04 image with Radiator, SQLite, PostgreSQL 18, Patroni
-# and etcd, tagged yk-radiator-test:<Radiator version>, then runs the three
+# Builds an Ubuntu 26.04 image with Radiator, SQLite, PostgreSQL 18, Patroni,
+# etcd and FRR, tagged yk-radiator-test:<Radiator version>, then runs the three
 # tests, or only the one named:
 #   e2e  e2e.sh in a throwaway container with this repository mounted
 #        read-only: SQLite, PostgreSQL on the same host, cutover (about 1 min)
 #   ha   ha.sh: two PostgreSQL servers (primary and standby) and two Radiator
 #        servers in separate containers, through failures (about 2 min)
-#   geo  geo.sh: three sites, each with etcd, PostgreSQL under Patroni and
-#        Radiator, through reboots, a power loss and network partitions
-#        (about 10 min)
+#   geo  geo.sh: three sites, each with etcd, PostgreSQL under Patroni,
+#        Radiator and FRR, with one anycast address, through reboots, power
+#        losses and network partitions (about 10 min)
 # Needs Docker, usable without sudo (membership of the docker group). Exits 0
 # when every check passes.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-tests.sh - Regression tests for yubikey-db.sh.
+# run-tests.sh - Regression tests for yubikey-db.sh (and yubikey-anycast.sh).
 #
 # Runs yubikey-db.sh through a fixed set of scenarios against throwaway
 # databases and compares the combined transcript (commands, output, exit
@@ -20,7 +20,8 @@
 # Needs: bash 4+, sqlite3, perl. Run as a normal user, not root (one scenario
 # checks permission errors, which root bypasses). The verify scenarios also
 # need openssl (to make test OTPs) and the Perl module Crypt::Rijndael, and
-# are skipped without them.
+# are skipped without them; so are the anycast scenarios, which need the
+# Perl module.
 #
 # The pg_* and migrate_* scenarios (except *_offline) also need psql and a
 # PostgreSQL 18 (or later) server that
@@ -38,6 +39,8 @@ TESTS_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname -- "$TESTS_DIR")
 SCRIPT=${YUBIKEY_DB_SH:-$ROOT/yubikey-db.sh}   # override to test another copy
 MIGRATE=$ROOT/yubikey-db-migrate.sh
+ANYCAST=$ROOT/yubikey-anycast.sh
+HOST_S=$(hostname -s | tr '[:upper:]' '[:lower:]')   # the anycast check's user is anycast-HOST_S
 EXPECTED=$TESTS_DIR/expected
 UPDATE=0
 TMPROOT=       # per-run temp directory, removed on exit
@@ -300,7 +303,10 @@ normalize() {
         -e 's/(if Radiator does not run as) [^ ]+$/\1 <USER>/' \
         -e "s/$PGT/<T>/g" \
         -e 's/connection to server .* failed:/connection to server <SERVER> failed:/' \
-        -e "s/\(is $(id -un) a member of/(is <USER> a member of/"
+        -e "s/\(is $(id -un) a member of/(is <USER> a member of/" \
+        -e "s/anycast-$HOST_S\b/anycast-<HOST>/g" \
+        -e 's/ in [0-9]+ ms/ in <N> ms/g' \
+        -e 's/(does not listen on .*) port [0-9]+/\1 port <PORT>/'
 }
 
 # --------------------------------------------------------------------------
@@ -1167,6 +1173,359 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# yubikey-anycast.sh, against stand-ins: a RADIUS server that checks each
+# request the way Radiator 4.30's AuthBy SQLYUBIKEY checks a login (the
+# Message-Authenticator, the user, PIN and public ID, the OTP and its
+# counters), and ip and ss commands that keep lo's addresses and the
+# listening sockets in files.
+# --------------------------------------------------------------------------
+
+# Start the stand-in RADIUS server, with the shared secret SECRET, for the
+# check's key in $WORK/state/key. It reads what to do with each request from
+# $WORK/radius/mode: accept (check it, as Radiator would), reject, silent (no
+# answer), badsecret (sign the answer with another secret), or "ahead N" (the
+# database's usage counter moves N past the last OTP accepted; then accept),
+# and logs each OTP to $WORK/radius/log. Sets RADIUS_PID and PORT.
+start_radius() {
+    mkdir -p "$WORK/radius"
+    echo accept >"$WORK/radius/mode"
+    cat >"$WORK/radius/server.pl" <<'EOF'
+use strict;
+use warnings;
+use Socket qw(PF_INET SOCK_DGRAM INADDR_LOOPBACK pack_sockaddr_in unpack_sockaddr_in);
+use Digest::MD5 qw(md5);
+use Crypt::Rijndael;
+
+my ($dir, $keyfile, $secret) = @ARGV;
+socket(my $s, PF_INET, SOCK_DGRAM, 0) or die "socket: $!";
+bind($s, pack_sockaddr_in(0, INADDR_LOOPBACK)) or die "bind: $!";
+my ($port) = unpack_sockaddr_in(getsockname($s));
+open my $fh, ">", "$dir/port.tmp" or die;
+print $fh "$port\n";
+close $fh;
+rename "$dir/port.tmp", "$dir/port" or die;
+
+sub hmac_md5 {
+    my ($k, $m) = @_;
+    $k = md5($k) if length $k > 64;
+    $k .= "\0" x (64 - length $k);
+    md5(($k ^ ("\x5c" x 64)) . md5(($k ^ ("\x36" x 64)) . $m));
+}
+sub slurp { open my $f, "<", $_[0] or return ""; local $/; my $c = <$f> // ""; $c =~ s/\s+\z//; $c }
+sub note { open my $f, ">>", "$dir/log" or die; print $f "$_[0]\n"; close $f }
+
+my ($counter, $session) = (0, 0);   # a row just imported with --replace
+while (1) {
+    my $from = recv($s, my $req, 4096, 0);
+    next unless defined $from && length $req >= 20;
+    my $mode = slurp("$dir/mode");
+    next if $mode eq "silent";
+    my ($code, $id, $len) = unpack "C C n", $req;
+    my $auth = substr($req, 4, 16);
+    my (%attr, $ma_at);
+    for (my $i = 20; $i + 2 <= $len; ) {
+        my ($t, $l) = unpack "C C", substr($req, $i, 2);
+        last if $l < 2;
+        $attr{$t} = substr($req, $i + 2, $l - 2);
+        $ma_at = $i + 2 if $t == 80;
+        $i += $l;
+    }
+    # Radiator drops a request without a correct Message-Authenticator.
+    my $zeroed = $req;
+    substr($zeroed, $ma_at, 16) = "\0" x 16 if defined $ma_at;
+    if (!defined $ma_at || hmac_md5($secret, $zeroed) ne $attr{80}) { note("wrong Message-Authenticator: dropped"); next }
+    my ($pw, $prev, $hidden) = ("", $auth, $attr{2} // "");
+    for (my $i = 0; $i < length $hidden; $i += 16) {
+        my $c = substr($hidden, $i, 16);
+        $pw .= $c ^ md5($secret . $prev);
+        $prev = $c;
+    }
+    $pw =~ s/\0+\z//;
+    my ($pin, $otp) = split /:/, $pw, 2;
+    $otp //= "";
+    my $user = $attr{1} // "";
+    my %k = map { /^(\w+)=(.*)$/ ? ($1, $2) : () } split /\n/, slurp($keyfile);
+    my ($result, $reason) = (2, "");
+    if ($mode eq "reject") {
+        ($result, $reason) = (3, "Yubikey secret not found in database");
+        note("$user: rejected, as told");
+    } elsif ($user ne ($k{user} // "") || $pin ne ($k{pin} // "") || substr($otp, 0, 12) ne ($k{public_id} // "")) {
+        ($result, $reason) = (3, "Wrong user, PIN or public ID");
+    } else {
+        (my $hex = substr($otp, 12)) =~ tr/cbdefghijklnrtuv/0123456789abcdef/;
+        my $token = Crypt::Rijndael->new(pack("H32", $k{aes_key}), Crypt::Rijndael::MODE_ECB())
+                                   ->decrypt(pack("H32", $hex));
+        my $crc = 0xffff;
+        for my $b (unpack "C*", $token) {
+            $crc ^= $b;
+            for (1 .. 8) { my $lsb = $crc & 1; $crc >>= 1; $crc ^= 0x8408 if $lsb }
+        }
+        my ($priv, $c, $sess) = unpack "H12 v x3 C", $token;
+        $c &= 0x7fff;
+        if ($mode =~ /^ahead (\d+)$/) {
+            ($counter, $session) = ($counter + $1, 0);
+            open my $m, ">", "$dir/mode" or die;
+            print $m "accept\n";
+            close $m;
+        }
+        if ($crc != 0xf0b8 || $priv ne $k{private_id}) {
+            ($result, $reason) = (3, "Wrong OTP");
+        } elsif ($counter > $c || ($counter == $c && $session >= $sess)) {
+            ($result, $reason) = (3, "Replay attack detected");
+        } else {
+            ($counter, $session) = ($c, $sess);
+        }
+        note("$user: OTP with usage counter $c, session $sess: " . ($result == 2 ? "accepted" : "rejected: $reason"));
+    }
+    my $attrs = $result == 3 ? pack("C C", 18, 2 + length $reason) . $reason : "";
+    my $rep = pack("C C n", $result, $id, 20 + length $attrs) . $auth . $attrs;
+    substr($rep, 4, 16) = md5($rep . ($mode eq "badsecret" ? "another secret" : $secret));
+    send($s, $rep, 0, $from);
+}
+EOF
+    perl "$WORK/radius/server.pl" "$WORK/radius" "$WORK/state/key" "$1" &
+    RADIUS_PID=$!
+    for _ in $(seq 50); do [[ -s $WORK/radius/port ]] && break; sleep 0.1; done
+    PORT=$(<"$WORK/radius/port")
+}
+
+# Stand-ins for ip and ss: $WORK/lo has lo's addresses besides 127.0.0.1
+# (ADDRESS/PREFIX lines), and ip logs each change to $WORK/ip.log;
+# $WORK/listen has the UDP sockets ss lists (see listening). Also $WORK/proc,
+# with net.ipv4.ip_nonlocal_bind and net.ipv6.ip_nonlocal_bind set to 1.
+make_fakes() {
+    : >"$WORK/lo"
+    : >"$WORK/listen"
+    cat >"$WORK/ip" <<'EOF'
+#!/bin/bash
+lo=$FAKE_DIR/lo
+case "$*" in
+    "-o addr show dev lo")
+        echo '1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever'
+        while read -r a; do
+            if [[ $a == *:* ]]; then f=inet6; else f=inet; fi
+            echo "1: lo    $f $a scope global lo\\       valid_lft forever preferred_lft forever"
+        done <"$lo" ;;
+    "-4 addr add "*" dev lo" | "-6 addr add "*" dev lo nodad")
+        grep -qxF "$4" "$lo" && { echo "RTNETLINK answers: File exists" >&2; exit 2; }
+        echo "$4" >>"$lo"
+        echo "ip $*" >>"$FAKE_DIR/ip.log" ;;
+    "-4 addr del "*" dev lo" | "-6 addr del "*" dev lo")
+        grep -qxF "$4" "$lo" || { echo "RTNETLINK answers: Cannot assign requested address" >&2; exit 2; }
+        grep -vxF "$4" "$lo" >"$lo.new"
+        mv "$lo.new" "$lo"
+        echo "ip $*" >>"$FAKE_DIR/ip.log" ;;
+    *)  echo "ip stand-in: unexpected arguments: $*" >&2; exit 1 ;;
+esac
+EOF
+    cat >"$WORK/ss" <<'EOF'
+#!/bin/bash
+[[ "$*" == -Hlun ]] || { echo "ss stand-in: unexpected arguments: $*" >&2; exit 1; }
+cat "$FAKE_DIR/listen"
+EOF
+    chmod +x "$WORK/ip" "$WORK/ss"
+    mkdir -p "$WORK/proc/net/ipv4" "$WORK/proc/net/ipv6"
+    echo 1 >"$WORK/proc/net/ipv4/ip_nonlocal_bind"
+    echo 1 >"$WORK/proc/net/ipv6/ip_nonlocal_bind"
+}
+
+# listening ADDRESS:PORT...: the UDP sockets the ss stand-in lists.
+listening() {
+    : >"$WORK/listen"
+    local a
+    for a in "$@"; do printf 'UNCONN 0      0      %s      0.0.0.0:*\n' "$a" >>"$WORK/listen"; done
+}
+
+# Run yubikey-anycast.sh with the test's directories and stand-ins.
+anycast_env() {
+    env TZ=UTC ANYCAST_STATE_DIR="$WORK/state" ANYCAST_RUN_DIR="$WORK/run" PROC_SYS="$WORK/proc" \
+        IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" "$@"
+}
+
+# Start 'run' in the background, its output in $WORK/run.log. Sets RUN_PID
+# (the script's own process, which env replaces itself with).
+start_run() {
+    env TZ=UTC ANYCAST_STATE_DIR="$WORK/state" ANYCAST_RUN_DIR="$WORK/run" PROC_SYS="$WORK/proc" \
+        IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" -c anycast.conf run >"$WORK/run.log" 2>&1 &
+    RUN_PID=$!
+}
+
+# Run it, with no standard input, and record it: any ARGS...
+any() {
+    local out rc=0
+    out=$(anycast_env "$@" </dev/null 2>&1) || rc=$?
+    printf '$ yubikey-anycast.sh %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# enroll: 'enroll', recorded with the new key's random values masked (each
+# masked only if it has the right form), then 'yubikey-db.sh import
+# --replace -' with its output into $DB.
+enroll() {
+    local rc=0
+    anycast_env enroll >"$WORK/enroll.csv" 2>"$WORK/enroll.err" || rc=$?
+    printf '$ yubikey-anycast.sh enroll\n'
+    sed -E 's/^(anycast-[a-z0-9-]+),vv[cbdefghijklnrtuv]{10},[0-9a-f]{12},[0-9a-f]{32},[A-Za-z0-9]{20},1$/\1,vv<PUBLIC ID>,<PRIVATE ID>,<AES KEY>,<PIN>,1/' \
+        "$WORK/enroll.csv"
+    cat "$WORK/enroll.err"
+    printf '[exit %d]\n\n' "$rc"
+    run_from "$WORK/enroll.csv" -d "$DB" import --replace -
+}
+
+# conf LINE...: write the settings file anycast.conf.
+conf() { printf '%s\n' "$@" >"$WORK/anycast.conf"; }
+
+# wait_status STATE: wait up to 10 s for the running check to be in STATE.
+wait_status() {
+    for _ in $(seq 100); do
+        grep -qx "state=$1" "$WORK/run/status" 2>/dev/null && return
+        sleep 0.1
+    done
+    echo "# timed out waiting for state=$1"
+}
+
+# The commands, the settings, the key, and one login at a time.
+scenario_anycast() {
+    make_fakes
+    any
+    any -V
+    any bogus
+    any -c missing.conf check
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=x' 'BOGUS=1'
+    any -c anycast.conf check
+    conf 'ADDRESSES="192.0.2.153 2001:db8::1 300.1.1.1"' 'SECRET=x'
+    any -c anycast.conf withdraw
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=x' 'INTERVAL=0'
+    any -c anycast.conf withdraw
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=x' 'TIMEOUT=6'
+    any -c anycast.conf withdraw
+    conf 'SECRET=x'
+    any -c anycast.conf withdraw
+    conf '# no secret' 'ADDRESSES = 192.0.2.153' 'SECRET'
+    any -c anycast.conf withdraw
+
+    # No key yet.
+    conf 'ADDRESSES = "192.0.2.153  2001:DB8:153:0::153"' "SECRET='a secret with spaces'" 'TIMEOUT=1'
+    any -c anycast.conf check
+
+    # A key, in the database. A second one keeps the public ID, and
+    # replaces the first in the database.
+    run -d "$DB" init >/dev/null
+    enroll
+    stat -c '# %n mode %a' state state/key state/counter
+    printf '# key file: %s\n' "$(cut -d= -f1 state/key | paste -sd' ')"
+    first=$(grep public_id state/key)
+    enroll
+    printf '# same public ID: %s\n\n' "$([[ $(grep public_id state/key) == "$first" ]] && echo yes || echo no)"
+    run -d "$DB" list | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+
+    # Logins. Radiator must also listen on both anycast addresses.
+    start_radius 'a secret with spaces'
+    conf 'ADDRESSES = "192.0.2.153  2001:DB8:153:0::153"' "SECRET='a secret with spaces'" 'TIMEOUT=1' "PORT=$PORT"
+    any -c anycast.conf check
+    listening "192.0.2.153:$PORT"
+    any -c anycast.conf check
+    listening "192.0.2.153:$PORT" "[2001:db8:153::153]:$PORT"
+    any -c anycast.conf check
+    any -c anycast.conf check
+    echo reject >radius/mode
+    any -c anycast.conf check
+    echo silent >radius/mode
+    any -c anycast.conf check
+    # An answer signed with another secret is not Radiator's.
+    echo badsecret >radius/mode
+    any -c anycast.conf check
+    echo accept >radius/mode
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=wrong' 'TIMEOUT=1' "PORT=$PORT"
+    any -c anycast.conf check
+    conf 'ADDRESSES = "192.0.2.153  2001:DB8:153:0::153"' "SECRET='a secret with spaces'" 'TIMEOUT=1' "PORT=$PORT"
+    # The database is ahead of the counter file (restored from a backup).
+    echo 'ahead 10' >radius/mode
+    any -c anycast.conf check
+    printf '# the server saw:\n'
+    cat radius/log
+    echo
+
+    # Nothing listening on the port.
+    kill "$RADIUS_PID"
+    wait "$RADIUS_PID" 2>/dev/null
+    any -c anycast.conf check
+
+    # The counter file.
+    echo 1000 >state/counter
+    any -c anycast.conf status
+    echo 32767 >state/counter
+    any -c anycast.conf check
+    echo junk >state/counter
+    any -c anycast.conf check
+
+    # withdraw, with the addresses on lo.
+    printf '%s\n' 192.0.2.153/32 2001:db8:153::153/128 >lo
+    any -c anycast.conf withdraw
+    any -c anycast.conf withdraw
+    printf '# ip calls:\n'
+    cat ip.log
+}
+
+# The running check: the addresses go on lo after RISE good checks, off after
+# FALL failed ones, back if removed, off when it stops; it skips ahead past
+# OTPs the database has already seen.
+scenario_anycast_run() {
+    make_fakes
+    run -d "$DB" init >/dev/null
+    enroll >/dev/null
+    start_radius s3cret
+    conf 'ADDRESSES="192.0.2.153 2001:db8:153::153"' 'SECRET=s3cret' "PORT=$PORT" \
+         'INTERVAL=1' 'TIMEOUT=1' 'FALL=3' 'RISE=2'
+    listening "192.0.2.153:$PORT" "[2001:db8:153::153]:$PORT"
+    echo 0 >proc/net/ipv6/ip_nonlocal_bind
+    any -c anycast.conf run
+    echo 1 >proc/net/ipv6/ip_nonlocal_bind
+
+    start_run
+    wait_status advertised
+    printf '# on lo: %s\n\n' "$(paste -sd' ' lo)"
+    any -c anycast.conf status | sed -E 's/[0-9]+ (s ago|days)/<N> \1/; s/OTPs left: [0-9]+/OTPs left: <N>/'
+    any -c anycast.conf check
+    any enroll
+
+    echo reject >radius/mode
+    wait_status withdrawn
+    printf '# on lo: %s\n\n' "$(paste -sd' ' lo)"
+    any -c anycast.conf status | sed -E 's/[0-9]+ (s ago|days)/<N> \1/; s/OTPs left: [0-9]+/OTPs left: <N>/'
+    echo accept >radius/mode
+    wait_status advertised
+
+    # Two OTPs rejected as replays, then one accepted: still advertised.
+    echo 'ahead 1' >radius/mode
+    for _ in $(seq 100); do
+        [[ $(grep -c 'check: ACCEPT' run.log) == 3 ]] && break
+        sleep 0.1
+    done
+    printf '# %s\n' "$(grep state= run/status)"
+
+    # An address removed by hand goes back on lo.
+    grep -v : lo >lo.new; mv lo.new lo
+    for _ in $(seq 30); do
+        [[ $(wc -l <lo) == 2 ]] && break
+        sleep 0.1
+    done
+    printf '# on lo: %s\n\n' "$(paste -sd' ' lo)"
+
+    kill -TERM "$RUN_PID"
+    wait "$RUN_PID"
+    printf '# run exited with %d; its log:\n' "$?"
+    cat run.log
+    printf '\n# ip calls:\n'
+    cat ip.log
+    printf '# on lo: %s; status file: %s\n\n' "$(paste -sd' ' lo)" "$(ls run)"
+    printf '# the server saw, from the first replay:\n'
+    awk '/Replay/ { p = 1 } p { print } p && /accepted/ { exit }' radius/log \
+        | sed -E 's/usage counter 1, session [0-9]+/usage counter 1, session <N>/'
+    kill "$RADIUS_PID"
+    wait "$RADIUS_PID" 2>/dev/null
+}
+
+# --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
@@ -1174,11 +1533,12 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      export restore restore_errors update counters verify wrapper
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify
-     migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors)
+     migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
+     anycast anycast_run)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
-needs_otp() { [[ $1 == verify || $1 == pg_verify ]]; }
+needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == anycast* ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi

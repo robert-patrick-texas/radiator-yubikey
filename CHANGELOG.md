@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+One anycast address for all sites: each server advertises it with BGP only
+while its Radiator accepts logins.
+
+### Added
+
+- `yubikey-anycast.sh`, with `yubikey-anycast.service` and
+  `yubikey-anycast.example.conf`: every 5 s it logs in to the local Radiator
+  with a YubiKey key of its own (made by `enroll`, loaded with
+  `yubikey-db.sh import --replace -`) and checks that Radiator listens on the
+  anycast addresses. After 2 good checks it puts the addresses (IPv4 and
+  IPv6) on `lo`, where FRR advertises them; after 3 failed checks, or when it
+  stops, it takes them off, and FRR withdraws them. `status` shows the state
+  and how many OTPs the key has left (485 days at one check every 5 s).
+- `radiator.example.conf`: the check's users (`anycast-*`) can log in only
+  from 127.0.0.1, without entries in the authentication log; and a
+  commented-out `BindAddress` for anycast.
+- Guide: "Anycast": how it works, what devices see in each failure, as
+  measured, the setup on each server (FRR with BGP and BFD, Radiator's
+  `BindAddress`, `ip_nonlocal_bind`, the check), what the routers need,
+  maintenance, security notes and troubleshooting rows.
+- `tests/radiator/geo.sh`: an FRR router for West and a RADIUS client behind
+  it, on IPv4 and IPv6; the anycast checks run through every failure of the
+  three-site test, plus West's Radiator stopping, its check stopping, and
+  West losing power (BFD).
+- `tests/run-tests.sh`: the `anycast` and `anycast_run` scenarios, against a
+  stand-in RADIUS server that checks requests as Radiator does.
+
+### Found while testing
+
+- Radiator 4.30 starts even when it can't listen on an address in
+  `BindAddress` (it logs `Could not bind authentication socket: Cannot
+  assign requested address`), and then never answers there. The guide sets
+  `ip_nonlocal_bind`, and the check also makes sure Radiator listens on the
+  anycast addresses.
+
 ## 1.3.0 - 2026-10-13
 
 Three sites with automatic failover: a tested setup with etcd, PostgreSQL

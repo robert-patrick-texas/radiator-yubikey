@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# geo.sh - Test Radiator with PostgreSQL on three sites under Patroni, through
-# reboots, a power loss and network partitions, in Docker containers.
+# geo.sh - Test Radiator with PostgreSQL on three sites under Patroni, and one
+# anycast address for all three, through reboots, power losses and network
+# partitions, in Docker containers.
 #
 # Usage: tests/radiator/geo.sh IMAGE
 #   IMAGE is the test image that tests/radiator/run.sh builds, for example
@@ -18,7 +19,16 @@
 # West and East, 4 ms between the East sites. Patroni keeps one standby
 # synchronous ("ANY 1 (east2,west)"), so every committed login is on two
 # sites. Every Radiator server lists PGHOST=east1,east2,west and uses
-# whichever is the primary. The steps in the containers are in geo-node.sh.
+# whichever is the primary.
+#
+# Anycast, as the guide's "Anycast" section sets it up: each site's FRR
+# advertises 192.0.2.153 and 2001:db8:153::153 with BGP, with BFD, while
+# yubikey-anycast.sh keeps them on lo (while its logins work). One more
+# container stands in for West's router (yk-geo-rtr, FRR; 172.31.97.2 and
+# fd53:97::2 on yk-geo, 172.31.98.2 and fd53:98::2 on yk-geo-nas): it
+# prefers West, then East1, then East2. Behind it, a RADIUS client
+# (yk-geo-nas, 172.31.98.10 and fd53:98::10) logs in at the anycast
+# addresses. The steps in the containers are in geo-node.sh.
 #
 # The containers get CAP_SYS_ADMIN (systemd mounts its cgroups) and
 # CAP_NET_ADMIN (traffic control in their own network), not --privileged:
@@ -35,6 +45,12 @@
 # the primary through West; a standby can be copied again; with two servers
 # down, the last one stops being the primary. Planned switchovers bring the
 # primary back to East1 after each failover.
+# Anycast checks: all three sites advertise, and West answers the client,
+# from the anycast address, over IPv4 and IPv6; the check's user is
+# rejected from the client; West withdraws when its Radiator stops and when
+# its check is stopped, and advertises again after; the router drops West
+# within a second or two when it loses power (BFD); a site that can't reach
+# the primary withdraws, and so does every site while there is none.
 # Set KEEP=1 to leave the containers running afterwards.
 
 set -uo pipefail
@@ -46,8 +62,8 @@ pass=0 fail=0
 SITES=(east1 east2 west)
 
 remove_lab() {
-    docker rm -f yk-geo-east1 yk-geo-east2 yk-geo-west >/dev/null 2>&1
-    docker network rm yk-geo >/dev/null 2>&1
+    docker rm -f yk-geo-east1 yk-geo-east2 yk-geo-west yk-geo-rtr yk-geo-nas >/dev/null 2>&1
+    docker network rm yk-geo yk-geo-nas >/dev/null 2>&1
     docker volume rm yk-geo-lab >/dev/null 2>&1
 }
 remove_lab
@@ -57,14 +73,26 @@ else
     trap remove_lab EXIT
 fi
 
-docker network create --subnet 172.31.97.0/24 yk-geo >/dev/null || exit 1
+docker network create --ipv6 --subnet 172.31.97.0/24 --subnet fd53:97::/64 yk-geo >/dev/null || exit 1
+docker network create --ipv6 --subnet 172.31.98.0/24 --subnet fd53:98::/64 yk-geo-nas >/dev/null || exit 1
 docker volume create yk-geo-lab >/dev/null || exit 1
 
-declare -A IP=([east1]=172.31.97.11 [east2]=172.31.97.12 [west]=172.31.97.13)
+declare -A IP=([east1]=172.31.97.11 [east2]=172.31.97.12 [west]=172.31.97.13 [rtr]=172.31.97.2)
+declare -A IP6=([east1]=fd53:97::11 [east2]=fd53:97::12 [west]=fd53:97::13 [rtr]=fd53:97::2)
 # SIGRTMIN+3 makes systemd shut down cleanly, so 'docker stop' and 'docker
 # restart' are a clean shutdown and reboot; 'docker kill' is a power loss.
-for n in "${SITES[@]}"; do
-    docker run -d --name "yk-geo-$n" --hostname "$n.yk.test" --network yk-geo --ip "${IP[$n]}" \
+# The sites may bind to addresses they don't have (the anycast addresses
+# while they are off lo); the router forwards. The host names are short:
+# Docker maps a container's host name to its IPv6 address too, and the
+# servers reach each other over IPv4 only (as their /etc/hosts lines say).
+for n in "${SITES[@]}" rtr; do
+    if [[ $n == rtr ]]; then
+        sysctls=(--sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1)
+    else
+        sysctls=(--sysctl net.ipv4.ip_nonlocal_bind=1 --sysctl net.ipv6.ip_nonlocal_bind=1)
+    fi
+    docker run -d --name "yk-geo-$n" --hostname "$n" --network yk-geo --ip "${IP[$n]}" \
+        --ip6 "${IP6[$n]}" "${sysctls[@]}" \
         --add-host east1.yk.test:172.31.97.11 --add-host east2.yk.test:172.31.97.12 \
         --add-host west.yk.test:172.31.97.13 \
         --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt apparmor=unconfined --cgroupns private \
@@ -72,6 +100,9 @@ for n in "${SITES[@]}"; do
         -v "$root:/repo:ro" -v yk-geo-lab:/lab "$image" \
         sh -c 'mount -o remount,rw /sys/fs/cgroup && exec /lib/systemd/systemd' >/dev/null || exit 1
 done
+docker network connect --ip 172.31.98.2 --ip6 fd53:98::2 yk-geo-nas yk-geo-rtr || exit 1
+docker run -d --name yk-geo-nas --hostname nas --network yk-geo-nas --ip 172.31.98.10 \
+    --ip6 fd53:98::10 --cap-add NET_ADMIN -v "$root:/repo:ro" "$image" sleep infinity >/dev/null || exit 1
 
 # node NAME COMMAND [ARGS]: one geo-node.sh step on a site's server.
 node() {
@@ -258,8 +289,78 @@ one_leader() {
             && echo "one leader in the East, all streaming" || echo "$out")"
 }
 
+# routes_until LABEL EXPECTED [LIMIT]: wait up to LIMIT seconds (default 60)
+# for the anycast routes on West's router to be EXPECTED, as geo-node.sh
+# 'routes' prints them. Sets RT to the seconds since T0.
+RT=0
+routes_until() {
+    local start=$SECONDS out
+    while ((SECONDS - start < ${3:-60})); do
+        out=$(node rtr routes 2>/dev/null)
+        [[ $out == "$2" ]] && break
+        sleep 0.5
+    done
+    RT=$((SECONDS - T0))
+    check "$1 [after $RT s]" "$2" "$out"
+}
+
+# The number of logins from the NAS in each site's authentication log, "x"
+# for a site that is down.
+nas_logins() {
+    local n out
+    for n in "${SITES[@]}"; do
+        out=$(docker exec "yk-geo-$n" grep -c "client='\(172.31.98.10\|fd53:98::10\)'" \
+                  /var/log/radiator/authentication.log 2>/dev/null)
+        echo "${out:-x}"
+    done | paste -sd' '
+}
+
+# nas_login ADDRESS USER PASSWORD: one login from the NAS, behind West's
+# router. Sets NAS to "ANSWER by SITE" (SITE from the authentication logs:
+# "nobody" when none logged it) and MS to Radiator's time.
+NAS=''
+nas_login() {
+    local before after out who=() i
+    before=$(nas_logins)
+    out=$(docker exec yk-geo-nas bash /repo/tests/radiator/geo-node.sh nas-login "$@")
+    MS=$(tail -1 <<<"$out")
+    for _ in 1 2 3 4 5; do
+        after=$(nas_logins)
+        [[ $after != "$before" ]] && break
+        [[ $out == "NO REPLY"* ]] && break
+        sleep 0.2
+    done
+    read -ra b <<<"$before"
+    read -ra a <<<"$after"
+    for i in 0 1 2; do [[ ${a[i]} != "${b[i]}" && ${a[i]} != x ]] && who+=("${SITES[i]}"); done
+    NAS="$(head -1 <<<"$out") by ${who[*]:-nobody}"
+}
+
+# nas LABEL EXPECTED FAMILY: alice logs in from the NAS with a new OTP, at
+# the IPv4 (FAMILY 4) or IPv6 (6) anycast address.
+ANY4=192.0.2.153 ANY6=2001:db8:153::153
+K1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+nas() {
+    local addr=$ANY4
+    [[ $3 == 6 ]] && addr=ipv6:$ANY6
+    C=$((C + 1))
+    nas_login "$addr" alice "s3cr3t:$(docker exec yk-geo-nas /repo/tests/make-otp.sh vvccccbbcdef 4a6f8e2d1c3b $K1 "$C" 0)"
+    check "$1 [OTP $C, $MS ms]" "$2" "$NAS"
+}
+
+# transitions SITE SINCE: when SITE's check withdrew and advertised the
+# anycast addresses after the Unix time SINCE, in seconds from then, from its
+# log: "withdrawn 13 s, advertised 41 s".
+transitions() {
+    docker exec "yk-geo-$1" journalctl -u yubikey-anycast --since "@$2" -o short-unix 2>/dev/null \
+        | awk -v t0="$2" '/: withdrawing / { printf "%swithdrawn %d s", sep, $1 - t0; sep = ", " }
+                          /: advertising / { printf "%sadvertised %d s", sep, $1 - t0; sep = ", " }'
+}
+
 ALICE="SELECT counter FROM yubikeys WHERE username = 'alice'"
 NORMAL="east1=leader east2=quorum west=quorum"
+ALL3="west,east1,east2 west,east1,east2"
+EAST="east1,east2 east1,east2"
 
 echo "== Setup: etcd, Patroni and Radiator on three sites"
 for n in "${SITES[@]}"; do booted "$n" || exit 1; done
@@ -289,9 +390,17 @@ for n in "${SITES[@]}"; do node "$n" rad-setup || exit 1; done
 check "DBSource from 'config'" \
     "dbi:Pg:dbname=yubikey;host=east1.yk.test,east2.yk.test,west.yk.test;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write" \
     "$(docker exec yk-geo-west awk '/^ +DBSource/ {print $2}' /etc/radiator/conf.d/yubikey.conf)"
-node west admin add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t >/dev/null
+node west admin add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t >/dev/null
 check "the admin adds alice at West; she is on the primary" alice \
     "$(node east1 sql yubikey 'SELECT username FROM yubikeys')"
+node nas nas-setup
+node rtr router-setup
+for n in "${SITES[@]}"; do node "$n" frr-setup; done
+T0=$SECONDS
+check "the anycast check's first login, at each site" "ACCEPT ACCEPT ACCEPT" \
+    "$(for n in "${SITES[@]}"; do node "$n" anycast-setup | cut -d' ' -f1; done | paste -sd' ')"
+routes_until "West's router has the anycast routes of all three sites, West's first" "$ALL3"
+check "...a BGP session with BFD to each site, over IPv4 and over IPv6" "BGP 6, BFD 6" "$(node rtr sessions)"
 
 echo
 echo "== Normal operation"
@@ -315,14 +424,75 @@ between "login time at East2, median ms"                           1 100 "${LAT[
 between "login time at West, median ms (two round trips to East1)" 110 300 "${LAT[west]}"
 
 echo
+echo "== Anycast: one address for the three sites"
+nas "OTP from the NAS behind West's router, IPv4" "ACCEPT from $ANY4 by west" 4
+nas "OTP from the NAS, IPv6"                    "ACCEPT from $ANY6 by west" 6
+read -r user password <<<"$(node west check-cred)"
+nas_login "$ANY4" "$user" "$password"
+check "the anycast check's user, from the NAS (an OTP ahead of the check's)" \
+    "REJECT from $ANY4 by west" "$NAS"
+check "...West's check is not disturbed" advertised "$(node west anycast-status | head -1 | cut -d' ' -f1)"
+check "the check's logins are not in the authentication log" 0 \
+    "$(docker exec yk-geo-west grep -c "user='anycast-west'.*result=OK" /var/log/radiator/authentication.log)"
+
+echo
+echo "== Anycast: Radiator stops at West"
+T0=$SECONDS
+docker exec yk-geo-west systemctl stop radiator
+routes_until "West withdraws after 3 failed checks" "$EAST" 40
+between "...seconds after Radiator stopped" 10 17 "$RT"
+withdraw_s=$RT
+nas "OTP from the NAS, IPv4: East1 answers" "ACCEPT from $ANY4 by east1" 4
+nas "OTP from the NAS, IPv6"                "ACCEPT from $ANY6 by east1" 6
+T0=$SECONDS
+docker exec yk-geo-west systemctl start radiator
+routes_until "West advertises again after 2 good checks" "$ALL3" 40
+advertise_s=$RT
+# Radiator started while the addresses were off lo: it listens on them
+# because the server may bind to addresses it doesn't have.
+nas "OTP from the NAS, IPv4: West again" "ACCEPT from $ANY4 by west" 4
+nas "OTP from the NAS, IPv6"             "ACCEPT from $ANY6 by west" 6
+
+echo
+echo "== Anycast: stop West's check (maintenance)"
+T0=$SECONDS
+docker exec yk-geo-west systemctl stop yubikey-anycast
+routes_until "stopping the check withdraws West at once" "$EAST" 10
+check "...the addresses are off lo" "not running, on lo: none" \
+    "$(node west anycast-status | head -2 | paste -sd',' | sed 's/,/, /')"
+nas "OTP from the NAS: East1 answers" "ACCEPT from $ANY4 by east1" 4
+T0=$SECONDS
+docker exec yk-geo-west systemctl start yubikey-anycast
+routes_until "West advertises again when its check starts" "$ALL3" 30
+
+echo
 echo "== Reboot West (a standby)"
 docker stop -t 60 yk-geo-west >/dev/null
+check "West's anycast routes are gone" "$EAST" "$(node rtr routes)"
+nas "OTP from the NAS while West is down: East1 answers" "ACCEPT from $ANY4 by east1" 4
 logins "5 OTPs at East1, West down" east1
 between "...no slower than usual (median ms)" 1 100 "$MS"
 docker start yk-geo-west >/dev/null
 booted west
 cluster "West is back and confirms commits again" "$NORMAL" east1
 login "OTP at West after its reboot"            ACCEPT west
+T0=$SECONDS
+routes_until "West advertises again" "$ALL3" 30
+nas "OTP from the NAS: West answers" "ACCEPT from $ANY4 by west" 4
+
+echo
+echo "== West loses power"
+T0=$SECONDS
+docker kill yk-geo-west >/dev/null
+routes_until "BFD: the router drops West's anycast routes" "$EAST" 10
+bfd_s=$RT
+between "...within 2 s" 0 2 "$RT"
+nas "OTP from the NAS: East1 answers" "ACCEPT from $ANY4 by east1" 4
+docker start yk-geo-west >/dev/null
+booted west
+cluster "West is back" "$NORMAL" east1
+T0=$SECONDS
+routes_until "West advertises again" "$ALL3" 60
 
 echo
 echo "== Reboot East2 (the standby that usually confirms first)"
@@ -355,15 +525,29 @@ echo "== The primary (East1) loses power"
 login "OTP at East2, just before"               ACCEPT east2
 last=$C
 T0=$SECONDS
+since=$(date +%s)
 docker kill yk-geo-east1 >/dev/null
 login "OTP at East2, no primary yet"            "REJECT: Yubikey secret not found in database" east2
 login_until "OTP at East2 once Patroni promotes a standby" east2 60
 leader "East2 took over, not West" east2 east2 10
+# No site can log in until East2 is the primary, longer than three checks:
+# West and East2 withdraw too, and the NAS gets no answer until they
+# advertise again.
+routes_until "West and East2 advertise again" "west,east2 west,east2" 60
+nas "OTP from the NAS: West answers" "ACCEPT from $ANY4 by west" 4
+for n in west east2; do
+    tr=$(transitions "$n" "$since")
+    check "$n withdrew while there was no primary, then advertised again [$tr]" yes \
+        "$([[ $tr =~ ^withdrawn\ [0-9]+\ s,\ advertised\ [0-9]+\ s$ ]] && echo yes || echo "${tr:-no change}")"
+    [[ $n == west ]] && { failover_s=${tr##*advertised }; failover_s=${failover_s% s}; }
+done
 login "OTP $last again (from before the power loss)" "REJECT: Replay attack detected" west "$last"
 login "OTP at West"                             ACCEPT west
 docker start yk-geo-east1 >/dev/null
 booted east1
 cluster "East1 rejoins as a standby" "east1=quorum east2=leader west=quorum" east2
+T0=$SECONDS
+routes_until "East1 advertises again" "$ALL3" 30
 switchover east1 east1
 cluster "back to normal, East1 the primary" "$NORMAL" east1
 
@@ -381,10 +565,13 @@ echo
 echo "== West is cut off from both East sites"
 login "OTP at West, just before"               ACCEPT west
 partition west
+T0=$SECONDS
 logins "5 OTPs at East1, West cut off" east1
 between "...no slower than usual (median ms)" 1 100 "$MS"
 login "OTP at West: no primary within reach"    "REJECT: Yubikey secret not found in database" west
 between "...answered within 7 s (ms)" 1 7000 "$MS"
+routes_until "West withdraws: its check can't log in" "$EAST" 40
+nas "OTP from the NAS: East1 answers (the router still reaches it)" "ACCEPT from $ANY4 by east1" 4
 login "OTP at East2"                            ACCEPT east2
 during=$C
 cluster "the East sites drop West from the cluster" "east1=leader east2=quorum" east1 45
@@ -398,6 +585,8 @@ cluster "West follows East1 again" "$NORMAL" east1
 wait_for "West's standby has alice's counter ($during)" "$during" west "$ALICE" 90
 login "OTP $during again at West (used at East2 during the cut)" "REJECT: Replay attack detected" west "$during"
 login_until "OTP at West" west 30
+T0=$SECONDS
+routes_until "West advertises again" "$ALL3" 30
 
 echo
 echo "== East1 (the primary's site) is cut off from the others"
@@ -412,17 +601,21 @@ check "East1's PostgreSQL is no longer a primary" "stopping or standby" \
     "$(r=$(node east1 role 2>/dev/null); [[ $r == primary ]] && echo primary || echo "stopping or standby")"
 login "OTP at East1, still cut off"             "REJECT: Yubikey secret not found in database" east1
 login "OTP at West"                             ACCEPT west
+routes_until "West and East2 advertise; East1, cut off, does not" "west,east2 west,east2" 30
 T0=$SECONDS
 before=$(rewinds east1)
 heal east1
 cluster "East1 rejoins as a standby" "east1=quorum east2=leader west=quorum" east2
 check "...after pg_rewind removed its unconfirmed commit" 1 "$(($(rewinds east1) - before))"
 wait_for "East1 has East2's data (alice's counter)" "$C" east1 "$ALICE"
+T0=$SECONDS
+routes_until "East1 advertises again" "$ALL3" 30
 switchover east1 east1
 cluster "back to normal, East1 the primary" "$NORMAL" east1
 
 echo
 echo "== The link between East1 and East2 fails; both still reach West"
+T0=$SECONDS
 node east1 cut east2
 node east2 cut east1
 logins "5 OTPs at East1" east1
@@ -430,6 +623,7 @@ between "...now confirmed by West (median ms)" 55 300 "$MS"
 login "OTP at West"                             ACCEPT west
 login "OTP at East2: East1 out of reach, the others are standbys" \
     "REJECT: Yubikey secret not found in database" east2
+routes_until "East2 withdraws" "west,east1 west,east1" 40
 sleep 35    # longer than the lease
 T0=$SECONDS
 leader "East1 keeps the lease, through West's etcd" east1 west 5
@@ -438,6 +632,8 @@ node east1 heal east2
 node east2 heal east1
 cluster "East2 follows East1 again" "$NORMAL" east1
 login_until "OTP at East2" east2 30
+T0=$SECONDS
+routes_until "East2 advertises again" "$ALL3" 30
 
 echo
 echo "== Copy a standby again from the primary (patronictl reinit)"
@@ -459,6 +655,8 @@ for _ in $(seq 60); do [[ $(node east1 role 2>/dev/null) == primary ]] || break;
 check "East1 is no longer a primary: etcd has no majority [after $((SECONDS - T0)) s]" "stopping or standby" \
     "$(r=$(node east1 role 2>/dev/null); [[ $r == primary ]] && echo primary || echo "stopping or standby")"
 login "OTP at East1, alone"                     "REJECT: Yubikey secret not found in database" east1
+routes_until "East1 withdraws too: no site advertises" "- -" 40
+nas "OTP from the NAS: no answer" "NO REPLY by nobody" 4
 docker start yk-geo-east2 yk-geo-west >/dev/null
 booted east2
 booted west
@@ -466,8 +664,13 @@ one_leader "East2 and West back: a new leader"
 [[ $(node east1 members) == "$NORMAL" ]] || switchover east1 east1
 cluster "back to normal, East1 the primary" "$NORMAL" east1
 login_until "OTP at West" west 30
+T0=$SECONDS
+routes_until "all three sites advertise again" "$ALL3" 30
+nas "OTP from the NAS: West answers" "ACCEPT from $ANY4 by west" 4
 
 echo
 echo "Login times (median, warm connections): East1 ${LAT[east1]} ms, East2 ${LAT[east2]} ms, West ${LAT[west]} ms"
+echo "Anycast: West withdrawn ${withdraw_s} s after its Radiator stopped, back ${advertise_s} s after it started;" \
+     "dropped in under $((bfd_s + 1)) s after a power loss (BFD); back ${failover_s} s after the primary lost power"
 printf 'Three sites: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

@@ -1,0 +1,63 @@
+$ yubikey-anycast.sh -c anycast.conf run
+yubikey-anycast.sh: error: net.ipv6.ip_nonlocal_bind is not 1: Radiator could not listen on 2001:db8:153::153 while it is not on lo
+[exit 3]
+
+# on lo: 192.0.2.153/32 2001:db8:153::153/128
+
+$ yubikey-anycast.sh -c anycast.conf status
+advertised since <TIMESTAMP> UTC
+last check: ACCEPT in <N> ms, <N> s ago
+on lo: 192.0.2.153 2001:db8:153::153
+OTPs left: <N> (<N> days at one check every 1 s)
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: the check is running (systemctl stop yubikey-anycast first)
+[exit 3]
+
+$ yubikey-anycast.sh enroll
+yubikey-anycast.sh: error: the check is running (systemctl stop yubikey-anycast first)
+[exit 3]
+
+# on lo: 
+
+$ yubikey-anycast.sh -c anycast.conf status
+withdrawn since <TIMESTAMP> UTC
+last check: REJECT in <N> ms: Yubikey secret not found in database, <N> s ago
+on lo: none
+OTPs left: <N> (<N> days at one check every 1 s)
+[exit 1]
+
+# state=advertised
+# on lo: 192.0.2.153/32 2001:db8:153::153/128
+
+# run exited with 0; its log:
+started: anycast-<HOST> logs in every 1 s; 192.0.2.153 2001:db8:153::153 on lo after 2 good checks, off after 3 failed; 8388351 OTPs left (97 days)
+check: ACCEPT in <N> ms
+advertising 192.0.2.153 2001:db8:153::153: 2 good checks
+check: REJECT in <N> ms: Yubikey secret not found in database
+withdrawing 192.0.2.153 2001:db8:153::153: 3 failed checks
+check: ACCEPT in <N> ms
+advertising 192.0.2.153 2001:db8:153::153: 2 good checks
+check: REJECT in <N> ms: Replay attack detected
+usage counter moved ahead to 2
+usage counter moved ahead to 4
+check: ACCEPT in <N> ms
+stopped; 192.0.2.153 2001:db8:153::153 removed from lo
+
+# ip calls:
+ip -4 addr add 192.0.2.153/32 dev lo
+ip -6 addr add 2001:db8:153::153/128 dev lo nodad
+ip -4 addr del 192.0.2.153/32 dev lo
+ip -6 addr del 2001:db8:153::153/128 dev lo
+ip -4 addr add 192.0.2.153/32 dev lo
+ip -6 addr add 2001:db8:153::153/128 dev lo nodad
+ip -6 addr add 2001:db8:153::153/128 dev lo nodad
+ip -4 addr del 192.0.2.153/32 dev lo
+ip -6 addr del 2001:db8:153::153/128 dev lo
+# on lo: ; status file: 
+
+# the server saw, from the first replay:
+anycast-<HOST>: OTP with usage counter 1, session <N>: rejected: Replay attack detected
+anycast-<HOST>: OTP with usage counter 2, session 0: rejected: Replay attack detected
+anycast-<HOST>: OTP with usage counter 4, session 0: accepted

@@ -1,0 +1,172 @@
+$ yubikey-anycast.sh 
+Usage: yubikey-anycast.sh [-c FILE] COMMAND
+
+Commands:
+  enroll    Make a new key for the check, and print it as CSV for
+            'yubikey-db.sh import --replace -' (stop the check first)
+  check     Log in once and print the result (not while the check runs)
+  run       Run the check (yubikey-anycast.service does this)
+  status    Show whether the addresses are on lo, and the last check;
+            exits 0 only while they are
+  withdraw  Remove the addresses from lo
+
+Options:
+  -c FILE   The settings (default /etc/radiator/anycast.conf)
+  -h        Show this help
+  -V        Show the version
+
+Example:
+  sudo systemctl stop yubikey-anycast
+  sudo yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
+  sudo yubikey-anycast.sh check
+  sudo systemctl start yubikey-anycast
+[exit 3]
+
+$ yubikey-anycast.sh -V
+yubikey-anycast.sh 1.3.0
+[exit 0]
+
+$ yubikey-anycast.sh bogus
+yubikey-anycast.sh: error: unknown command 'bogus' (see 'yubikey-anycast.sh help')
+[exit 3]
+
+$ yubikey-anycast.sh -c missing.conf check
+yubikey-anycast.sh: error: cannot read missing.conf
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: anycast.conf line 3: unknown setting 'BOGUS'
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+yubikey-anycast.sh: error: anycast.conf: '300.1.1.1' in ADDRESSES is not an IPv4 or IPv6 address
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+yubikey-anycast.sh: error: anycast.conf: INTERVAL must be a number from 1 to 3600
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+yubikey-anycast.sh: error: anycast.conf: TIMEOUT must not be longer than INTERVAL
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+yubikey-anycast.sh: error: anycast.conf: ADDRESSES is not set
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+yubikey-anycast.sh: error: anycast.conf line 3: expected NAME=value
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: no key in <WORK>/state/key: run 'yubikey-anycast.sh enroll' first
+[exit 3]
+
+$ yubikey-anycast.sh enroll
+username,public_id,private_id,aes_key,password,active
+anycast-<HOST>,vv<PUBLIC ID>,<PRIVATE ID>,<AES KEY>,<PIN>,1
+yubikey-anycast.sh: a new key for anycast-<HOST> is in <WORK>/state/key; load it into the database with: yubikey-db.sh import --replace -
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --replace - < enroll.csv
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Imported 1 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# state mode 700
+# state/key mode 600
+# state/counter mode 600
+# key file: user pin public_id private_id aes_key
+$ yubikey-anycast.sh enroll
+username,public_id,private_id,aes_key,password,active
+anycast-<HOST>,vv<PUBLIC ID>,<PRIVATE ID>,<AES KEY>,<PIN>,1
+yubikey-anycast.sh: a new key for anycast-<HOST> is in <WORK>/state/key; load it into the database with: yubikey-db.sh import --replace -
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --replace - < enroll.csv
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Imported 1 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+# same public ID: yes
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+username     public_id     active  created              accessed  counter
+-----------  ------------  ------  -------------------  --------  -------
+anycast-<HOST>  vv<PUBLIC ID>  1       <TIMESTAMP>            0      
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms, but Radiator does not listen on 192.0.2.153 2001:db8:153::153 port <PORT>
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms, but Radiator does not listen on 2001:db8:153::153 port <PORT>
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+REJECT in <N> ms: Yubikey secret not found in database
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+NO REPLY within 1 s
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+NO REPLY within 1 s
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+NO REPLY within 1 s
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+REJECT in <N> ms: Replay attack detected
+[exit 1]
+
+# the server saw:
+anycast-<HOST>: OTP with usage counter 1, session 0: accepted
+anycast-<HOST>: OTP with usage counter 2, session 0: accepted
+anycast-<HOST>: OTP with usage counter 3, session 0: accepted
+anycast-<HOST>: OTP with usage counter 4, session 0: accepted
+anycast-<HOST>: rejected, as told
+anycast-<HOST>: OTP with usage counter 7, session 0: accepted
+wrong Message-Authenticator: dropped
+anycast-<HOST>: OTP with usage counter 9, session 0: rejected: Replay attack detected
+
+$ yubikey-anycast.sh -c anycast.conf check
+NO REPLY: Connection refused
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf status
+not running
+on lo: none
+OTPs left: 8132352 (470 days at one check every 5 s)
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: this key has no OTPs left: run 'yubikey-anycast.sh enroll'
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: <WORK>/state/counter is damaged: run 'yubikey-anycast.sh enroll' again
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+removed 192.0.2.153 2001:db8:153::153 from lo
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf withdraw
+[exit 0]
+
+# ip calls:
+ip -4 addr del 192.0.2.153/32 dev lo
+ip -6 addr del 2001:db8:153::153/128 dev lo

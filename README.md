@@ -21,10 +21,13 @@ These scripts:
   standby after it is promoted
 - run on three sites, with PostgreSQL under Patroni moving the primary by
   itself and no OTP lost in a failover (a tested setup in the guide)
+- give every site one anycast address, IPv4 and IPv6, that FRR advertises
+  with BGP only while the local Radiator accepts logins
+  (`yubikey-anycast.sh`)
 
 Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**
-(with Patroni 4.1 and etcd 3.5 for three sites), including real Radiator
-logins in containers (`tests/radiator/run.sh`).
+(with Patroni 4.1 and etcd 3.5 for three sites, and FRR 10.5 for anycast),
+including real Radiator logins in containers (`tests/radiator/run.sh`).
 
 ## Documentation
 
@@ -33,8 +36,8 @@ in a container, installing Radiator, programming YubiKeys, SQLite and
 PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, two database servers with replication and failover,
-three sites with automatic failover, security, troubleshooting, and a
-reference.
+three sites with automatic failover, one anycast address for all sites,
+security, troubleshooting, and a reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.
@@ -84,7 +87,8 @@ For a PostgreSQL server shared by several Radiator servers, see
 for a second database server that takes over when the first fails,
 [Two database servers](docs/guide.md#two-database-servers); and for a
 database server on each of three sites, with automatic failover,
-[Three sites](docs/guide.md#three-sites).
+[Three sites](docs/guide.md#three-sites), and to give them one address,
+[Anycast](docs/guide.md#anycast).
 
 ## Common tasks
 
@@ -107,6 +111,7 @@ database server on each of three sites, with automatic failover,
 | `yubikey-db-migrate.sh` | Verified copy from SQLite to PostgreSQL, and counter sync for a cutover |
 | `yubikey-db-user.example.sh` | Example wrapper: add or update one test account from variables |
 | `radiator.example.conf` | Radiator configuration for YubiKey logins |
+| `yubikey-anycast.sh` | Advertises the anycast addresses (through FRR) only while the local Radiator accepts logins; with `yubikey-anycast.service` and `yubikey-anycast.example.conf` |
 | `users.example.csv` | Sample CSV file (test values only) |
 | `docs/guide.md` | The guide; `docs/build-guide.sh` makes `yubikey-db-guide.html` from it |
 | `tests/run-tests.sh` | Regression tests of the scripts against SQLite and PostgreSQL |
@@ -116,8 +121,8 @@ database server on each of three sites, with automatic failover,
 ## Testing
 
 ```bash
-tests/run-tests.sh                           # 34 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 90 checks of real Radiator logins, in Docker
+tests/run-tests.sh                           # 36 scenarios; PostgreSQL ones need a local server
+tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 134 checks of real Radiator logins, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

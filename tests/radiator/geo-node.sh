@@ -1,16 +1,18 @@
 #!/bin/bash
 #
 # geo-node.sh - Runs inside the containers that tests/radiator/geo.sh starts,
-# as root, with systemd running, the repository at /repo (read-only) and a
-# shared volume at /lab. Each call does one step on one site's server, which
-# runs etcd, PostgreSQL under Patroni, and Radiator, as in the guide's
-# "Three sites" section. The server's name (east1, east2 or west) is the
-# first part of its hostname.
+# as root, with the repository at /repo (read-only) and a shared volume at
+# /lab. Each call does one step on one site's server, which runs systemd with
+# etcd, PostgreSQL under Patroni, Radiator, FRR and the anycast check, as in
+# the guide's "Three sites" and "Anycast" sections; or on West's router
+# (rtr, FRR), or on the RADIUS client behind it (nas). The container's name
+# (east1, east2, west, rtr or nas) is the first part of its hostname.
 #
 # Usage: geo-node.sh COMMAND [ARGS]
 #   pki                      a lab CA, and a certificate for each server
 #   wan-install              lab-wan.service, which runs 'wan' at every boot
-#   wan                      the WAN delays to the other servers
+#   wan                      the WAN delays to the other servers, and the
+#                            route to the NAS's network through the router
 #   cut PEER... | heal PEER...
 #                            drop all packets to PEER, or stop dropping them
 #   etcd-setup               replace the package's single-node etcd with this
@@ -39,11 +41,35 @@
 #                            (ACCEPT, NO REPLY, or REJECT: reason) and the
 #                            milliseconds from request to reply ("-" for no
 #                            reply), on two lines
+#   frr-setup                FRR: BGP with BFD to the router, advertising the
+#                            anycast addresses while they are on lo
+#   anycast-setup            install the anycast check, give it a key, check
+#                            once (prints the result), enable and start it
+#   anycast-status           yubikey-anycast.sh status
+#   check-cred               the anycast check's user, and its PIN and an OTP
+#                            ahead of the check's, as "USER PIN:OTP"
+#   router-setup             (rtr) FRR: a BGP session with BFD to each site,
+#                            preferring West, then East1, then East2
+#   routes                   (rtr) the sites whose anycast routes the router
+#                            has, IPv4 then IPv6, the one it uses first:
+#                            "west,east1,east2 west,east1,east2" ("-": none)
+#   sessions                 (rtr) "BGP N, BFD M": sessions up
+#   nas-setup                (nas) routes to the anycast addresses through
+#                            the router
+#   nas-login ADDRESS USER PASSWORD
+#                            (nas) log in with radpwtst; prints the answer
+#                            (ACCEPT, REJECT or NO REPLY) and the address it
+#                            came from, then the milliseconds, on two lines
 
 set -euo pipefail
 
 declare -A IP=([east1]=172.31.97.11 [east2]=172.31.97.12 [west]=172.31.97.13)
+declare -A IP6=([east1]=fd53:97::11 [east2]=fd53:97::12 [west]=fd53:97::13)
 NODES=(east1 east2 west)
+# West's router, on the sites' network and on the NAS's
+RTR4=172.31.97.2 RTR6=fd53:97::2 NAS_NET4=172.31.98.0/24 NAS_NET6=fd53:98::/64
+# The anycast addresses, as in the guide
+ANY4=192.0.2.153 ANY6=2001:db8:153::153
 ME=$(hostname -s)
 RAD=/opt/radiator/radiator
 LOG=/var/log/radiator/radiator.log
@@ -98,6 +124,8 @@ wan)
         tc qdisc replace dev eth0 parent "1:$b" handle "${b}0:" netem delay "$(delay "$n")"
         tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst "${IP[$n]}/32" flowid "1:$b"
     done
+    ip route replace "$NAS_NET4" via "$RTR4"
+    ip -6 route replace "$NAS_NET6" via "$RTR6"
     ;;
 
 wan-install)
@@ -344,6 +372,20 @@ rad-setup)
     printf '*:5432:yubikey:opsadmin:lab-admin-pw\n' >/root/.pgpass
     chmod 0600 /root/.pgpass
     install -m 0640 -o root -g radiator /repo/radiator.example.conf /etc/radiator/radiator.conf
+    sed -i "s/^#BindAddress .*/BindAddress     127.0.0.1, ${IP[$ME]}, ipv6:${IP6[$ME]}, $ANY4, ipv6:$ANY6/" \
+        /etc/radiator/radiator.conf
+    cat >>/etc/radiator/radiator.conf <<'EOF'
+
+# The test's RADIUS client, behind West's router (yk-geo-nas)
+<Client 172.31.98.10>
+    Identifier  nas
+    Secret      nas-secret
+</Client>
+<Client fd53:98::10>
+    Identifier  nas
+    Secret      nas-secret
+</Client>
+EOF
     install -m 0640 -o root -g radiator /dev/null /etc/radiator/conf.d/yubikey.conf
     # shellcheck source=/dev/null
     (. /root/pg.env; /repo/yubikey-db.sh config) \
@@ -381,6 +423,166 @@ login)
         sleep 0.1
         echo "REJECT: $(tail -n +$((before + 1)) "$LOG" \
                         | grep -o 'Access rejected for [^:]*: .*' | head -1 | sed 's/^[^:]*: //')"
+    fi
+    echo "$ms"
+    ;;
+
+frr-setup)
+    sed -i 's/^bgpd=no/bgpd=yes/; s/^bfdd=no/bfdd=yes/' /etc/frr/daemons
+    cat >/etc/frr/frr.conf <<EOF
+frr defaults traditional
+hostname $ME
+log syslog informational
+!
+ip prefix-list RADIUS-ANYCAST seq 10 permit $ANY4/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit $ANY6/128
+!
+route-map RADIUS-ANYCAST permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map RADIUS-ANYCAST permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 65053
+ bgp router-id ${IP[$ME]}
+ no bgp default ipv4-unicast
+ neighbor $RTR4 remote-as 64500
+ neighbor $RTR4 bfd
+ neighbor $RTR6 remote-as 64500
+ neighbor $RTR6 bfd
+ !
+ address-family ipv4 unicast
+  network $ANY4/32
+  neighbor $RTR4 activate
+  neighbor $RTR4 route-map NOTHING in
+  neighbor $RTR4 route-map RADIUS-ANYCAST out
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  network $ANY6/128
+  neighbor $RTR6 activate
+  neighbor $RTR6 route-map NOTHING in
+  neighbor $RTR6 route-map RADIUS-ANYCAST out
+ exit-address-family
+exit
+EOF
+    chown frr:frr /etc/frr/frr.conf
+    chmod 0640 /etc/frr/frr.conf
+    systemctl restart frr
+    ;;
+
+anycast-setup)
+    install -m 0755 /repo/yubikey-anycast.sh /usr/local/sbin/yubikey-anycast.sh
+    install -m 0644 /repo/yubikey-anycast.service /etc/systemd/system/yubikey-anycast.service
+    install -m 0600 /repo/yubikey-anycast.example.conf /etc/radiator/anycast.conf
+    systemctl daemon-reload
+    # shellcheck source=/dev/null
+    yubikey-anycast.sh enroll 2>/dev/null | (. /root/pg.env; /repo/yubikey-db.sh import --replace -) >/dev/null
+    yubikey-anycast.sh check || true
+    systemctl enable --now yubikey-anycast 2>/dev/null
+    ;;
+
+anycast-status)
+    yubikey-anycast.sh status || true
+    ;;
+
+check-cred)
+    declare -A key
+    while IFS='=' read -r name value; do key[$name]=$value; done </var/lib/yubikey-anycast/key
+    c=$(($(cat /var/lib/yubikey-anycast/counter) + 1))
+    echo "${key[user]} ${key[pin]}:$(/repo/tests/make-otp.sh "${key[public_id]}" "${key[private_id]}" "${key[aes_key]}" "$c" 0)"
+    ;;
+
+router-setup)
+    sed -i 's/^bgpd=no/bgpd=yes/; s/^bfdd=no/bfdd=yes/' /etc/frr/daemons
+    declare -A pref=([west]=300 [east1]=200 [east2]=100)
+    {
+        cat <<EOF
+frr defaults traditional
+hostname rtr
+log syslog informational
+!
+ip prefix-list RADIUS-ANYCAST seq 10 permit $ANY4/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit $ANY6/128
+!
+! With no site advertising, answer "unreachable" rather than use the
+! default route, which leads out of the lab.
+ip route $ANY4/32 reject 250
+ipv6 route $ANY6/128 reject 250
+!
+EOF
+        # This router is West's: West's server is the nearest, East1 next.
+        for n in "${NODES[@]}"; do
+            for i in "10 ip" "20 ipv6"; do
+                printf 'route-map FROM-%s permit %s\n match %s address prefix-list RADIUS-ANYCAST\n set local-preference %s\nexit\n' \
+                    "${n^^}" "${i% *}" "${i#* }" "${pref[$n]}"
+            done
+        done
+        printf 'route-map NOTHING deny 10\nexit\n!\nrouter bgp 64500\n bgp router-id %s\n no bgp default ipv4-unicast\n' "$RTR4"
+        for n in "${NODES[@]}"; do
+            for a in "${IP[$n]}" "${IP6[$n]}"; do
+                printf ' neighbor %s remote-as 65053\n neighbor %s bfd\n' "$a" "$a"
+            done
+        done
+        for af in "ipv4 IP" "ipv6 IP6"; do
+            printf ' address-family %s unicast\n' "${af% *}"
+            for n in "${NODES[@]}"; do
+                if [[ ${af#* } == IP ]]; then a=${IP[$n]}; else a=${IP6[$n]}; fi
+                printf '  neighbor %s activate\n  neighbor %s route-map FROM-%s in\n  neighbor %s route-map NOTHING out\n  neighbor %s maximum-prefix 1\n' \
+                    "$a" "$a" "${n^^}" "$a" "$a"
+            done
+            printf ' exit-address-family\n'
+        done
+        printf 'exit\n'
+    } >/etc/frr/frr.conf
+    chown frr:frr /etc/frr/frr.conf
+    chmod 0640 /etc/frr/frr.conf
+    systemctl restart frr
+    ;;
+
+routes)
+    names=()
+    for n in "${NODES[@]}"; do names+=("${IP[$n]}=$n" "${IP6[$n]}=$n"); done
+    for p in "ipv4 $ANY4/32" "ipv6 $ANY6/128"; do
+        vtysh -c "show bgp ${p% *} unicast ${p#* } json" | python3 -c '
+import json, sys
+names = dict(a.split("=") for a in sys.argv[1:])
+paths = sorted(json.load(sys.stdin).get("paths", []),
+               key=lambda p: (not p.get("bestpath", {}).get("overall", False), -p.get("locPrf", 0)))
+print(",".join(names.get(p.get("peer", {}).get("peerId"), "?") for p in paths) or "-")' "${names[@]}"
+    done | paste -sd' '
+    ;;
+
+sessions)
+    bgp=$(vtysh -c 'show bgp summary json' | python3 -c '
+import json, sys
+print(sum(p.get("state") == "Established" for af in json.load(sys.stdin).values() for p in af.get("peers", {}).values()))')
+    bfd=$(vtysh -c 'show bfd peers json' | python3 -c '
+import json, sys
+print(sum(p.get("status") == "up" for p in json.load(sys.stdin)))')
+    echo "BGP $bgp, BFD $bfd"
+    ;;
+
+nas-setup)
+    ip route replace "$ANY4/32" via 172.31.98.2
+    ip -6 route replace "$ANY6/128" via fd53:98::2
+    ;;
+
+nas-login)
+    out=$(perl $RAD/radpwtst -s "$1" -secret nas-secret -auth_port 1812 -noacct -timeout 3 -retries 0 \
+            -trace 4 -log_microseconds -user "$2" -password "$3" 2>&1) || true
+    ms=$(awk '/DEBUG: Packet dump:/ { split($4, t, ":"); us[++n] = ((t[1] * 60 + t[2]) * 60 + t[3]) * 1000000 + $6 }
+              END { if (n >= 2) printf "%d", (us[2] - us[1]) / 1000; else print "-" }' <<<"$out")
+    from=$(grep -o 'Received from [^ ]*' <<<"$out" | head -1 | cut -d' ' -f3) || true
+    if grep -q '^OK' <<<"$out"; then
+        echo "ACCEPT from $from"
+    elif grep -q 'No reply' <<<"$out"; then
+        echo "NO REPLY"
+    else
+        echo "REJECT from $from"
     fi
     echo "$ms"
     ;;
