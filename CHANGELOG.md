@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-10-12
 
 Two PostgreSQL servers: a primary and a streaming standby that Radiator
 follows when it is promoted, tested through failures with two Radiator
