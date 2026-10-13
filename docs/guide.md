@@ -9,7 +9,8 @@ moving from SQLite to PostgreSQL, a second PostgreSQL server that takes over
 when the first fails, three sites with automatic failover, logins at a site
 that is cut off, and one anycast address for all of them.
 
-The scripts, this guide and the releases are on GitHub:
+The scripts, this guide and the releases are on GitHub, under the
+[MIT license](https://github.com/robert-patrick-texas/radiator-yubikey/blob/main/LICENSE):
 <https://github.com/robert-patrick-texas/radiator-yubikey>.
 
 Every procedure in this guide was run as written with **Radiator 4.30** on

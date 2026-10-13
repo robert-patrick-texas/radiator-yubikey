@@ -9,6 +9,7 @@ installed, from Radiator Software's packages or from their source.
 
 ### Added
 
+- The MIT license (`LICENSE`).
 - The `radiator-yubikey` package, built by `packaging/build-deb.sh` from
   `packaging/debian/` (the same files always build the same package): the
   scripts, their examples, `tests/make-otp.sh`, the HTML guide, README and

@@ -1,6 +1,6 @@
 # Radiator YubiKey Database Tools
 
-Version 1.5.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md)
+Version 1.5.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 Offline YubiKey one-time-password (OTP) logins for
 [Radiator](https://radiatorsoftware.com/) RADIUS, with the YubiKeys in a local
@@ -142,6 +142,10 @@ tests/radiator/run.sh ~/radiator-packages    # 92 + 56 + 175 + 48 checks with re
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.
+
+## License
+
+[MIT](LICENSE).
 
 ## References
 
