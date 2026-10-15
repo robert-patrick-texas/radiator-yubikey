@@ -3,7 +3,8 @@
 ## 1.8.1 - 2026-10-15
 
 The scripts are the same as in 1.8.0; this release adds a test with real
-Radiator of a user with two YubiKeys. Nothing to do after upgrading.
+Radiator of a user with two YubiKeys. Nothing to do after upgrading from
+1.8.0.
 
 ### Tests
 
