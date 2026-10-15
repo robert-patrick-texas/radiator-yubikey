@@ -41,6 +41,7 @@ SCRIPT=${YUBIKEY_DB_SH:-$ROOT/yubikey-db.sh}   # override to test another copy
 MIGRATE=$ROOT/yubikey-db-migrate.sh
 ANYCAST=$ROOT/yubikey-anycast.sh
 PARTITION=$ROOT/yubikey-partition.sh
+VERSION=$(cat "$ROOT/VERSION")
 HOST_S=$(hostname -s | tr '[:upper:]' '[:lower:]')   # the anycast check's user is anycast-HOST_S
 EXPECTED=$TESTS_DIR/expected
 UPDATE=0
@@ -323,10 +324,12 @@ DROP ROLE IF EXISTS ${PGT}_op, ${PGT}_radiator, ${PGT}_admin;
 EOF
 }
 
-# Replace values that differ between runs with fixed placeholders.
+# Replace values that differ between runs with fixed placeholders (and the
+# version, so that a new one changes no transcript).
 # shellcheck disable=SC2016  # the $ signs in the sed patterns are literal
 normalize() {
     sed -E \
+        -e "s/^([a-z-]+\.sh) ${VERSION//./\\.}\$/\1 <VERSION>/" \
         -e "s|$WORK|<WORK>|g" \
         -e "s|$ROOT|<ROOT>|g" \
         -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/<TIMESTAMP>/g' \
@@ -2088,7 +2091,8 @@ scenario_install() {
     apt_log
     rm -r "$WORK/root/opt/radiator-yubikey"
 
-    # The newest package next to install.sh, by default.
+    # The newest package next to install.sh, by default. (This install.sh,
+    # with no VERSION file next to it, doesn't know its version.)
     mkdir -p "$WORK/inst"
     cp "$ROOT/install.sh" "$WORK/inst/"
     fake_deb radiator-yubikey 1.9.0 "$WORK/inst/radiator-yubikey_1.9.0_all.deb"

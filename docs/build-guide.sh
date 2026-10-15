@@ -15,7 +15,7 @@ root=$(dirname -- "$docs")
 command -v pandoc >/dev/null || { echo "build-guide.sh: pandoc not found (sudo apt install pandoc)" >&2; exit 1; }
 
 title=$(sed -n '1s/^# //p' "$docs/guide.md")
-version=$(sed -n 's/^VERSION=//p' "$root/yubikey-db.sh")
+version=$(cat -- "$root/VERSION")
 description="How to set up offline YubiKey OTP logins on Radiator RADIUS with SQLite or PostgreSQL on Linux, and add, verify and maintain accounts with yubikey-db.sh."
 
 # Leave out the title line (the template shows it) and the Markdown contents

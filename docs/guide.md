@@ -81,6 +81,7 @@ the database.
 | `yubikey-partition.sh` | Keeps a copy of the keys on each server of the three sites, and makes Radiator use it while the server can reach no other site (see [Partition mode](#partition-mode)); with `yubikey-partition.service` and `yubikey-partition.example.conf`. |
 | `yubikey-anycast.sh` | Puts the anycast addresses on the loopback interface, for FRR to advertise, only while the local Radiator accepts logins (see [Anycast](#anycast)); with `yubikey-anycast.service` and `yubikey-anycast.example.conf`. |
 | `users.example.csv` | A sample bulk-import file (test values only). |
+| `VERSION` | The scripts' version: each script reads it from this file, next to it, and shows it with `-V`. |
 | `tests/make-otp.sh` | Makes the OTP a YubiKey with given values would type, for tests without a YubiKey. |
 | `tests/radiator/` | Builds a container with Radiator and runs real logins against both databases. |
 | `packaging/` | Builds the `radiator-yubikey` package (`packaging/build-deb.sh`). |
@@ -280,7 +281,7 @@ four tests of real Radiator logins:
   in the containers (`--sysctl`); the step's commands themselves were run in
   a container whose kernel settings it could change for its own network
   only.
-- `package.sh`, 48 checks of the package and `install.sh`: the
+- `package.sh`, 49 checks of the package and `install.sh`: the
   package builds the same twice, lintian finds nothing in it, and it puts
   nothing outside `/opt/radiator-yubikey` but its two units. Then, on fresh
   Ubuntu 26.04 containers (`apt-get` in them needs network access):
@@ -304,7 +305,7 @@ Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 92 passed, 0 failed`,
 `Two database servers: 62 passed, 0 failed`,
 `Three sites: 191 passed, 0 failed` and
-`Package: 48 passed, 0 failed`. Run them again with each new
+`Package: 49 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
 
@@ -357,10 +358,15 @@ a [release](https://github.com/robert-patrick-texas/radiator-yubikey/releases)
 into one directory, and run `install.sh` there:
 
 ```bash
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/radiator-yubikey_1.7.0_all.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/install.sh
+rel=https://github.com/robert-patrick-texas/radiator-yubikey/releases
+v=$(curl -fsSLI -o /dev/null -w '%{url_effective}' $rel/latest); v=${v##*/v}   # the latest version
+curl -fLO $rel/download/v$v/radiator-yubikey_${v}_all.deb
+curl -fLO $rel/download/v$v/install.sh
 sudo bash install.sh
 ```
+
+The second line finds the latest release's version, such as `1.8.0`; for
+another release, set `v` to its version instead.
 
 `install.sh`:
 
@@ -2554,10 +2560,13 @@ packaging/build-deb.sh [OUTDIR]
 
 Builds the package, `radiator-yubikey_VERSION_all.deb`, in OUTDIR (default
 `dist/`), from the files that `packaging/debian/radiator-yubikey.install`
-names. VERSION is the scripts' version, and the package's date is that of
-the version in `CHANGELOG.md`, so the same files always build the same
-package, byte for byte. It needs `dpkg-dev` and `debhelper`
-(`sudo apt install dpkg-dev debhelper`).
+names, and writes `install.sh` next to it, as a release has it. VERSION is
+the one in the file `VERSION`, and the package's date is that of the version
+in `CHANGELOG.md`, so the same files always build the same package, byte for
+byte. The package's scripts, and that `install.sh`, have the version written
+in, so that each also runs on its own; a script from the repository that has
+no `VERSION` file next to it shows its version as `unknown`. It needs
+`dpkg-dev` and `debhelper` (`sudo apt install dpkg-dev debhelper`).
 
 ### `tests/make-otp.sh`
 
@@ -2637,12 +2646,12 @@ same steps.
 
 ## Testing
 
-`tests/run-tests.sh` runs the scripts through 38 scenarios against throwaway
+`tests/run-tests.sh` runs the scripts through 40 scenarios against throwaway
 SQLite and PostgreSQL databases and compares each transcript (commands,
-output, exit codes, and the final table) with `tests/expected/`. The two
-`anycast` scenarios run `yubikey-anycast.sh` against a stand-in RADIUS
-server, which checks each request the way Radiator does, and stand-ins for
-`ip` and `ss`. `pg_partition` runs `yubikey-partition.sh` with the test's
+output, exit codes, and the final table) with `tests/expected/`, where the
+scripts' version shows as `<VERSION>`. The two `anycast` scenarios run
+`yubikey-anycast.sh` against a stand-in RADIUS server, which checks each
+request the way Radiator does, and stand-ins for `ip` and `ss`. `pg_partition` runs `yubikey-partition.sh` with the test's
 PostgreSQL as both the local database and the primary, a stand-in for
 `systemctl`, and a peer that is a port that listens or doesn't. `install`
 runs `install.sh` with stand-ins for `apt-get`, `dpkg-query` and Radiator,

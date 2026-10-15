@@ -119,9 +119,10 @@ version() {
 
 echo "== The package"
 deb=$("$here/build-deb.sh" "$image" "$work/inst") || exit 1
-cp -- "$root/install.sh" "$work/inst/"
 pkg_version=$(dpkg-deb -f "$deb" Version)
-check "the package's version is the scripts'" "$(sed -n 's/^VERSION=//p' "$root/yubikey-db.sh")" "$pkg_version"
+check "the package's version is the one in VERSION" "$(cat "$root/VERSION")" "$pkg_version"
+check "the install.sh built with it has the version written in" "VERSION=$pkg_version" \
+    "$(grep '^VERSION=' "$work/inst/install.sh")"
 check "lintian finds nothing" "" \
     "$(docker run --rm --user "$(id -u):$(id -g)" -v "$work/inst:/inst:ro" "$image" \
         lintian -I --pedantic "/inst/${deb##*/}" 2>&1)"

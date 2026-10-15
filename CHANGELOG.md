@@ -37,6 +37,12 @@
 - Your own `INSERT INTO yubikeys VALUES (...)` statements that don't name
   the columns, like those of the old example commands, fail once the table
   has the `label` column: name the columns, or use `add` or `import`.
+- The version is in one file, `VERSION`, which each script reads from next
+  to it (`-V` shows it; `unknown` without the file). The package's scripts,
+  and the `install.sh` attached to a release, have it written in, so that
+  each also runs on its own.
+- The README's and the guide's download commands take the latest release
+  instead of naming a version.
 
 ### Tests
 
@@ -48,6 +54,9 @@
   rejects invalid labels, and `migrate_errors` refuses a 1.7.0 PostgreSQL
   table. The table dumps in every scenario show the label.
 - `e2e.sh` logs in with a labeled YubiKey on both databases.
+- The transcripts show the scripts' version as `<VERSION>`, so a new version
+  changes none. `package.sh` checks that the package's version is the one
+  in `VERSION`, and that the `install.sh` built with it has it written in.
 
 ## 1.7.0 - 2026-10-14
 

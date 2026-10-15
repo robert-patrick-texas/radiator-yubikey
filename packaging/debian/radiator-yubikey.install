@@ -11,6 +11,7 @@ yubikey-anycast.example.conf    opt/radiator-yubikey
 yubikey-db-guide.html           opt/radiator-yubikey
 README.md                       opt/radiator-yubikey
 CHANGELOG.md                    opt/radiator-yubikey
+VERSION                         opt/radiator-yubikey
 tests/make-otp.sh               opt/radiator-yubikey/tests
 yubikey-partition.service       usr/lib/systemd/system
 yubikey-anycast.service         usr/lib/systemd/system

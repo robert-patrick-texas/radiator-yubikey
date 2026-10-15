@@ -1,5 +1,5 @@
 $ yubikey-db-migrate.sh --version
-yubikey-db-migrate.sh 1.7.0
+yubikey-db-migrate.sh <VERSION>
 [exit 0]
 
 $ yubikey-db-migrate.sh 

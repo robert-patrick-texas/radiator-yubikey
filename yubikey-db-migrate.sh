@@ -4,7 +4,7 @@
 #                         yubikey-db.sh manages into its PostgreSQL database.
 #
 # VERSION
-#   1.7.0
+#   In the file VERSION, next to this script; -V shows it.
 #
 # HOW IT WORKS
 #   1. Takes a consistent snapshot of the SQLite file (sqlite3 .backup) into a
@@ -57,7 +57,9 @@ set -euo pipefail
 umask 077   # the snapshot holds AES keys
 
 PROG=${0##*/}
-VERSION=1.7.0
+# The version is in the file VERSION, next to this script (the package has it
+# written here instead).
+VERSION=$(cat -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/VERSION" 2>/dev/null) || VERSION=unknown
 SQLITE3=${SQLITE3:-sqlite3}
 PSQL=${PSQL:-psql}
 MODE=new

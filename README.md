@@ -1,6 +1,6 @@
 # Radiator YubiKey Database Tools
 
-Version 1.7.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+[Latest release](https://github.com/robert-patrick-texas/radiator-yubikey/releases/latest) · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 Offline YubiKey one-time-password (OTP) logins for
 [Radiator](https://radiatorsoftware.com/) RADIUS, with the YubiKeys in a local
@@ -63,8 +63,10 @@ On an Ubuntu 26.04 server, with the Radiator packages from Radiator Software
 
 ```bash
 sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/radiator-yubikey_1.7.0_all.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/install.sh
+rel=https://github.com/robert-patrick-texas/radiator-yubikey/releases
+v=$(curl -fsSLI -o /dev/null -w '%{url_effective}' $rel/latest); v=${v##*/v}   # the latest version
+curl -fLO $rel/download/v$v/radiator-yubikey_${v}_all.deb
+curl -fLO $rel/download/v$v/install.sh
 sudo bash install.sh            # Perl modules, SQLite and PostgreSQL tools, the scripts
 cd /opt/radiator-yubikey
 
@@ -131,6 +133,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | `yubikey-partition.sh` | Partition mode: a copy of the keys on each server, used while it can reach no other site; with `yubikey-partition.service` and `yubikey-partition.example.conf` |
 | `yubikey-anycast.sh` | Advertises the anycast addresses (through FRR) only while the local Radiator accepts logins; with `yubikey-anycast.service` and `yubikey-anycast.example.conf` |
 | `users.example.csv` | Sample CSV file (test values only) |
+| `VERSION` | The version, which every script reads from it (`-V` shows it) |
 | `docs/guide.md` | The guide; `docs/build-guide.sh` makes `yubikey-db-guide.html` from it |
 | `packaging/` | `build-deb.sh` builds the `radiator-yubikey` package (into `dist/`), from `debian/` |
 | `tests/run-tests.sh` | Regression tests of the scripts against SQLite and PostgreSQL |
@@ -140,8 +143,8 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 ## Testing
 
 ```bash
-tests/run-tests.sh                           # 38 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 92 + 62 + 191 + 48 checks with real Radiator, in Docker
+tests/run-tests.sh                           # 40 scenarios; PostgreSQL ones need a local server
+tests/radiator/run.sh ~/radiator-packages    # 92 + 62 + 191 + 49 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

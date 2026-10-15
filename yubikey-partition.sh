@@ -5,7 +5,7 @@
 #                        users in from a copy of the keys on this server.
 #
 # VERSION
-#   1.7.0
+#   In the file VERSION, next to this script; -V shows it.
 #
 # HOW IT WORKS
 #   Normally each site's Radiator checks every login against the PostgreSQL
@@ -90,7 +90,9 @@ set -uo pipefail
 umask 027
 
 PROG=${0##*/}
-VERSION=1.7.0
+# The version is in the file VERSION, next to this script (the package has it
+# written here instead).
+VERSION=$(cat -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/VERSION" 2>/dev/null) || VERSION=unknown
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CONF=/etc/radiator/partition.conf
 STATE_DIR=${PARTITION_STATE_DIR:-/var/lib/yubikey-partition}
