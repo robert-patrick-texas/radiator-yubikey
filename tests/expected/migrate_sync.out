@@ -6,8 +6,9 @@ Read 5 row(s) from the snapshot: 5 valid, 0 invalid
 Inserted 1 row(s), with their counters
 changed: 1 AES key(s) re-encoded as base64
 Counters moved forward on 1 row(s)
-differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID or AES key in PostgreSQL; left unchanged
-Rows that differ and were left unchanged: 1
+differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+differs: user olduser (public ID vvccccbbcdef) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+Rows that differ and were left unchanged: 2
 Rows only in PostgreSQL, left unchanged: 1
 Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the snapshot
 Dry run complete: everything checked out, and the changes were rolled back.
@@ -20,21 +21,22 @@ Read 5 row(s) from the snapshot: 5 valid, 0 invalid
 Inserted 1 row(s), with their counters
 changed: 1 AES key(s) re-encoded as base64
 Counters moved forward on 1 row(s)
-differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID or AES key in PostgreSQL; left unchanged
-Rows that differ and were left unchanged: 1
+differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+differs: user olduser (public ID vvccccbbcdef) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+Rows that differ and were left unchanged: 2
 Rows only in PostgreSQL, left unchanged: 1
 Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the snapshot
 Committed.
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-test.user2 | changed-in-pg | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
-test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 41 | 2 | 0
-pgonly |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 999999999999 | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0
-nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
-newuser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | cccccccccccf | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
-olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 15 | 1 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+test.user2 | changed-in-pg | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0 | 
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 41 | 2 | 0 | primary slot 2
+pgonly |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 999999999999 | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0 | 
+nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | nulls, from an old tool
+newuser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | cccccccccccf | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | added on SQLite
+olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 15 | 1 | 0 | labeled in PostgreSQL
 
 # times in <T>_db (UTC)
 username | created | accessed
@@ -51,8 +53,9 @@ Target: PostgreSQL database <T>_db, mode sync, AES keys stored as base64
 Read 5 row(s) from the snapshot: 5 valid, 0 invalid
 Inserted 0 row(s), with their counters
 Counters moved forward on 0 row(s)
-differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID or AES key in PostgreSQL; left unchanged
-Rows that differ and were left unchanged: 1
+differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+differs: user olduser (public ID vvccccbbcdef) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+Rows that differ and were left unchanged: 2
 Rows only in PostgreSQL, left unchanged: 1
 Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the snapshot
 Committed.
@@ -73,8 +76,9 @@ invalid: source row 6 (user clash, public ID vvccccbbcdei): public ID belongs to
 Read 6 row(s) from the snapshot: 5 valid, 1 invalid
 Inserted 0 row(s), with their counters
 Counters moved forward on 0 row(s)
-differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID or AES key in PostgreSQL; left unchanged
-Rows that differ and were left unchanged: 1
+differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+differs: user olduser (public ID vvccccbbcdef) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+Rows that differ and were left unchanged: 2
 Rows only in PostgreSQL, left unchanged: 1
 Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the snapshot
 Committed.

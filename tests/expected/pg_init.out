@@ -28,6 +28,7 @@ secret | character varying | 60 | NO |
 counter | integer |  | NO | 0
 low | integer |  | NO | 0
 high | integer |  | NO | 0
+label | character varying | 255 | NO | ''::character varying
 # constraints (NOT NULL is shown in the columns above)
 conname | definition
 yubikeys_active_check | CHECK ((active = ANY (ARRAY[0, 1])))
@@ -73,8 +74,8 @@ Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_r
 [exit 0]
 
 $ yubikey-db.sh -b pg -d <T>_db list
- username | public_id | active | created | accessed | counter 
-----------+-----------+--------+---------+----------+---------
+ username | public_id | active | created | accessed | counter | label 
+----------+-----------+--------+---------+----------+---------+-------
 [exit 0]
 
 $ yubikey-db.sh -b pg -d <T>_db init --bogus

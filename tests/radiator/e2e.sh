@@ -145,7 +145,7 @@ install -m 0640 -o root -g radiator /repo/radiator.example.conf /etc/radiator/ra
 
 echo "== SQLite, with the clause from 'yubikey-db.sh config' (Require2Factor, CheckSecretId)"
 "$Y" init --owner radiator:radiator >/dev/null 2>&1
-"$Y" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t >/dev/null
+"$Y" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t -l 'primary, slot 2' >/dev/null
 "$Y" -e hex add -u hexie -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $K2 -w s3cr3t >/dev/null
 "$Y" add -u otponly -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $K1 --no-password >/dev/null
 "$Y" add -u inactive -P vvccccbbcdei -p 4a6f8e2d1c3e -k $K1 -w s3cr3t --inactive >/dev/null
@@ -155,7 +155,7 @@ echo "== SQLite, with the clause from 'yubikey-db.sh config' (Require2Factor, Ch
 # Rows the script would not create: text active values, a 16-character public ID.
 sqlite3 "$DB" "UPDATE yubikeys SET active = 'true' WHERE username = 'truey';
     UPDATE yubikeys SET active = 'false' WHERE username = 'falsey';
-    INSERT INTO yubikeys SELECT 'longpub', password, 1, created, '', 'vvccccbbcdefghij', '4a6f8e2d1c42', secret, 0, 0, 0
+    INSERT INTO yubikeys SELECT 'longpub', password, 1, created, '', 'vvccccbbcdefghij', '4a6f8e2d1c42', secret, 0, 0, 0, ''
       FROM yubikeys WHERE username = 'alice';"
 make_conf
 check "radiusd -c accepts radiator.example.conf" "ok" \
@@ -226,7 +226,7 @@ pkill -f radiusd
 pg_ctlcluster 18 main start
 su postgres -c "$Y -b pg init-pg --admin root" >/dev/null
 B=(-b pg)
-"$Y" -b pg add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t >/dev/null
+"$Y" -b pg add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t -l 'primary, slot 2' >/dev/null
 "$Y" -b pg -e hex add -u hexie -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $K2 -w s3cr3t >/dev/null
 "$Y" -b pg add -u inactive -P vvccccbbcdei -p 4a6f8e2d1c3e -k $K1 -w s3cr3t --inactive >/dev/null
 make_conf

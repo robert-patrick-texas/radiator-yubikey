@@ -14,8 +14,8 @@ Dry run complete: everything checked out, and the changes were rolled back.
 [exit 0]
 
 $ yubikey-db.sh -b pg -d <T>_db list
- username | public_id | active | created | accessed | counter 
-----------+-----------+--------+---------+----------+---------
+ username | public_id | active | created | accessed | counter | label 
+----------+-----------+--------+---------+----------+---------+-------
 [exit 0]
 
 $ yubikey-db-migrate.sh -d <T>_db src.db
@@ -34,11 +34,11 @@ If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
-test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 40 | 7 | 0
-nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
-olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0 | 
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 40 | 7 | 0 | primary slot 2
+nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | nulls, from an old tool
+olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0 | 
 
 # times in <T>_db (UTC)
 username | created | accessed
@@ -73,9 +73,24 @@ If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | 0123456789abcdef0123456789abcdef | 0 | 0 | 0
-test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | 40 | 7 | 0
-nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0
-olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | 00112233445566778899aabbccddeeff | 12 | 3 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | 0123456789abcdef0123456789abcdef | 0 | 0 | 0 | 
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | 40 | 7 | 0 | primary slot 2
+nulluser |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccd | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0 | nulls, from an old tool
+olduser | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | dddddddddddd | 00112233445566778899aabbccddeeff | 12 | 3 | 0 | 
+
+$ yubikey-db-migrate.sh -d <T>_db old.db
+Source: old.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode new, AES keys stored as base64
+Read 1 row(s) from the snapshot: 1 valid, 0 invalid
+Inserted 1 row(s), with their counters
+changed: 1 AES key(s) re-encoded as base64
+Verified: 1 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Committed.
+If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db-migrate.sh --mode sync old.db
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+olduser |  | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 4 | 1 | 0 | 
 

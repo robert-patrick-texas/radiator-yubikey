@@ -51,6 +51,8 @@
 #   enable    Set active=1 for a user (optionally only one of their keys)
 #   disable   Set active=0 for a user (optionally only one of their keys)
 #   delete    Remove a user (optionally only one of their keys)
+#   label     Set or remove the label of one of a user's keys, such as
+#             "primary, slot 2", to tell their keys apart
 #   export    Write every record and field to a CSV file, with AES keys and
 #             private IDs in clear text (the file is created with mode 0600)
 #   verify    Ask for a username, password and OTP, and check them against
@@ -60,8 +62,8 @@
 #   Run "yubikey-db.sh help" for every option.
 #
 # CSV FORMAT (for 'import')
-#   username,public_id,private_id,aes_key,password,active
-#   test.user,cbdefghijkln,456789abcdef,0123456789abcdef0123456789abcdef,abc123,1
+#   username,public_id,private_id,aes_key,password,active,label
+#   test.user,cbdefghijkln,456789abcdef,0123456789abcdef0123456789abcdef,abc123,1,primary slot 2
 #
 #   - The header row is optional. Blank lines and lines starting with '#' are skipped.
 #   - public_id : YubiKey public ID: 12 modhex characters (Radiator's
@@ -70,6 +72,9 @@
 #   - aes_key   : 32 hex characters (spaces and colons are removed)
 #   - password  : optional static password/PIN, used with Require2Factor
 #   - active    : optional; 1/0, true/false, yes/no (default 1)
+#   - label     : optional description of the key, up to 255 characters,
+#                 shown by 'list'. Empty keeps the label an existing key
+#                 already has (with --update or --replace).
 #   - Fields cannot contain commas. Surrounding double quotes are removed.
 #   - The CSV contains secret keys. Restrict its permissions, and delete it
 #     securely (e.g. with 'shred -u') after importing.
@@ -82,6 +87,7 @@
 #   sudo ./yubikey-db.sh verify                               # test a password + OTP
 #   sudo ./yubikey-db.sh -d /srv/radius/yubi.db list
 #   sudo ./yubikey-db.sh disable test.user
+#   sudo ./yubikey-db.sh label test.user cbdefghijkln 'spare, slot 2'
 #   sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin alice
 #   ./yubikey-db.sh -b pg import users.csv                    # as alice
 #   ./yubikey-db.sh -b pg config
@@ -152,8 +158,9 @@ UPSERT=0      # 1 = --update: update a YubiKey already in the database, keeping
               # its counters unless its private ID or AES key changed
 RESTORE=0     # 1 = import --from-export: restore passwords, times and counters
 # Columns of an export file, in order (export writes them; import --from-export
-# requires them as the header).
-EXPORT_COLUMNS=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+# requires them as the header). Exports made before 1.8.0 have no label.
+EXPORT_COLUMNS=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high,label
+OLD_EXPORT_COLUMNS=${EXPORT_COLUMNS%,label}
 TMPFILE=      # temp SQL file used by 'import'; removed on exit
 trap 'if [[ -n $TMPFILE ]]; then rm -f -- "$TMPFILE"; fi' EXIT
 
@@ -195,14 +202,16 @@ Commands:
         for Radiator's password (needed only when Radiator connects over TCP).
 
   add [-u USER] [-P PUBLIC_ID] [-p PRIVATE_ID] [-k AES_KEY] [-w PASSWORD]
-      [--no-password] [--inactive] [--replace | --update]
+      [-l LABEL] [--no-password] [--inactive] [--replace | --update]
         Add one user. Missing values are prompted for (the key and password
         are not echoed). Options -k and -w are visible to other users in
-        'ps' and shell history, so prefer the prompts or 'import'.
+        'ps' and shell history, so prefer the prompts or 'import'. LABEL
+        describes the YubiKey (e.g. "spare, slot 2"), up to 255 characters.
 
   import [--dry-run] [--skip-invalid] [--replace | --update] [--from-export]
          CSV_FILE|-
-        Bulk-load from CSV (format: username,public_id,private_id,aes_key[,password[,active]]),
+        Bulk-load from CSV (format:
+        username,public_id,private_id,aes_key[,password[,active[,label]]]),
         or from standard input with -.
         Every row is validated first. If any row is invalid, nothing is
         imported unless you pass --skip-invalid. Valid rows are loaded in one
@@ -217,6 +226,8 @@ Commands:
   enable  USER [PUBLIC_ID]      Set active=1
   disable USER [PUBLIC_ID]      Set active=0
   delete  USER [PUBLIC_ID]      Delete the user's key(s)
+  label   USER PUBLIC_ID LABEL  Set the label of one of the user's keys
+                                ('' removes it)
   verify [-u USER] [--no-require2factor]
         Check a password and OTP against the database the way Radiator 4.30
         does with the configuration from 'config': the user must have the
@@ -232,9 +243,9 @@ Commands:
   export [-f|--force] FILE|-    Write every record and field to a CSV file
         (mode 0600), or to standard output with -. Columns: username,
         public_id, private_id, aes_key, password, active, created, accessed,
-        counter, low, high. AES keys are 32 hex characters and private IDs are
-        in clear text; passwords are as stored ({crypt} hashes stay hashed).
-        An existing FILE is replaced only with --force.
+        counter, low, high, label. AES keys are 32 hex characters and private
+        IDs are in clear text; passwords are as stored ({crypt} hashes stay
+        hashed). An existing FILE is replaced only with --force.
   config                        Print a sample Radiator AuthBy clause
 
 --replace overwrites any existing row with the same public ID or private ID,
@@ -244,6 +255,7 @@ times) when the existing row has the same public ID, private ID and AES key,
 so only the username, password and active flag change. Use it to change a
 password, or when you are not sure whether a YubiKey is already loaded. If
 the same values were programmed into a YubiKey again, use --replace.
+With either, a YubiKey given no label keeps the label it has.
 
 PostgreSQL connections use the standard PGHOST, PGPORT, PGUSER, PGSSLMODE and
 PGSERVICE settings. Keep passwords in ~/.pgpass. With a primary and a standby,
@@ -316,7 +328,8 @@ csv_from_json() {
                     : $s =~ m{^[A-Za-z0-9+/]{22}==$} ? unpack("H*", decode_base64($s))
                     : do { warn "$prog: warning: the AES key of $r->{username} ($r->{tokenid}) is not hex or base64; exported as stored\n"; $r->{secret} };
             print join(",", map { csv($_) } $r->{username}, $r->{tokenid}, $r->{userid}, $key, $r->{password},
-                       $r->{active}, $r->{created}, $r->{accessed}, $r->{counter}, $r->{low}, $r->{high}), "\n";
+                       $r->{active}, $r->{created}, $r->{accessed}, $r->{counter}, $r->{low}, $r->{high},
+                       $r->{label}), "\n";
         }
         open(my $count, ">&=", 3) or die "$prog: error: cannot report the row count\n";
         print $count scalar(@$rows), "\n";
@@ -327,6 +340,7 @@ csv_from_json() {
 # On failure, sets ERR and returns 1. Error messages never include the AES
 # key or private ID.
 #   $1 username  $2 public_id  $3 private_id  $4 aes_key  $5 password  $6 active
+#   $7 label
 validate_record() {
     local user=$1 pw=${5-}
     ERR=
@@ -337,6 +351,7 @@ validate_record() {
     # Radiator reads exactly 12 characters of public ID from a login.
     [[ ${#R_PUB} -eq 12 ]] \
         || { ERR="public ID '$2' for $user has ${#R_PUB} characters; Radiator accepts only 12"; return 1; }
+    validate_label "$user" "${7-}" || return 1
 
     R_USER=$user
     # Explicit error checks: 'set -e' does not apply inside 'if validate_record'.
@@ -348,9 +363,9 @@ validate_record() {
 # counters are restored. Usernames may be anything the database can hold. An
 # invalid time is replaced, with a note in R_NOTE; an invalid counter makes the
 # row invalid. Sets the R_* globals, or ERR and returns 1.
-#   $1..$11 = the export columns, in EXPORT_COLUMNS order
+#   $1..$12 = the export columns, in EXPORT_COLUMNS order
 validate_export_record() {
-    local user=$1 pw=$5 created=$7 accessed=$8 counter=$9 low=${10} high=${11}
+    local user=$1 pw=$5 created=$7 accessed=$8 counter=$9 low=${10} high=${11} label=${12-}
     local ts='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$'
     ERR=''
     R_NOTE=''
@@ -363,6 +378,7 @@ validate_export_record() {
     if [[ ! $counter =~ ^[0-9]{1,9}$ || ! $low =~ ^[0-9]{1,9}$ || ! $high =~ ^[0-9]{1,9}$ ]]; then
         ERR="invalid counter, low or high for $user (expected whole numbers)"; return 1
     fi
+    validate_label "$user" "$label" || return 1
     if [[ -n $created && ! $created =~ $ts ]]; then
         R_NOTE="created '$created' for $user is not a UTC time; using the current time"
         created=
@@ -417,6 +433,42 @@ validate_key_fields() {
     R_SECRET=$(encode_secret "$key") || { ERR="could not encode the AES key for $user"; return 1; }
 }
 
+# Check a YubiKey's label: UTF-8 text of at most 255 characters, with no
+# control characters (it is shown by 'list'). Empty means no label. Sets
+# R_LABEL, or ERR and returns 1. The message does not repeat the label.
+#   $1 username (for messages)  $2 label
+validate_label() {
+    local rc=0
+    R_LABEL=
+    if [[ -n $2 ]]; then
+        LABEL=$2 perl -MEncode -e '
+            my $s = eval { Encode::decode("UTF-8", $ENV{LABEL}, Encode::FB_CROAK | Encode::LEAVE_SRC) };
+            exit 2 unless defined $s;
+            exit 3 if $s =~ /[[:cntrl:]]/;
+            exit 4 if length $s > 255;' || rc=$?
+    fi
+    case $rc in
+        0) R_LABEL=$2 ;;
+        2) ERR="invalid label for $1 (it is not UTF-8 text)"; return 1 ;;
+        3) ERR="invalid label for $1 (it contains control characters)"; return 1 ;;
+        4) ERR="invalid label for $1 (it is longer than 255 characters)"; return 1 ;;
+        *) ERR="could not check the label for $1"; return 1 ;;
+    esac
+}
+
+# SQL for the label to store with the record in the R_* globals: its own, or
+# when it has none and --update or --replace may replace a row, the label of
+# the row with the same public ID (read before that row is replaced).
+label_sql() {
+    if [[ -n $R_LABEL ]]; then
+        sql_quote "$R_LABEL"
+    elif [[ $REPLACE == 1 || $UPSERT == 1 ]]; then
+        printf "coalesce((SELECT label FROM yubikeys WHERE tokenId = %s), '')" "$(sql_quote "$R_PUB")"
+    else
+        printf "''"
+    fi
+}
+
 # SQL condition that is true for a row holding the same YubiKey as the record
 # in the R_* globals: the same public ID, private ID and AES key, whether the
 # key is stored as base64 or as hex. $1 = prefix for the column names.
@@ -448,13 +500,15 @@ upsert_report_sql() {
 }
 
 # Read an export file ($1) as standard CSV (quoted fields may hold commas,
-# doubled quotes and line breaks) and print, NUL-separated, for each row: its
-# line number, its number of fields, and its first 11 fields (padded). The
-# first row must be the export header. "@@end" follows the last row, so a
-# reader can tell a complete parse from a failed one.
+# doubled quotes and line breaks) and print, NUL-separated, the number of
+# columns its header has, then for each row: its line number, its number of
+# fields, and its first 12 fields (padded). The first row must be the export
+# header, or that of an export made before 1.8.0 (11 columns, no label).
+# "@@end" follows the last row, so a reader can tell a complete parse from a
+# failed one.
 parse_export_csv() {
     perl -e '
-        my ($prog, $file, $header) = @ARGV;
+        my ($prog, $file, $header, $old_header) = @ARGV;
         open(my $in, "<", $file) or die "$prog: error: cannot read $file: $!\n";
         binmode $in;
         my $data = do { local $/; <$in> };
@@ -479,18 +533,20 @@ parse_export_csv() {
             }
             next if @f == 1 && $f[0] eq "";              # blank line
             if (!$have_header) {
-                join(",", @f) eq $header
+                my $h = join(",", @f);
+                $h eq $header || $h eq $old_header
                     or die "$prog: error: $file is not an export file; its first line must be:\n  $header\n";
+                print scalar(@f), "\0";
                 $have_header = 1;
                 next;
             }
             my $n = @f;
-            $#f = 10;
+            $#f = 11;
             print join("\0", $start, $n, map { $_ // "" } @f), "\0";
         }
         $have_header or die "$prog: error: $file is empty\n";
         print "\@\@end\0";
-    ' "$PROG" "$1" "$EXPORT_COLUMNS"
+    ' "$PROG" "$1" "$EXPORT_COLUMNS" "$OLD_EXPORT_COLUMNS"
 }
 
 # Read a value from the terminal. $1 = variable name, $2 = prompt, $3 = "secret"
@@ -565,6 +621,9 @@ verify_otp() {
             exit;
         }
         my (@fail, $unchecked, $ctr, $use);
+
+        # The label only names the YubiKey; Radiator never reads it.
+        show("label", $r->{label}) if length($r->{label} // "");
 
         # Radiator reads a 12-character public ID from the login, so no other
         # length is ever found in the database.
@@ -657,10 +716,13 @@ verify_otp() {
 #
 #   db_require_tools     exit unless the backend's client program is installed
 #   db_run               run SQL read from stdin, stopping at the first error
-#   db_ensure_readable   exit unless the database exists and can be read
-#   db_ensure_writable   exit unless the database exists and can be changed
+#   db_ensure_readable   exit unless the database exists, is up to date (see
+#                        db_init) and can be read
+#   db_ensure_writable   exit unless the database exists, is up to date and
+#                        can be changed
 #   db_init [OPTIONS]    create the yubikeys table, and for SQLite the database
-#                        file (safe to re-run)
+#                        file, or bring a table made by an older version up
+#                        to date (safe to re-run)
 #   db_insert_sql        print SQL that inserts the record in the R_* globals,
 #                        replacing clashing rows when REPLACE=1 or UPSERT=1
 #                        (UPSERT=1 keeps the counters of a row with the same
@@ -672,7 +734,7 @@ verify_otp() {
 #                        print every row, or those matching WHERE, as a JSON
 #                        array of objects with the keys username, password,
 #                        active, created, accessed (UTC text), tokenid,
-#                        userid, secret, counter, low, high
+#                        userid, secret, counter, low, high, label
 #   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause
 # --------------------------------------------------------------------------
 
@@ -710,15 +772,35 @@ sqlite_ensure_writable() {
     [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
     [[ -w $DB_FILE && -w $(dirname -- "$DB_FILE") ]] \
         || die "no write access to $DB_FILE or its directory (run with sudo?)"
+    sqlite_check_table
 }
 
 sqlite_ensure_readable() {
     [[ -f $DB_FILE ]] || die "database $DB_FILE does not exist; run '$PROG init' first"
     [[ -r $DB_FILE ]] || die "no read access to $DB_FILE (run with sudo?)"
+    sqlite_check_table
 }
 
-# Table definition from the original example. The username index speeds up
-# Radiator's lookups by user. The trigger is explained at pg_schema.
+# Exit unless the yubikeys table exists and has the label column (new in
+# 1.8.0), which 'init' adds to a table made by an older version.
+sqlite_check_table() {
+    local state
+    state=$(sqlite_run 2>&1 <<'EOF'
+SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'yubikeys') THEN 'missing'
+            WHEN NOT EXISTS (SELECT 1 FROM pragma_table_info('yubikeys') WHERE name = 'label') THEN 'old'
+            ELSE 'ok' END;
+EOF
+    ) || die "cannot read $DB_FILE: $state"
+    case $state in
+        ok)      ;;
+        missing) die "$DB_FILE has no yubikeys table; run '$PROG init' first" ;;
+        *)       die "$DB_FILE was made by an older version of $PROG; run '$PROG init' to bring it up to date" ;;
+    esac
+}
+
+# Table definition from the original example, with a label column. The
+# username index speeds up Radiator's lookups by user. The trigger is
+# explained at pg_schema.
 sqlite_schema() {
     cat <<'EOF'
 CREATE TABLE IF NOT EXISTS yubikeys (
@@ -733,6 +815,7 @@ CREATE TABLE IF NOT EXISTS yubikeys (
     counter  int default 0,
     low      int default 0,
     high     int default 0,
+    label    varchar(255) not null default '',   -- describes the YubiKey; Radiator ignores it
     primary key (userId)
 );
 CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
@@ -768,6 +851,12 @@ sqlite_init() {
     if [[ $created_file == 1 ]]; then
         chmod 0640 -- "$DB_FILE"
     fi
+    # A table made before 1.8.0 has no label column. SQLite has no ADD
+    # COLUMN IF NOT EXISTS, and adds the column at the end, as CREATE does.
+    if [[ $(echo "SELECT count(*) FROM pragma_table_info('yubikeys') WHERE name = 'label';" | sqlite_run) == 0 ]]; then
+        echo "ALTER TABLE yubikeys ADD COLUMN label varchar(255) not null default '';" | sqlite_run
+        info "Added the label column to the yubikeys table"
+    fi
 
     if [[ -n $owner ]]; then
         chown -- "$owner" "$dir" "$DB_FILE"
@@ -785,7 +874,7 @@ sqlite_init() {
 # export, created, accessed and the counters come from the export.
 sqlite_insert_sql() {
     local verb=INSERT created=CURRENT_TIMESTAMP accessed="''" counter=0 low=0 high=0
-    local user pw pub priv secret
+    local user pw pub priv secret label
     [[ $REPLACE == 1 ]] && verb="INSERT OR REPLACE"
     if [[ $RESTORE == 1 ]]; then
         [[ -z $R_CREATED ]] || created=$(sql_quote "$R_CREATED")
@@ -794,28 +883,29 @@ sqlite_insert_sql() {
     fi
     user=$(sql_quote "$R_USER") pw=$(sql_quote "$R_PASSWORD")
     pub=$(sql_quote "$R_PUB") priv=$(sql_quote "$R_PRIV") secret=$(sql_quote "$R_SECRET")
+    label=$(label_sql)
 
     if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
         # Restoring over existing rows: keep whichever counters are ahead, the
         # export's or those of a row being replaced, so a restore never lets
         # an already used OTP be accepted again.
-        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high)\n'
-        printf 'SELECT %s, %s, %s, %s, m.accessed, %s, %s, %s, m.counter, m.low, m.high FROM (\n' \
-            "$user" "$pw" "$R_ACTIVE" "$created" "$pub" "$priv" "$secret"
+        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high, label)\n'
+        printf 'SELECT %s, %s, %s, %s, m.accessed, %s, %s, %s, m.counter, m.low, m.high, %s FROM (\n' \
+            "$user" "$pw" "$R_ACTIVE" "$created" "$pub" "$priv" "$secret" "$label"
         printf '    SELECT %s AS counter, %s AS low, %s AS high, %s AS accessed\n' "$counter" "$low" "$high" "$accessed"
         printf '    UNION ALL SELECT coalesce(counter, 0), coalesce(low, 0), coalesce(high, 0), accessed FROM yubikeys WHERE tokenId = %s OR userId = %s\n' "$pub" "$priv"
         printf '    ORDER BY counter DESC, low DESC, accessed DESC LIMIT 1) AS m;\n'
     elif [[ $UPSERT == 1 ]]; then
         # Keep the times and counters of a row with the same YubiKey. Rows that
         # clash on the public or private ID are replaced, counters reset.
-        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high)\n'
+        printf 'INSERT OR REPLACE INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high, label)\n'
         printf "SELECT %s, %s, %s, coalesce(o.created, CURRENT_TIMESTAMP), coalesce(o.accessed, ''), %s, %s, %s,\n" \
             "$user" "$pw" "$R_ACTIVE" "$pub" "$priv" "$secret"
-        printf '       coalesce(o.counter, 0), coalesce(o.low, 0), coalesce(o.high, 0)\n'
+        printf '       coalesce(o.counter, 0), coalesce(o.low, 0), coalesce(o.high, 0), %s\n' "$label"
         printf '  FROM (SELECT 1) LEFT JOIN yubikeys o ON %s;\n' "$(same_key_sql o.)"
     else
-        printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);\n" \
-            "$verb" "$user" "$pw" "$R_ACTIVE" "$created" "$accessed" "$pub" "$priv" "$secret" "$counter" "$low" "$high"
+        printf "%s INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high, label) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);\n" \
+            "$verb" "$user" "$pw" "$R_ACTIVE" "$created" "$accessed" "$pub" "$priv" "$secret" "$counter" "$low" "$high" "$label"
     fi
 }
 
@@ -823,7 +913,7 @@ sqlite_insert_sql() {
 sqlite_list() {
     {
         printf '.headers on\n.mode column\n'
-        printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter\n'
+        printf 'SELECT username, tokenId AS public_id, active, created, accessed, counter, label\n'
         printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
     } | sqlite_run
 }
@@ -833,7 +923,7 @@ sqlite_export_json() {
     {
         printf '.mode json\n'
         printf 'SELECT username, password, active, created, accessed, tokenId AS tokenid, userId AS userid,\n'
-        printf '       secret, counter, low, high\n'
+        printf '       secret, counter, low, high, label\n'
         printf '  FROM yubikeys %s ORDER BY username, tokenId;\n' "${1-}"
     } | sqlite_run
 }
@@ -939,14 +1029,22 @@ pg_run() {
     pg_psql --no-align --tuples-only
 }
 
-# Print "missing" if there is no yubikeys table, "ok" if the SQL condition
-# $1 is true, and "denied" otherwise. Exits if psql cannot connect.
+# Print "missing" if there is no yubikeys table, "denied" if the SQL
+# condition $1 is false, "old" if the table has no label column (new in
+# 1.8.0; 'init' adds it), and "ok" otherwise. Exits if psql cannot connect.
 pg_table_access() {
     local out
-    out=$(printf "SELECT CASE WHEN to_regclass('yubikeys') IS NULL THEN 'missing' WHEN %s THEN 'ok' ELSE 'denied' END;\n" "$1" \
+    out=$(printf "SELECT CASE WHEN to_regclass('yubikeys') IS NULL THEN 'missing' WHEN NOT (%s) THEN 'denied'
+    WHEN NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('yubikeys') AND attname = 'label' AND NOT attisdropped)
+        THEN 'old'
+    ELSE 'ok' END;\n" "$1" \
             | pg_run 2>&1) \
         || die "cannot use $DB_DESC: ${out#psql: error: }"
     printf '%s' "$out"
+}
+
+pg_old_table() {
+    die "the yubikeys table in $DB_DESC was made by an older version of $PROG; run '$PROG -b pg init' to bring it up to date"
 }
 
 pg_ensure_readable() {
@@ -955,6 +1053,7 @@ pg_ensure_readable() {
     case $state in
         ok)      ;;
         missing) die "$DB_DESC has no yubikeys table; run '$PROG -b pg init-pg' first" ;;
+        old)     pg_old_table ;;
         *)       die "no read access to the yubikeys table in $DB_DESC (is ${PGUSER:-$(id -un)} a member of $PG_ADMIN_ROLE?)" ;;
     esac
 }
@@ -966,6 +1065,7 @@ pg_ensure_writable() {
     case $state in
         ok)      ;;
         missing) die "$DB_DESC has no yubikeys table; run '$PROG -b pg init-pg' first" ;;
+        old)     pg_old_table ;;
         *)       die "no write access to the yubikeys table in $DB_DESC (is ${PGUSER:-$(id -un)} a member of $PG_ADMIN_ROLE?)" ;;
     esac
 }
@@ -975,7 +1075,9 @@ pg_ensure_writable() {
 # login, active is a 0/1 smallint (a boolean column rejects 1), and the
 # password column is text, because a {crypt} hash is longer than 64
 # characters. Counters are NOT NULL because Radiator skips its replay check
-# when the counter is NULL.
+# when the counter is NULL. The label describes the YubiKey for people:
+# Radiator's role cannot read it. ADD COLUMN IF NOT EXISTS gives a table
+# made before 1.8.0 the label column (without rewriting the table).
 #
 # The trigger refuses to save counters that do not move forward. Radiator
 # reads the counters, checks the OTP, then saves them, so the same OTP sent
@@ -998,8 +1100,12 @@ CREATE TABLE IF NOT EXISTS yubikeys (
     secret   varchar(60)  NOT NULL,          -- AES key (base64 or hex)
     counter  integer      NOT NULL DEFAULT 0,
     low      integer      NOT NULL DEFAULT 0,
-    high     integer      NOT NULL DEFAULT 0
+    high     integer      NOT NULL DEFAULT 0,
+    label    varchar(255) NOT NULL DEFAULT ''
 );
+SELECT EXISTS (SELECT FROM pg_attribute WHERE attrelid = 'yubikeys'::regclass AND attname = 'label'
+               AND NOT attisdropped) AS had_label \\gset
+ALTER TABLE yubikeys ADD COLUMN IF NOT EXISTS label varchar(255) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
 REVOKE ALL ON yubikeys FROM PUBLIC;
 GRANT SELECT (username, password, active, tokenId, userId, secret, counter, low, high)
@@ -1015,6 +1121,10 @@ CREATE OR REPLACE TRIGGER yubikeys_counters_forward
     BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
     WHEN ((NEW.counter, NEW.low) <= (OLD.counter, OLD.low))
     EXECUTE FUNCTION yubikeys_counters_forward();
+\\if :had_label
+\\else
+\\echo 'Added the label column to the yubikeys table'
+\\endif
 EOF
 }
 
@@ -1109,14 +1219,15 @@ EOF
 # statement (ON CONFLICT covers only one constraint), so the replacement is
 # atomic. Referencing the DELETE makes it run before the INSERT.
 pg_insert_sql() {
-    local cols vals created=CURRENT_TIMESTAMP accessed=NULL counter=0 low=0 high=0
+    local cols vals label created=CURRENT_TIMESTAMP accessed=NULL counter=0 low=0 high=0
+    label=$(label_sql)
     if [[ $RESTORE == 1 ]]; then              # export times are UTC
         [[ -z $R_CREATED ]] || created=$(sql_quote "$R_CREATED+00")
         [[ -z $R_ACCESSED ]] || accessed=$(sql_quote "$R_ACCESSED+00")
         counter=$R_COUNTER low=$R_LOW high=$R_HIGH
     fi
-    cols="username, password, active, created, accessed, tokenId, userId, secret, counter, low, high"
-    vals="$(sql_quote "$R_USER"), $(sql_quote "$R_PASSWORD"), $R_ACTIVE, $created, $accessed, $(sql_quote "$R_PUB"), $(sql_quote "$R_PRIV"), $(sql_quote "$R_SECRET"), $counter, $low, $high"
+    cols="username, password, active, created, accessed, tokenId, userId, secret, counter, low, high, label"
+    vals="$(sql_quote "$R_USER"), $(sql_quote "$R_PASSWORD"), $R_ACTIVE, $created, $accessed, $(sql_quote "$R_PUB"), $(sql_quote "$R_PRIV"), $(sql_quote "$R_SECRET"), $counter, $low, $high, $label"
     if [[ $RESTORE == 1 && $REPLACE == 1 ]]; then
         # Restoring over existing rows: keep whichever counters are ahead, the
         # export's or those of a row being replaced (read before the DELETE,
@@ -1129,8 +1240,8 @@ pg_insert_sql() {
         printf '                            UNION ALL SELECT * FROM old) b\n'
         printf '               ORDER BY counter DESC, low DESC, accessed DESC NULLS LAST LIMIT 1),\n'
         printf '     replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' "$pub" "$priv"
-        printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, %s, best.accessed, %s, %s, %s, best.counter, best.low, best.high\n' \
-            "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" "$created" "$pub" "$priv" "$(sql_quote "$R_SECRET")"
+        printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, %s, best.accessed, %s, %s, %s, best.counter, best.low, best.high, %s\n' \
+            "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" "$created" "$pub" "$priv" "$(sql_quote "$R_SECRET")" "$label"
         printf '  FROM best WHERE (SELECT count(*) FROM replaced) >= 0;\n'
     elif [[ $UPSERT == 1 ]]; then
         # Keep the times and counters of a row with the same YubiKey (read
@@ -1142,7 +1253,7 @@ pg_insert_sql() {
         printf 'INSERT INTO yubikeys (%s)\nSELECT %s, %s, %s, coalesce(old.created, CURRENT_TIMESTAMP), old.accessed, %s, %s, %s,\n' \
             "$cols" "$(sql_quote "$R_USER")" "$(sql_quote "$R_PASSWORD")" "$R_ACTIVE" \
             "$(sql_quote "$R_PUB")" "$(sql_quote "$R_PRIV")" "$(sql_quote "$R_SECRET")"
-        printf '       coalesce(old.counter, 0), coalesce(old.low, 0), coalesce(old.high, 0)\n'
+        printf '       coalesce(old.counter, 0), coalesce(old.low, 0), coalesce(old.high, 0), %s\n' "$label"
         printf '  FROM (SELECT 1) AS one LEFT JOIN old ON true WHERE (SELECT count(*) FROM replaced) >= 0;\n'
     elif [[ $REPLACE == 1 ]]; then
         printf 'WITH replaced AS (DELETE FROM yubikeys WHERE tokenId = %s OR userId = %s RETURNING 1)\n' \
@@ -1159,7 +1270,7 @@ pg_list() {
 SELECT username, tokenId AS public_id, active,
        to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
        to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS accessed,
-       counter
+       counter, label
   FROM yubikeys ${1-} ORDER BY username, tokenId;
 EOF
 }
@@ -1171,7 +1282,7 @@ SELECT coalesce(json_agg(json_build_object(
            'created', to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
            'accessed', to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
            'tokenid', tokenId, 'userid', userId, 'secret', secret,
-           'counter', counter, 'low', low, 'high', high)
+           'counter', counter, 'low', low, 'high', high, 'label', label)
          ORDER BY username, tokenId), '[]')
   FROM yubikeys ${1-};
 EOF
@@ -1317,7 +1428,7 @@ EOF
 # --------------------------------------------------------------------------
 
 cmd_add() {
-    local user='' pub='' priv='' key='' pw='' pw_set=0 active=1
+    local user='' pub='' priv='' key='' pw='' pw_set=0 active=1 label='' label_set=0
     while [[ $# -gt 0 ]]; do
         case $1 in
             -u|--user)        user=${2?}; shift 2 ;;
@@ -1325,6 +1436,7 @@ cmd_add() {
             -p|--private-id)  priv=${2?}; shift 2 ;;
             -k|--key)         key=${2?};  shift 2 ;;
             -w|--password)    pw=${2?}; pw_set=1; shift 2 ;;
+            -l|--label)       label=${2?}; label_set=1; shift 2 ;;
             --no-password)    pw=; pw_set=1; shift ;;
             --inactive)       active=0; shift ;;
             --replace)        REPLACE=1; shift ;;
@@ -1349,13 +1461,20 @@ cmd_add() {
             fi
         fi
     fi
+    if [[ $label_set == 0 && -t 0 ]]; then
+        if [[ $REPLACE == 1 || $UPSERT == 1 ]]; then
+            prompt_value label "Label for this YubiKey, e.g. spare, slot 2 (Enter keeps its label, if any)"
+        else
+            prompt_value label "Label for this YubiKey, e.g. spare, slot 2 (Enter for none)"
+        fi
+    fi
 
-    validate_record "$user" "$pub" "$priv" "$key" "$pw" "$active" || die "$ERR"
+    validate_record "$user" "$pub" "$priv" "$key" "$pw" "$active" "$label" || die "$ERR"
     local out
     if ! out=$(db_insert_sql | db_run); then
         die "could not add $R_USER (if this YubiKey is already in the database, use --replace or --update)"
     fi
-    info "${out:-Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE)}"
+    info "${out:-Added $R_USER with YubiKey $R_PUB (active=$R_ACTIVE${R_LABEL:+, label: $R_LABEL})}"
 }
 
 # Append the INSERT for the validated record (R_* globals) to TMPFILE, unless
@@ -1403,19 +1522,21 @@ cmd_import() {
     TMPFILE=$(mktemp)          # created mode 0600
     echo 'BEGIN;' >"$TMPFILE"
 
-    local line lineno=0 first_row=1 ok=0 bad=0 i
+    local line lineno=0 first_row=1 ok=0 bad=0 i columns
     local -a f items
     local -A seen_pub=() seen_priv=()
     if [[ $RESTORE == 1 ]]; then
+        # The header's number of columns, the rows (14 items each), "@@end"
         mapfile -d '' -t items < <(parse_export_csv "$file")
-        [[ ${#items[@]} -gt 0 && ${items[-1]} == '@@end' ]] \
+        [[ ${#items[@]} -gt 1 && ${items[-1]} == '@@end' ]] \
             || die "nothing imported"
         unset 'items[-1]'
-        for (( i = 0; i < ${#items[@]}; i += 13 )); do
+        columns=${items[0]}
+        for (( i = 1; i < ${#items[@]}; i += 14 )); do
             lineno=${items[i]}
-            f=("${items[@]:i+2:11}")
-            if [[ ${items[i+1]} != 11 ]]; then
-                warn "line $lineno: expected 11 fields, found ${items[i+1]}"; bad=$((bad + 1)); continue
+            f=("${items[@]:i+2:12}")
+            if [[ ${items[i+1]} != "$columns" ]]; then
+                warn "line $lineno: expected $columns fields, found ${items[i+1]}"; bad=$((bad + 1)); continue
             fi
             if ! validate_export_record "${f[@]}"; then
                 warn "line $lineno: $ERR"; bad=$((bad + 1)); continue
@@ -1441,10 +1562,10 @@ cmd_import() {
             [[ ${f[0],,} == username ]] && continue
         fi
 
-        if (( ${#f[@]} < 4 || ${#f[@]} > 6 )); then
-            warn "line $lineno: expected 4-6 fields, found ${#f[@]}"; bad=$((bad + 1)); continue
+        if (( ${#f[@]} < 4 || ${#f[@]} > 7 )); then
+            warn "line $lineno: expected 4-7 fields, found ${#f[@]}"; bad=$((bad + 1)); continue
         fi
-        if ! validate_record "${f[0]}" "${f[1]}" "${f[2]}" "${f[3]}" "${f[4]-}" "${f[5]-}"; then
+        if ! validate_record "${f[0]}" "${f[1]}" "${f[2]}" "${f[3]}" "${f[4]-}" "${f[5]-}" "${f[6]-}"; then
             warn "line $lineno: $ERR"; bad=$((bad + 1)); continue
         fi
         queue_record "$lineno"
@@ -1593,6 +1714,22 @@ cmd_modify() {
     info "$action: $n row(s) changed"
 }
 
+# label USER PUBLIC_ID LABEL: set the label of one YubiKey, or remove it ('').
+cmd_label() {
+    [[ $# -eq 3 ]] || die "label: usage: $PROG label USER PUBLIC_ID LABEL ('' removes the label)"
+    local user=$1 pub=${2,,} n
+    validate_label "$user" "$3" || die "label: $ERR"
+    db_ensure_writable
+    n=$(db_change "UPDATE yubikeys SET label = $(sql_quote "$R_LABEL")
+ WHERE username = $(sql_quote "$user") AND tokenId = $(sql_quote "$pub");")
+    [[ $n -gt 0 ]] || die "label: $user has no YubiKey $pub"
+    if [[ -n $R_LABEL ]]; then
+        info "Labeled YubiKey $pub of $user: $R_LABEL"
+    else
+        info "Removed the label of YubiKey $pub of $user"
+    fi
+}
+
 # --------------------------------------------------------------------------
 # Main: global options, then dispatch the command
 # --------------------------------------------------------------------------
@@ -1634,6 +1771,7 @@ case $cmd in
     import)                 cmd_import "$@" ;;
     list)                   cmd_list "$@" ;;
     enable|disable|delete)  cmd_modify "$cmd" "$@" ;;
+    label)                  cmd_label "$@" ;;
     export)                 cmd_export "$@" ;;
     verify)                 cmd_verify "$@" ;;
     *)                      die "unknown command '$cmd' (see '$PROG help')" ;;

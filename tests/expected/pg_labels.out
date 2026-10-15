@@ -1,0 +1,158 @@
+$ yubikey-db.sh -b pg -d <T>_db add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password -l primary, slot 1
+Added alice with YubiKey vvccccbbcdef (active=1, label: primary, slot 1)
+[exit 0]
+
+$ printf %s\n 'username,public_id,private_id,aes_key,password,active,label' 'alice,vvccccbbcdeg,4a6f8e2d1c3c,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,1,clé de secours' 'bob,vvccccbbcdeh,4a6f8e2d1c3d,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -b pg -d <T>_db import -
+Validated /dev/stdin: 2 valid row(s), 0 invalid row(s)
+Imported 2 row(s) into PostgreSQL database <T>_db
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db label bob VVCCCCBBCDEH bob's only key
+Labeled YubiKey vvccccbbcdeh of bob: bob's only key
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db label bob vvccccbbcdef x
+yubikey-db.sh: error: label: bob has no YubiKey vvccccbbcdef
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db label alice vvccccbbcdef 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+yubikey-db.sh: error: label: invalid label for alice (it is longer than 255 characters)
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db label alice vvccccbbcdef x' OR '1'='1 \ $$
+Labeled YubiKey vvccccbbcdef of alice: x' OR '1'='1 \ $$
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username |  public_id   | active |       created       | accessed | counter |       label       
+----------+--------------+--------+---------------------+----------+---------+-------------------
+ alice    | vvccccbbcdef |      1 | <TIMESTAMP> |          |       0 | x' OR '1'='1 \ $$
+ alice    | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       0 | clé de secours
+ bob      | vvccccbbcdeh |      1 | <TIMESTAMP> |          |       0 | bob's only key
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w n3w
+Updated YubiKey vvccccbbcdef for alice (active=1); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db add --replace -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password
+Added alice with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ printf %s\n 'bob,vvccccbbcdeh,999999999999,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1' | yubikey-db.sh -b pg -d <T>_db import --update -
+Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
+Replaced YubiKey vvccccbbcdeh for bob (active=1); counters reset, since its private ID or AES key changed
+Imported 1 row(s) into PostgreSQL database <T>_db
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db label alice vvccccbbcdef primary, slot 1
+Labeled YubiKey vvccccbbcdef of alice: primary, slot 1
+[exit 0]
+
+# yubikeys table in <T>_db
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | primary, slot 1
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | clé de secours
+bob |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | bob's only key
+
+$ yubikey-db.sh -b pg -d <T>_db export -
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high,label
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,{crypt}$6$<HASH>,1,<TIMESTAMP>,,5,1,0,"primary, slot 1"
+alice,vvccccbbcdeg,4a6f8e2d1c3c,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,1,<TIMESTAMP>,,0,0,0,clé de secours
+bob,vvccccbbcdeh,999999999999,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,<TIMESTAMP>,,0,0,0,bob's only key
+yubikey-db.sh: warning: exported 3 row(s) to standard output, with every AES key and private ID in clear text
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db import --from-export --replace old-export.csv
+Validated old-export.csv: 2 valid row(s), 0 invalid row(s)
+Imported 2 row(s) into PostgreSQL database <T>_db
+Counters were kept from the database wherever it was ahead of the export.
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username |  public_id   | active |       created       | accessed | counter |      label      
+----------+--------------+--------+---------------------+----------+---------+-----------------
+ alice    | vvccccbbcdef |      1 | <TIMESTAMP> |          |       9 | primary, slot 1
+ alice    | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       0 | clé de secours
+ bob      | vvccccbbcdeh |      1 | <TIMESTAMP> |          |       0 | bob's only key
+ henry    | vvccccbbcder |      1 | <TIMESTAMP> |          |       0 | 
+[exit 0]
+
+$ radiator> select label from yubikeys
+ERROR:  permission denied for table yubikeys
+[exit 1]
+
+$ radiator> update yubikeys set label = 'x'
+ERROR:  permission denied for table yubikeys
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+yubikey-db.sh: error: the yubikeys table in PostgreSQL database <T>_db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh -b pg init' to bring it up to date
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db label alice vvccccbbcdef x
+yubikey-db.sh: error: the yubikeys table in PostgreSQL database <T>_db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh -b pg init' to bring it up to date
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Added the label column to the yubikeys table
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+# columns
+column_name | data_type | max_length | is_nullable | column_default
+username | character varying | 255 | NO | 
+password | text |  | NO | ''::text
+active | smallint |  | NO | 1
+created | timestamp with time zone |  | NO | now()
+accessed | timestamp with time zone |  | YES | 
+tokenid | character varying | 60 | NO | 
+userid | character varying | 60 | NO | 
+secret | character varying | 60 | NO | 
+counter | integer |  | NO | 0
+low | integer |  | NO | 0
+high | integer |  | NO | 0
+label | character varying | 255 | NO | ''::character varying
+# constraints (NOT NULL is shown in the columns above)
+conname | definition
+yubikeys_active_check | CHECK ((active = ANY (ARRAY[0, 1])))
+yubikeys_pkey | PRIMARY KEY (userid)
+yubikeys_tokenid_key | UNIQUE (tokenid)
+# indexes
+indexname
+yubikeys_pkey
+yubikeys_tokenid_key
+yubikeys_username
+# triggers
+tgname | definition
+yubikeys_counters_forward | CREATE TRIGGER yubikeys_counters_forward BEFORE UPDATE OF counter, low ON public.yubikeys FOR EACH ROW WHEN ((ROW(new.counter, new.low) <= ROW(old.counter, old.low))) EXECUTE FUNCTION yubikeys_counters_forward()
+# owners
+database_owner | table_owner
+<T>_admin | <T>_admin
+# privileges for roles other than the owner
+grantee | privilege_type | columns
+<T>_radiator | SELECT | active, counter, high, low, password, secret, tokenid, userid, username
+<T>_radiator | UPDATE | accessed, counter, high, low
+grantee | table_level_privilege
+database_acl
+{<T>_admin=CTc/<T>_admin,<T>_radiator=c/<T>_admin}
+# members of the admin role (test roles only)
+member
+
+$ yubikey-db.sh -b pg -d <T>_db label alice vvccccbbcdef after the upgrade
+Labeled YubiKey vvccccbbcdef of alice: after the upgrade
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db list
+ username |  public_id   | active |       created       | accessed | counter |       label       
+----------+--------------+--------+---------------------+----------+---------+-------------------
+ alice    | vvccccbbcdef |      1 | <TIMESTAMP> |          |       9 | after the upgrade
+ alice    | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       0 | 
+ bob      | vvccccbbcdeh |      1 | <TIMESTAMP> |          |       0 | 
+ henry    | vvccccbbcder |      1 | <TIMESTAMP> |          |       0 | 
+[exit 0]
+

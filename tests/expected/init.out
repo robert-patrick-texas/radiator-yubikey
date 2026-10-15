@@ -20,6 +20,7 @@ CREATE TABLE yubikeys (
     counter  int default 0,
     low      int default 0,
     high     int default 0,
+    label    varchar(255) not null default '',   -- describes the YubiKey; Radiator ignores it
     primary key (userId)
 );
 CREATE INDEX yubikeys_username ON yubikeys (username);

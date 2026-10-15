@@ -143,7 +143,7 @@ dump() {
     printf '# yubikeys table in %s\n' "${1##*/}"
     sqlite3 -batch -header -separator ' | ' "$1" \
         'SELECT username, password, active, typeof(active) AS active_type, created,
-                accessed, tokenId, userId, secret, counter, low, high
+                accessed, tokenId, userId, secret, counter, low, high, label
            FROM yubikeys ORDER BY userId;'
     echo
 }
@@ -152,6 +152,36 @@ schema() {
     printf '# schema of %s\n' "${1##*/}"
     sqlite3 -batch "$1" .schema
     echo
+}
+
+# Make a SQLite database as yubikey-db.sh 1.7.0 made it (no label column),
+# with one used key: old_sqlite_db FILE
+old_sqlite_db() {
+    sqlite3 -batch "$1" <<'EOF'
+CREATE TABLE yubikeys (
+    username varchar(255) not null,
+    password varchar(64)  not null,
+    active   boolean default false,
+    created  datetime not null,
+    accessed datetime not null,
+    tokenId  varchar(60) unique not null,   -- YubiKey public ID (modhex)
+    userId   varchar(60) unique not null,   -- YubiKey private ID (hex)
+    secret   varchar(60) not null,          -- AES key (base64 or hex)
+    counter  int default 0,
+    low      int default 0,
+    high     int default 0,
+    primary key (userId)
+);
+CREATE INDEX yubikeys_username ON yubikeys (username);
+CREATE TRIGGER yubikeys_counters_forward
+BEFORE UPDATE OF counter, low ON yubikeys
+FOR EACH ROW WHEN NEW.counter < OLD.counter OR (NEW.counter = OLD.counter AND NEW.low <= OLD.low)
+BEGIN
+    SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
+END;
+INSERT INTO yubikeys VALUES ('olduser', '', 1, '2026-07-01 08:00:00', '2026-10-01 12:00:00', 'vvccccbbcdef',
+    '4a6f8e2d1c3b', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 4, 1, 0);
+EOF
 }
 
 # Check that a stored {crypt} hash matches a password, without printing the hash.
@@ -197,7 +227,7 @@ dump_pg() {
     pgtable "SELECT username, password, active, pg_typeof(active) AS active_type,
                     to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
                     to_char(accessed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS accessed,
-                    tokenId, userId, secret, counter, low, high
+                    tokenId, userId, secret, counter, low, high, label
                FROM yubikeys ORDER BY userId;"
     echo
 }
@@ -261,10 +291,10 @@ UPDATE yubikeys SET created = '2026-07-01 08:00:00';
 UPDATE yubikeys SET counter = 40, low = 7, accessed = '2026-10-01 12:00:00' WHERE username = 'test.user';
 -- old example format: text active, literal created, hex key, modhex private ID, plaintext PIN
 INSERT INTO yubikeys VALUES ('olduser', 'plainpin', 'true', 'current_timestamp', '2026-09-01 10:00:00',
-    'vvccccbbcdef', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0);
+    'vvccccbbcdef', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0, '');
 -- NULL active and counters
 INSERT INTO yubikeys VALUES ('nulluser', '', NULL, '2026-08-01 08:00:00', '',
-    'vvccccbbcdeg', 'cccccccccccd', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', NULL, NULL, NULL);
+    'vvccccbbcdeg', 'cccccccccccd', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', NULL, NULL, NULL, 'nulls, from an old tool');
 EOF
 }
 
@@ -398,7 +428,7 @@ scenario_verify() {
     local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0 ssha
     run -d "$DB" init >/dev/null
     "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 's3cr3t' >/dev/null
-    "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 -w 's3cr3t' >/dev/null
+    "$SCRIPT" -d "$DB" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 -w 's3cr3t' -l 'spare, slot 2' >/dev/null
     "$SCRIPT" -d "$DB" -e hex add -u bob -P vvccccbbcdeh -p 4a6f8e2d1c3d -k $k2 --no-password >/dev/null
     "$SCRIPT" -d "$DB" add -u carol -P vvccccbbcdei -p 4a6f8e2d1c3e -k $k1 -w 's3cr3t' --inactive >/dev/null
     "$SCRIPT" -d "$DB" -H clear add -u dave -P vvccccbbcdej -p 4a6f8e2d1c3f -k $k1 -w '{weird}pw' >/dev/null
@@ -408,7 +438,7 @@ scenario_verify() {
     # ID has 8 characters, so it is still rejected, as Radiator rejects it. The
     # row is inserted directly, since 'add' takes only 12-character public IDs.
     sqlite3 "$DB" "INSERT INTO yubikeys VALUES ('yubico', '', 1, '2026-07-01 08:00:00', '', 'dteffuje',
-        '8792ebfe26cc', 'ecde18dbe76fbd0c33330f1c354871db', 0, 0, 0);"
+        '8792ebfe26cc', 'ecde18dbe76fbd0c33330f1c354871db', 0, 0, 0, '');"
     run_lines '' dteffujehknhfjbrjnlnldnhcujvddbikngjrtgh -- -d "$DB" verify -u yubico --no-require2factor
 
     # Accepted; the counters are saved, so the same OTP is then a replay.
@@ -476,7 +506,7 @@ scenario_wrapper() {
     run_wrapper
     check_crypt "$DB" test.user abc123
     sqlite3 "$DB" "UPDATE yubikeys SET counter = 7, low = 3, accessed = '2026-10-01 12:00:00';"
-    make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=n3w cred_active=0
+    make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=n3w cred_active=0 'cred_label=spare slot 2'
     run_wrapper
     check_crypt "$DB" test.user n3w
     make_wrapper "${rec[@]}" cred_secret=$k2
@@ -488,6 +518,8 @@ scenario_wrapper() {
     make_wrapper "${rec[@]}" cred_secret=$k1 cred_password=a,b
     run_wrapper
     make_wrapper "${rec[@]}" cred_secret=$k1 'cred_password="quoted"'
+    run_wrapper
+    make_wrapper "${rec[@]}" cred_secret=$k1 'cred_label=spare, slot 2'
     run_wrapper
     make_wrapper "${rec[@]}" cred_secret=$k1 require2factor=maybe
     run_wrapper
@@ -568,7 +600,7 @@ ok2,vvccccbbcdef,4a6f8e2d1c3,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
 ok3,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6
 ok4,vvccccbbcdeh,4a6f8e2d1c3d,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,maybe
 ok5,vvccccbbcdei
-ok6,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,pw,1,extra
+ok6,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,pw,1,label,extra
 dup1,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
 dup2,vvccccbbcdej,4a6f8e2d1c40,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
 dup3,vvccccbbcdek,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
@@ -729,7 +761,7 @@ restore_source() {
     export_rows -d "$WORK/src.db"
     sqlite3 "$WORK/src.db" "UPDATE yubikeys SET counter = 40, low = 7, high = 1, accessed = '2026-10-01 12:00:00', created = '2026-07-01 08:00:00' WHERE username = 'test.user';
         INSERT INTO yubikeys VALUES ('DOMAIN\\old user', 'plainpin', 'true', 'current_timestamp', '2026-09-01 10:00:00',
-            'vvccccbbcdeg', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0);"
+            'vvccccbbcdeg', 'tttttttttttt', '00112233445566778899AABBCCDDEEFF', 12, 3, 0, 'old, \"quoted\" key');"
     "$SCRIPT" -d "$WORK/src.db" export source.csv >/dev/null 2>&1
 }
 
@@ -1056,6 +1088,142 @@ scenario_pg_radiator() {
     run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- -b pg -d "$PGDB" disable test.user
 }
 
+# Labels: set by add, import (the 7th field) and label; kept by --update and
+# --replace when none is given; listed, exported and restored. A database made
+# before 1.8.0 gets the label column from init.
+scenario_labels() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    local old_header=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+    run -d "$DB" init >/dev/null
+    run -d "$DB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 --no-password -l 'primary, slot 1'
+    run -d "$DB" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 --no-password
+    csv labels.csv <<'EOF'
+username,public_id,private_id,aes_key,password,active,label
+bob,vvccccbbcdeh,4a6f8e2d1c3d,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,  "spare slot 2"
+bob,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,,clé de secours
+carol,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
+EOF
+    run -d "$DB" import labels.csv
+    run -d "$DB" list
+    run -d "$DB" list bob
+
+    # One YubiKey of one user at a time; '' removes the label.
+    run -d "$DB" label alice VVCCCCBBCDEG "alice's backup, slot 2"
+    run -d "$DB" label carol vvccccbbcdej 'loaner'
+    run -d "$DB" label carol vvccccbbcdej ''
+    run -d "$DB" label bob vvccccbbcdef 'not bob'"'"'s'
+    run -d "$DB" label nobody vvccccbbcdef x
+    run -d "$DB" label alice vvccccbbcdef "x' OR '1'='1"
+    run -d "$DB" label alice vvccccbbcdef "$(printf '%0255d' 0)"
+    run -d "$DB" label alice vvccccbbcdef "$(printf '%0256d' 0)"
+    run -d "$DB" label alice vvccccbbcdef $'tab\there'
+    run -d "$DB" label alice vvccccbbcdef
+    run -d "$DB" label alice vvccccbbcdef a b
+    run -d "$WORK/none.db" label alice vvccccbbcdef x
+    run -d "$DB" label alice vvccccbbcdef 'primary, slot 1'
+    dump "$DB"
+
+    # Without a label, --update and --replace keep the YubiKey's label, also
+    # when its keys changed; a label that is given replaces it.
+    sqlite3 "$DB" "UPDATE yubikeys SET counter = 5, low = 1 WHERE username IN ('alice', 'bob');"
+    run -d "$DB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 'n3w'
+    run -d "$DB" add --replace -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 --no-password
+    run_lines "bob,vvccccbbcdeh,999999999999,$k1,,0" "bob,vvccccbbcdei,4a6f8e2d1c3e,$k1,,1,new label" \
+              -- -d "$DB" import --update -
+    run -d "$DB" add --update -u carol -P vvccccbbcdej -p 4a6f8e2d1c3f -k $k1 --no-password -l 'loaner, returned'
+    dump "$DB"
+
+    # Invalid labels in a CSV file.
+    {
+        printf 'dave,vvccccbbcdek,4a6f8e2d1c40,%s,,1,bell\a\n' $k1
+        printf 'erin,vvccccbbcdel,4a6f8e2d1c41,%s,,1,bad \xff byte\n' $k1
+        printf 'frank,vvccccbbcdeu,4a6f8e2d1c42,%s,,1,%0256d\n' $k1 0
+        printf 'gina,vvccccbbcden,4a6f8e2d1c43,%s,,1,a,b\n' $k1
+    } >bad.csv
+    chmod 600 bad.csv
+    run -d "$DB" import --dry-run bad.csv
+
+    # Export and restore keep the labels.
+    run -d "$DB" export -
+    "$SCRIPT" -d "$DB" export all.csv >/dev/null 2>&1
+    "$SCRIPT" -d "$WORK/restored.db" init >/dev/null 2>&1
+    run -d "$WORK/restored.db" import --from-export all.csv
+    "$SCRIPT" -d "$WORK/restored.db" export restored.csv >/dev/null 2>&1
+    compare_exports all.csv restored.csv
+
+    # An export made before 1.8.0 (no label column) still restores; with
+    # --replace, the YubiKeys keep their labels.
+    printf '%s\n' "$old_header" "alice,vvccccbbcdef,4a6f8e2d1c3b,$k1,,1,2026-07-01 08:00:00,,9,0,0" \
+        "henry,vvccccbbcder,4a6f8e2d1c44,$k1,,1,2026-07-01 08:00:00,,0,0,0" \
+        "ivan,vvccccbbcdet,4a6f8e2d1c45,$k1,,1,2026-07-01 08:00:00,,0,0,0,a label" >old-export.csv
+    chmod 600 old-export.csv
+    run -d "$DB" import --from-export --replace old-export.csv
+    run -d "$DB" import --from-export --replace --skip-invalid old-export.csv
+    run -d "$DB" list
+
+    # A database made before 1.8.0: the commands ask for init, which adds the
+    # column at the end, as a new table has it.
+    old_sqlite_db "$WORK/old.db"
+    run -d "$WORK/old.db" list
+    run -d "$WORK/old.db" label olduser vvccccbbcdef x
+    run -d "$WORK/old.db" init
+    schema "$WORK/old.db"
+    run -d "$WORK/old.db" init
+    run -d "$WORK/old.db" label olduser vvccccbbcdef 'after the upgrade'
+    dump "$WORK/old.db"
+    # A file with no yubikeys table.
+    sqlite3 "$WORK/other.db" "CREATE TABLE users (name text);"
+    run -d "$WORK/other.db" list
+}
+
+scenario_pg_labels() {
+    local k1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d k2=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+    local old_header=username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    run -b pg -d "$PGDB" add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 --no-password -l 'primary, slot 1'
+    run_lines username,public_id,private_id,aes_key,password,active,label \
+              "alice,vvccccbbcdeg,4a6f8e2d1c3c,$k2,,1,clé de secours" "bob,vvccccbbcdeh,4a6f8e2d1c3d,$k1" \
+              -- -b pg -d "$PGDB" import -
+    run -b pg -d "$PGDB" label bob VVCCCCBBCDEH "bob's only key"
+    run -b pg -d "$PGDB" label bob vvccccbbcdef x
+    run -b pg -d "$PGDB" label alice vvccccbbcdef "$(printf '%0256d' 0)"
+    run -b pg -d "$PGDB" label alice vvccccbbcdef "x' OR '1'='1 \\ \$\$"
+    run -b pg -d "$PGDB" list
+
+    # Without a label, --update and --replace keep the YubiKey's label.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 5, low = 1 WHERE username = 'alice';"
+    run -b pg -d "$PGDB" add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $k1 -w 'n3w'
+    run -b pg -d "$PGDB" add --replace -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k $k2 --no-password
+    run_lines "bob,vvccccbbcdeh,999999999999,$k1,,1" -- -b pg -d "$PGDB" import --update -
+    run -b pg -d "$PGDB" label alice vvccccbbcdef 'primary, slot 1'
+    dump_pg
+
+    # Export and restore keep the labels; an export made before 1.8.0 still
+    # restores, and with --replace the YubiKeys keep their labels.
+    run -b pg -d "$PGDB" export -
+    printf '%s\n' "$old_header" "alice,vvccccbbcdef,4a6f8e2d1c3b,$k1,,1,2026-07-01 08:00:00,,9,0,0" \
+        "henry,vvccccbbcder,4a6f8e2d1c44,$k1,,1,2026-07-01 08:00:00,,0,0,0" >old-export.csv
+    chmod 600 old-export.csv
+    run -b pg -d "$PGDB" import --from-export --replace old-export.csv
+    run -b pg -d "$PGDB" list
+
+    # Radiator's login role cannot read or change labels.
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    as_radiator "select label from yubikeys"
+    as_radiator "update yubikeys set label = 'x'"
+
+    # A table made before 1.8.0: the commands ask for init, which adds the
+    # column; Radiator's grants stay as they were.
+    pgq "$PGDB" "ALTER TABLE yubikeys DROP COLUMN label;"
+    run -b pg -d "$PGDB" list
+    run -b pg -d "$PGDB" label alice vvccccbbcdef x
+    run -b pg -d "$PGDB" init
+    run -b pg -d "$PGDB" init
+    schema_pg
+    run -b pg -d "$PGDB" label alice vvccccbbcdef 'after the upgrade'
+    run -b pg -d "$PGDB" list
+}
+
 # Migration checks that need no PostgreSQL server.
 scenario_migrate_offline() {
     run_migrate --version
@@ -1087,6 +1255,12 @@ scenario_migrate_new() {
     pgq "$PGDB" "DELETE FROM yubikeys;"
     run_migrate -d "$PGDB" -e hex src.db
     dump_pg
+
+    # A SQLite database made before 1.8.0, with no label column.
+    old_sqlite_db "$WORK/old.db"
+    pgq "$PGDB" "DELETE FROM yubikeys;"
+    run_migrate -d "$PGDB" old.db
+    dump_pg
 }
 
 # Cutover: after the first copy, SQLite and PostgreSQL both change, then sync.
@@ -1097,10 +1271,11 @@ scenario_migrate_sync() {
 
     # SQLite: test.user logs in again (counter ahead), and a key is added.
     sqlite3 src.db "UPDATE yubikeys SET counter = 41, low = 2, accessed = '2026-10-12 09:00:00' WHERE username = 'test.user';
-        INSERT INTO yubikeys VALUES ('newuser', '', 1, '2026-10-11 08:00:00', '', 'vvccccbbcdeh', 'cccccccccccf', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0);"
-    # PostgreSQL: olduser logs in via Radiator (counter ahead of SQLite), an
-    # admin changes test.user2's password, and a key exists only here.
-    pgq "$PGDB" "UPDATE yubikeys SET counter = 15, low = 1, accessed = '2026-10-12 10:00:00+00' WHERE username = 'olduser';
+        INSERT INTO yubikeys VALUES ('newuser', '', 1, '2026-10-11 08:00:00', '', 'vvccccbbcdeh', 'cccccccccccf', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0, 'added on SQLite');"
+    # PostgreSQL: olduser logs in via Radiator (counter ahead of SQLite) and
+    # gets a label, an admin changes test.user2's password, and a key exists
+    # only here.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 15, low = 1, accessed = '2026-10-12 10:00:00+00', label = 'labeled in PostgreSQL' WHERE username = 'olduser';
         UPDATE yubikeys SET password = 'changed-in-pg' WHERE username = 'test.user2';
         INSERT INTO yubikeys (username, tokenId, userId, secret) VALUES ('pgonly', 'vvccccbbcdei', '999999999999', 'ABEiM0RVZneImaq7zN3u/w==');"
 
@@ -1112,7 +1287,7 @@ scenario_migrate_sync() {
     run_migrate -d "$PGDB" --mode sync src.db
 
     # A SQLite key whose public ID belongs to a different key in PostgreSQL.
-    sqlite3 src.db "INSERT INTO yubikeys VALUES ('clash', '', 1, '2026-08-01 08:00:00', '', 'vvccccbbcdei', '777777777777', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0);"
+    sqlite3 src.db "INSERT INTO yubikeys VALUES ('clash', '', 1, '2026-08-01 08:00:00', '', 'vvccccbbcdei', '777777777777', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0, '');"
     run_migrate -d "$PGDB" --mode sync src.db
     run_migrate -d "$PGDB" --mode sync --skip-invalid src.db
 }
@@ -1120,21 +1295,24 @@ scenario_migrate_sync() {
 scenario_migrate_invalid() {
     "$SCRIPT" -d "$WORK/src.db" init >/dev/null 2>&1
     sqlite3 src.db <<'EOF'
-INSERT INTO yubikeys VALUES ('good', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdef', '4a6f8e2d1c3b', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeg', '4a6f8e2d1c3c', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('bell' || char(7), '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeh', '4a6f8e2d1c3d', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('badpub', '', 1, '2026-07-01 08:00:00', '', 'abc', '4a6f8e2d1c3e', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('badpriv', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdei', 'xyz', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('badkey', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdej', '4a6f8e2d1c40', 'not-a-key', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('badactive', '', 'maybe', '2026-07-01 08:00:00', '', 'vvccccbbcdek', '4a6f8e2d1c41', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('badcounter', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdel', '4a6f8e2d1c42', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 'x', 0, 0);
+INSERT INTO yubikeys VALUES ('good', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdef', '4a6f8e2d1c3b', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeg', '4a6f8e2d1c3c', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('bell' || char(7), '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdeh', '4a6f8e2d1c3d', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('badpub', '', 1, '2026-07-01 08:00:00', '', 'abc', '4a6f8e2d1c3e', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('badpriv', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdei', 'xyz', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('badkey', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdej', '4a6f8e2d1c40', 'not-a-key', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('badactive', '', 'maybe', '2026-07-01 08:00:00', '', 'vvccccbbcdek', '4a6f8e2d1c41', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('badcounter', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdel', '4a6f8e2d1c42', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 'x', 0, 0, '');
 -- the same private ID twice once lowercased
-INSERT INTO yubikeys VALUES ('dup1', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcden', 'cccccccccccb', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
-INSERT INTO yubikeys VALUES ('dup2', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcder', 'CCCCCCCCCCCB', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('dup1', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcden', 'cccccccccccb', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+INSERT INTO yubikeys VALUES ('dup2', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcder', 'CCCCCCCCCCCB', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
 -- the text 'false', which Radiator treats as active, becomes 0 (reported)
-INSERT INTO yubikeys VALUES ('offuser', '', 'false', '2026-07-01 08:00:00', '', 'vvccccbbcdeu', '4a6f8e2d1c44', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('offuser', '', 'false', '2026-07-01 08:00:00', '', 'vvccccbbcdeu', '4a6f8e2d1c44', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
 -- a bad accessed time is cleared, not rejected
-INSERT INTO yubikeys VALUES ('badtime', '', 1, '2026-07-01 08:00:00', 'yesterday', 'vvccccbbcdet', '4a6f8e2d1c43', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0);
+INSERT INTO yubikeys VALUES ('badtime', '', 1, '2026-07-01 08:00:00', 'yesterday', 'vvccccbbcdet', '4a6f8e2d1c43', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, '');
+-- labels: too long, or with a control character
+INSERT INTO yubikeys VALUES ('longlabel', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdev', '4a6f8e2d1c45', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, hex(zeroblob(128)));
+INSERT INTO yubikeys VALUES ('tablabel', '', 1, '2026-07-01 08:00:00', '', 'vvccccbbcdbc', '4a6f8e2d1c46', '6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d', 0, 0, 0, 'tab' || char(9) || 'label');
 EOF
     run -b pg -d "$PGDB" init-pg >/dev/null
     run_migrate -d "$PGDB" src.db
@@ -1171,6 +1349,10 @@ EOF
     chmod +x sqlite3-tamper
     run_migrate SQLITE3="$WORK/sqlite3-tamper" -- -d "$PGDB" src.db
     run -b pg -d "$PGDB" list
+
+    # A PostgreSQL table made before 1.8.0 must be brought up to date first.
+    pgq "$PGDB" "ALTER TABLE yubikeys DROP COLUMN label;"
+    run_migrate -d "$PGDB" src.db
 }
 
 # --------------------------------------------------------------------------
@@ -1920,9 +2102,9 @@ scenario_install() {
 # --------------------------------------------------------------------------
 
 ALL=(help init import import_formats import_errors add encodings modify permissions tools config
-     export restore restore_errors update counters verify wrapper
+     export restore restore_errors update counters verify wrapper labels
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
-     pg_update pg_verify
+     pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
      anycast anycast_run pg_partition install)
 

@@ -1,0 +1,221 @@
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password -l primary, slot 1
+Added alice with YubiKey vvccccbbcdef (active=1, label: primary, slot 1)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password
+Added alice with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import labels.csv
+Validated labels.csv: 3 valid row(s), 0 invalid row(s)
+Imported 3 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+username  public_id     active  created              accessed  counter  label          
+--------  ------------  ------  -------------------  --------  -------  ---------------
+alice     vvccccbbcdef  1       <TIMESTAMP>            0        primary, slot 1
+alice     vvccccbbcdeg  1       <TIMESTAMP>            0                       
+bob       vvccccbbcdeh  1       <TIMESTAMP>            0        spare slot 2   
+bob       vvccccbbcdei  1       <TIMESTAMP>            0        clé de secours 
+carol     vvccccbbcdej  1       <TIMESTAMP>            0                       
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list bob
+username  public_id     active  created              accessed  counter  label         
+--------  ------------  ------  -------------------  --------  -------  --------------
+bob       vvccccbbcdeh  1       <TIMESTAMP>            0        spare slot 2  
+bob       vvccccbbcdei  1       <TIMESTAMP>            0        clé de secours
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice VVCCCCBBCDEG alice's backup, slot 2
+Labeled YubiKey vvccccbbcdeg of alice: alice's backup, slot 2
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label carol vvccccbbcdej loaner
+Labeled YubiKey vvccccbbcdej of carol: loaner
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label carol vvccccbbcdej 
+Removed the label of YubiKey vvccccbbcdej of carol
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label bob vvccccbbcdef not bob's
+yubikey-db.sh: error: label: bob has no YubiKey vvccccbbcdef
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label nobody vvccccbbcdef x
+yubikey-db.sh: error: label: nobody has no YubiKey vvccccbbcdef
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef x' OR '1'='1
+Labeled YubiKey vvccccbbcdef of alice: x' OR '1'='1
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+Labeled YubiKey vvccccbbcdef of alice: 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+yubikey-db.sh: error: label: invalid label for alice (it is longer than 255 characters)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef tab	here
+yubikey-db.sh: error: label: invalid label for alice (it contains control characters)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef
+yubikey-db.sh: error: label: usage: yubikey-db.sh label USER PUBLIC_ID LABEL ('' removes the label)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef a b
+yubikey-db.sh: error: label: usage: yubikey-db.sh label USER PUBLIC_ID LABEL ('' removes the label)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/none.db label alice vvccccbbcdef x
+yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh init' first
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db label alice vvccccbbcdef primary, slot 1
+Labeled YubiKey vvccccbbcdef of alice: primary, slot 1
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | primary, slot 1
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | alice's backup, slot 2
+bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | spare slot 2
+bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | clé de secours
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w n3w
+Updated YubiKey vvccccbbcdef for alice (active=1); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --replace -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password
+Added alice with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ printf %s\n 'bob,vvccccbbcdeh,999999999999,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,0' 'bob,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,new label' | yubikey-db.sh -d <WORK>/yubicred.db import --update -
+Validated /dev/stdin: 2 valid row(s), 0 invalid row(s)
+Replaced YubiKey vvccccbbcdeh for bob (active=0); counters reset, since its private ID or AES key changed
+Updated YubiKey vvccccbbcdei for bob (active=1); counters kept, since its private ID and AES key are unchanged
+Imported 2 row(s) into <WORK>/yubicred.db
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db add --update -u carol -P vvccccbbcdej -p 4a6f8e2d1c3f -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password -l loaner, returned
+Updated YubiKey vvccccbbcdej for carol (active=1); counters kept, since its private ID and AES key are unchanged
+[exit 0]
+
+# yubikeys table in yubicred.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | primary, slot 1
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | alice's backup, slot 2
+bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | new label
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | loaner, returned
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | spare slot 2
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --dry-run bad.csv
+yubikey-db.sh: warning: line 1: invalid label for dave (it contains control characters)
+yubikey-db.sh: warning: line 2: invalid label for erin (it is not UTF-8 text)
+yubikey-db.sh: warning: line 3: invalid label for frank (it is longer than 255 characters)
+yubikey-db.sh: warning: line 4: expected 4-7 fields, found 8
+Validated bad.csv: 0 valid row(s), 4 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db export -
+username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high,label
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,{crypt}$6$<HASH>,1,<TIMESTAMP>,,5,1,0,"primary, slot 1"
+alice,vvccccbbcdeg,4a6f8e2d1c3c,0f1e2d3c4b5a69788796a5b4c3d2e1f0,,1,<TIMESTAMP>,,0,0,0,"alice's backup, slot 2"
+bob,vvccccbbcdeh,999999999999,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,0,<TIMESTAMP>,,0,0,0,spare slot 2
+bob,vvccccbbcdei,4a6f8e2d1c3e,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,<TIMESTAMP>,,5,1,0,new label
+carol,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,,1,<TIMESTAMP>,,0,0,0,"loaner, returned"
+yubikey-db.sh: warning: exported 5 row(s) to standard output, with every AES key and private ID in clear text
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/restored.db import --from-export all.csv
+Validated all.csv: 5 valid row(s), 0 invalid row(s)
+Imported 5 row(s) into <WORK>/restored.db
+[exit 0]
+
+# all.csv vs restored.csv (times masked): identical
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export --replace old-export.csv
+yubikey-db.sh: warning: line 4: expected 11 fields, found 12
+Validated old-export.csv: 2 valid row(s), 1 invalid row(s)
+yubikey-db.sh: error: nothing imported; fix the rows above or re-run with --skip-invalid
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db import --from-export --replace --skip-invalid old-export.csv
+yubikey-db.sh: warning: line 4: expected 11 fields, found 12
+Validated old-export.csv: 2 valid row(s), 1 invalid row(s)
+Imported 2 row(s) into <WORK>/yubicred.db
+Counters were kept from the database wherever it was ahead of the export.
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db list
+username  public_id     active  created              accessed  counter  label                 
+--------  ------------  ------  -------------------  --------  -------  ----------------------
+alice     vvccccbbcdef  1       <TIMESTAMP>            9        primary, slot 1       
+alice     vvccccbbcdeg  1       <TIMESTAMP>            0        alice's backup, slot 2
+bob       vvccccbbcdeh  0       <TIMESTAMP>            0        spare slot 2          
+bob       vvccccbbcdei  1       <TIMESTAMP>            5        new label             
+carol     vvccccbbcdej  1       <TIMESTAMP>            0        loaner, returned      
+henry     vvccccbbcder  1       <TIMESTAMP>            0                              
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/old.db list
+yubikey-db.sh: error: <WORK>/old.db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh init' to bring it up to date
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/old.db label olduser vvccccbbcdef x
+yubikey-db.sh: error: <WORK>/old.db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh init' to bring it up to date
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/old.db init
+Added the label column to the yubikeys table
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/old.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/old.db
+[exit 0]
+
+# schema of old.db
+CREATE TABLE yubikeys (
+    username varchar(255) not null,
+    password varchar(64)  not null,
+    active   boolean default false,
+    created  datetime not null,
+    accessed datetime not null,
+    tokenId  varchar(60) unique not null,   -- YubiKey public ID (modhex)
+    userId   varchar(60) unique not null,   -- YubiKey private ID (hex)
+    secret   varchar(60) not null,          -- AES key (base64 or hex)
+    counter  int default 0,
+    low      int default 0,
+    high     int default 0, label varchar(255) not null default '',
+    primary key (userId)
+);
+CREATE INDEX yubikeys_username ON yubikeys (username);
+CREATE TRIGGER yubikeys_counters_forward
+BEFORE UPDATE OF counter, low ON yubikeys
+FOR EACH ROW WHEN NEW.counter < OLD.counter OR (NEW.counter = OLD.counter AND NEW.low <= OLD.low)
+BEGIN
+    SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
+END;
+
+$ yubikey-db.sh -d <WORK>/old.db init
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/old.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/old.db
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/old.db label olduser vvccccbbcdef after the upgrade
+Labeled YubiKey vvccccbbcdef of olduser: after the upgrade
+[exit 0]
+
+# yubikeys table in old.db
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+olduser |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 4 | 1 | 0 | after the upgrade
+
+$ yubikey-db.sh -d <WORK>/other.db list
+yubikey-db.sh: error: <WORK>/other.db has no yubikeys table; run 'yubikey-db.sh init' first
+[exit 1]
+

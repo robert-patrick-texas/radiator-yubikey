@@ -91,9 +91,9 @@ Imported 1 row(s) into <WORK>/yubicred.db
 # same public ID: yes
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list
-username     public_id     active  created              accessed  counter
------------  ------------  ------  -------------------  --------  -------
-anycast-<HOST>  vv<PUBLIC ID>  1       <TIMESTAMP>            0      
+username     public_id     active  created              accessed  counter  label
+-----------  ------------  ------  -------------------  --------  -------  -----
+anycast-<HOST>  vv<PUBLIC ID>  1       <TIMESTAMP>            0             
 [exit 0]
 
 $ yubikey-anycast.sh -c anycast.conf check

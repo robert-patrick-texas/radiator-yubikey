@@ -9,23 +9,23 @@ Imported 2 row(s) into <WORK>/yubicred.db
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-test.user2 |  | 1 | integer | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
-test.user | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+test.user2 |  | 1 | integer | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0 | 
+test.user | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 0 | 0 | 0 | primary slot 2
 
 # crypt check for test.user: match
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list
-username    public_id     active  created              accessed  counter
-----------  ------------  ------  -------------------  --------  -------
-test.user   cbdefghijkln  1       <TIMESTAMP>            0      
-test.user2  cbdefghijklr  1       <TIMESTAMP>            0      
+username    public_id     active  created              accessed  counter  label         
+----------  ------------  ------  -------------------  --------  -------  --------------
+test.user   cbdefghijkln  1       <TIMESTAMP>            0        primary slot 2
+test.user2  cbdefghijklr  1       <TIMESTAMP>            0                      
 [exit 0]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list test.user2
-username    public_id     active  created              accessed  counter
-----------  ------------  ------  -------------------  --------  -------
-test.user2  cbdefghijklr  1       <TIMESTAMP>            0      
+username    public_id     active  created              accessed  counter  label
+----------  ------------  ------  -------------------  --------  -------  -----
+test.user2  cbdefghijklr  1       <TIMESTAMP>            0             
 [exit 0]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list nobody
@@ -42,9 +42,9 @@ yubikey-db.sh: error: import failed and was rolled back; no rows imported (an ex
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list
-username    public_id     active  created              accessed  counter
-----------  ------------  ------  -------------------  --------  -------
-test.user   cbdefghijkln  1       <TIMESTAMP>            0      
-test.user2  cbdefghijklr  1       <TIMESTAMP>            0      
+username    public_id     active  created              accessed  counter  label         
+----------  ------------  ------  -------------------  --------  -------  --------------
+test.user   cbdefghijkln  1       <TIMESTAMP>            0        primary slot 2
+test.user2  cbdefghijklr  1       <TIMESTAMP>            0                      
 [exit 0]
 

@@ -13,6 +13,8 @@ These scripts:
   role and a Radiator role that can only update counters
 - add users and YubiKeys one at a time or from a CSV file, and update them
   without resetting the counters that block replayed OTPs
+- give each YubiKey a label, such as `primary, slot 1` or `spare, slot 2`,
+  to tell a user's YubiKeys apart
 - check a user's PIN and OTP exactly as Radiator 4.30 does (`verify`)
 - list, enable, disable and delete users, and back up and restore everything
 - print the matching Radiator configuration
@@ -111,6 +113,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | Check a user's PIN and OTP | `sudo ./yubikey-db.sh verify -u alice` |
 | Load users from CSV | `sudo ./yubikey-db.sh import --dry-run users.csv`, then without `--dry-run` |
 | Change a PIN (counters kept) | `sudo ./yubikey-db.sh add --update -u alice -P vvccccbbcdef` |
+| Label a YubiKey | `sudo ./yubikey-db.sh label alice vvccccbbcdeg 'spare, slot 2'` |
 | Suspend a lost YubiKey | `sudo ./yubikey-db.sh disable alice vvccccbbcdef` |
 | Remove a user | `sudo ./yubikey-db.sh delete alice` |
 | Encrypted backup | `sudo ./yubikey-db.sh export - \| gpg -e -r backup@example.com > yubikeys.csv.gpg` |

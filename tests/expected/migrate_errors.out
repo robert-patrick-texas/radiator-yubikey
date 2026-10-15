@@ -33,7 +33,11 @@ yubikey-db-migrate.sh: error: verification failed; the changes were rolled back 
 [exit 1]
 
 $ yubikey-db.sh -b pg -d <T>_db list
- username | public_id | active | created | accessed | counter 
-----------+-----------+--------+---------+----------+---------
+ username | public_id | active | created | accessed | counter | label 
+----------+-----------+--------+---------+----------+---------+-------
 [exit 0]
+
+$ yubikey-db-migrate.sh -d <T>_db src.db
+yubikey-db-migrate.sh: error: the yubikeys table in PostgreSQL database <T>_db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh -b pg init' first
+[exit 1]
 

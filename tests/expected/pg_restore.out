@@ -8,9 +8,9 @@ Imported 4 row(s) into PostgreSQL database <T>_db
 
 # source.csv vs restored.csv (times masked): differs:
 2c2
-< DOMAIN\old user,vvccccbbcdeg,tttttttttttt,00112233445566778899aabbccddeeff,plainpin,true,current_timestamp,<TIMESTAMP>,12,3,0
+< DOMAIN\old user,vvccccbbcdeg,tttttttttttt,00112233445566778899aabbccddeeff,plainpin,true,current_timestamp,<TIMESTAMP>,12,3,0,"old, ""quoted"" key"
 ---
-> DOMAIN\old user,vvccccbbcdeg,dddddddddddd,00112233445566778899aabbccddeeff,plainpin,1,<TIMESTAMP>,<TIMESTAMP>,12,3,0
+> DOMAIN\old user,vvccccbbcdeg,dddddddddddd,00112233445566778899aabbccddeeff,plainpin,1,<TIMESTAMP>,<TIMESTAMP>,12,3,0,"old, ""quoted"" key"
 
 # times in <T>_db (UTC)
 username | created | accessed
@@ -27,11 +27,11 @@ Counters were kept from the database wherever it was ahead of the export.
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0
-test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 99 | 1 | 1
-comma.user | a,b"c | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdef | cccccccccccb | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0
-DOMAIN\old user | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+test.user2 |  | 1 | smallint | <TIMESTAMP> |  | cbdefghijklr | 0a1b2c3d4e5f | ASNFZ4mrze8BI0VniavN7w== | 0 | 0 | 0 | 
+test.user | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | cbdefghijkln | 456789abcdef | qqqqqqqqqqqqqqqqqqqqqg== | 99 | 1 | 1 | primary slot 2
+comma.user | a,b"c | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdef | cccccccccccb | ABEiM0RVZneImaq7zN3u/w== | 0 | 0 | 0 | 
+DOMAIN\old user | plainpin | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | dddddddddddd | ABEiM0RVZneImaq7zN3u/w== | 12 | 3 | 0 | old, "quoted" key
 
 # times in <T>_db (UTC)
 username | created | accessed

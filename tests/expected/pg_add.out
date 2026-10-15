@@ -9,9 +9,9 @@ Added bob with YubiKey vvccccbbcdeg (active=0)
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-bob |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+bob |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -b pg -d <T>_db add -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
 ERROR:  duplicate key value violates unique constraint "yubikeys_tokenid_key"
@@ -23,15 +23,15 @@ Added alice with YubiKey vvccccbbcdef (active=1)
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 111111111111 | AAAAAAAAAAAAAAAAAAAAAA== | 0 | 0 | 0
-bob |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 111111111111 | AAAAAAAAAAAAAAAAAAAAAA== | 0 | 0 | 0 | 
+bob |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -b pg -d <T>_db add --replace -u carol -P vvccccbbcdeg -p 111111111111 -k ffffffffffffffffffffffffffffffff --no-password
 Added carol with YubiKey vvccccbbcdeg (active=1)
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 111111111111 | /////////////////////w== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 111111111111 | /////////////////////w== | 0 | 0 | 0 | 
 

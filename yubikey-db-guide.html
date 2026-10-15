@@ -374,10 +374,11 @@ generate</strong>, and that key is loaded into the database.</p>
 <tbody>
 <tr>
 <td><code>yubikey-db.sh</code></td>
-<td>Creates the database, adds, updates, lists, disables and deletes
-users and YubiKeys, checks a password and OTP (<code>verify</code>),
-exports and restores, and prints the Radiator configuration. SQLite by
-default, PostgreSQL with <code>-b pg</code>.</td>
+<td>Creates the database, adds, updates, labels, lists, disables and
+deletes users and YubiKeys, checks a password and OTP
+(<code>verify</code>), exports and restores, and prints the Radiator
+configuration. SQLite by default, PostgreSQL with
+<code>-b pg</code>.</td>
 </tr>
 <tr>
 <td><code>install.sh</code></td>
@@ -908,6 +909,11 @@ YubiCloud. Use slot 2 unless you're sure.</p>
 </tr>
 </tbody>
 </table>
+<p>If a user gets more than one YubiKey, also note which is which, and
+the slot, for example <code>primary, slot 2</code> and
+<code>spare, slot 2</code>: store that as the YubiKey's label
+(<code>-l</code>, or the CSV column <code>label</code>), which
+<code>list</code> shows.</p>
 <div class="caution">
 <div class="title">
 <p>Caution</p>
@@ -1170,16 +1176,21 @@ them.</p>
 <section id="add-accounts" class="level2">
 <h2>Add accounts</h2>
 <p>A row in the database is one YubiKey of one user. A user can have
-several YubiKeys. Each command below is for SQLite; add
-<code>-b pg</code> (or set <code>DB_BACKEND=pg</code>) for PostgreSQL,
-and leave out <code>sudo</code> there.</p>
+several YubiKeys: Radiator finds the right one by the public ID at the
+start of the OTP, and a <strong>label</strong> such as
+<code>primary, slot 1</code> or <code>spare, slot 2</code> tells them
+apart for you (Radiator never reads it). Each command below is for
+SQLite; add <code>-b pg</code> (or set <code>DB_BACKEND=pg</code>) for
+PostgreSQL, and leave out <code>sudo</code> there.</p>
 <section id="one-account" class="level3">
 <h3>One account</h3>
 <p><code>add</code> asks for each value you leave out; the private ID,
-AES key and PIN aren't shown as you type:</p>
+AES key and PIN aren't shown as you type. Press Enter at the label
+prompt for none:</p>
 <pre class="bash"><code>sudo ./yubikey-db.sh add                              # asks for everything
-sudo ./yubikey-db.sh add -u alice -P vvccccbbcdef     # asks for the private ID, key and PIN
-sudo ./yubikey-db.sh add -u kiosk -P vvccccbbcdeh --no-password</code></pre>
+sudo ./yubikey-db.sh add -u alice -P vvccccbbcdef     # asks for the private ID, key, PIN and label
+sudo ./yubikey-db.sh add -u alice -P vvccccbbcdeg -l &#39;spare, slot 2&#39;
+sudo ./yubikey-db.sh add -u kiosk -P vvccccbbcdeh --no-password -l &#39;&#39;</code></pre>
 <p>PINs are stored as salted SHA-512 <code>{crypt}</code> hashes.
 Options <code>-k</code> (AES key) and <code>-w</code> (PIN) also exist,
 but other users can see them in <code>ps</code> and they stay in your
@@ -1190,9 +1201,10 @@ replace</a>).</p>
 </section>
 <section id="many-accounts-from-a-csv-file" class="level3">
 <h3>Many accounts from a CSV file</h3>
-<pre class="csv"><code>username,public_id,private_id,aes_key,password,active
-alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,1234,1
-bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,5678,yes</code></pre>
+<pre class="csv"><code>username,public_id,private_id,aes_key,password,active,label
+alice,vvccccbbcdef,4a6f8e2d1c3b,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,1234,1,primary slot 1
+alice,vvccccbbcdeg,1b2c3d4e5f60,8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d,1234,1,spare slot 2
+bob,vvccccbbcdeh,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,5678,yes</code></pre>
 <table>
 <thead>
 <tr>
@@ -1234,12 +1246,20 @@ bob,vvccccbbcdeg,9e8d7c6b5a41,0f1e2d3c4b5a69788796a5b4c3d2e1f0,5678,yes</code></
 <td><code>1</code>/<code>0</code>, <code>true</code>/<code>false</code>,
 <code>yes</code>/<code>no</code>; default <code>1</code></td>
 </tr>
+<tr>
+<td><code>label</code></td>
+<td>No</td>
+<td>A description of the YubiKey, up to 255 characters; empty for
+none</td>
+</tr>
 </tbody>
 </table>
 <p>The header row is optional; blank lines and lines starting with
 <code>#</code> are skipped; Windows line endings are accepted; spaces
 and double quotes around a field are removed; <strong>fields can't
-contain commas</strong>.</p>
+contain commas</strong> (use the <code>label</code> command for a label
+with a comma). Files without the <code>label</code> column, as earlier
+versions wrote them, still load.</p>
 <pre class="bash"><code>chmod 600 users.csv                                  # it holds AES keys
 sudo ./yubikey-db.sh import --dry-run users.csv      # check every row; changes nothing
 sudo ./yubikey-db.sh import users.csv
@@ -1260,12 +1280,15 @@ set up again and again. It sends the values to
 you to touch the YubiKey to run <code>verify</code>.</p>
 <pre class="bash"><code>install -m 0700 yubikey-db-user.example.sh ~/yk-user.sh   # your copy will hold an AES key
 nano ~/yk-user.sh       # set cred_username, cred_password, cred_publicid, cred_privateid, cred_secret,
-                        # and db_backend, db_name and require2factor if not the defaults
+                        # cred_label if you want one, and db_backend, db_name and require2factor
+                        # if not the defaults
 sudo ~/yk-user.sh       # SQLite; for PostgreSQL run it as yourself
 shred -u ~/yk-user.sh   # when done</code></pre>
 <p>The YubiKey's public ID decides which record is meant; other YubiKeys
 of the user are left alone. The PIN can't contain a comma, start or end
-with a space, or be in double quotes.</p>
+with a space, or be in double quotes, and the label can't contain a
+comma. An empty <code>cred_label</code> keeps the label the YubiKey
+already has.</p>
 </section>
 </section>
 <section id="verify-credentials" class="level2">
@@ -1289,8 +1312,10 @@ Accepted. The OTP&#39;s counters were saved, so it cannot be used again.</code><
 <p>Each line is one check, so a failure says what to fix: a
 <code>WRONG</code> PIN, an OTP that doesn't decrypt (the database has a
 different AES key from the YubiKey), a private ID that doesn't match, or
-a replayed OTP. It never shows the AES key or private ID. An accepted
-OTP's counters are saved, as Radiator saves them.</p>
+a replayed OTP. It never shows the AES key or private ID. When the
+YubiKey has a label, a first line <code>label:</code> shows it, so you
+can see which of the user's YubiKeys was used. An accepted OTP's
+counters are saved, as Radiator saves them.</p>
 <ul>
 <li><code>-u USER</code> gives the username.
 <code>--no-require2factor</code> matches a Radiator without
@@ -1322,7 +1347,8 @@ and then touch the YubiKey, in the password field.</p>
 <section id="maintain-accounts" class="level2">
 <h2>Maintain accounts</h2>
 <p>Add <code>-b pg</code> for PostgreSQL. <code>list</code> never shows
-AES keys or PINs.</p>
+AES keys or PINs; it shows each YubiKey's public ID,
+<code>active</code>, times, counter and label.</p>
 <table>
 <thead>
 <tr>
@@ -1349,7 +1375,15 @@ AES keys or PINs.</p>
 </tr>
 <tr>
 <td>Give a user another YubiKey</td>
-<td><code>sudo ./yubikey-db.sh add -u alice -P vvccccbbcdeg</code></td>
+<td><code>sudo ./yubikey-db.sh add -u alice -P vvccccbbcdeg -l 'spare, slot 2'</code></td>
+</tr>
+<tr>
+<td>Label a YubiKey, or change its label</td>
+<td><code>sudo ./yubikey-db.sh label alice vvccccbbcdeg 'spare, slot 2'</code></td>
+</tr>
+<tr>
+<td>Remove a YubiKey's label</td>
+<td><code>sudo ./yubikey-db.sh label alice vvccccbbcdeg ''</code></td>
 </tr>
 <tr>
 <td>Suspend a user (all their YubiKeys)</td>
@@ -1410,6 +1444,11 @@ key)</td>
 <td>New YubiKey</td>
 <td>Added</td>
 <td>Added</td>
+</tr>
+<tr>
+<td>Label</td>
+<td>The one given; without one, the YubiKey's label is kept</td>
+<td>The one given; without one, the YubiKey's label is kept</td>
 </tr>
 </tbody>
 </table>
@@ -1480,8 +1519,19 @@ clone.</p>
 newer version needs to an existing database and changes nothing else.
 Version 1.2.1 adds the trigger that stops the same OTP being accepted
 twice at the same moment (see <a href="#database-layout">Database
-layout</a>). With two database servers, run it once, against the
-primary; the standby gets the change by replication.</p>
+layout</a>). Version 1.8.0 adds the <code>label</code> column:
+<code>init</code> prints
+<code>Added the label column to the yubikeys table</code>, and until you
+run it, the other commands stop with
+<code>... was made by an older version of yubikey-db.sh; run 'yubikey-db.sh init' to bring it up to date</code>.
+Radiator doesn't need the column, so it keeps working before and after.
+With two database servers or three sites, run it once, against the
+primary; the standbys get the change by replication.</p>
+<p>If your own tools add rows with
+<code>INSERT INTO yubikeys VALUES (...)</code>, without naming the
+columns, as the old example commands did, they fail once the table has
+the <code>label</code> column: name the columns, or use <code>add</code>
+or <code>import</code>.</p>
 </section>
 <section id="a-database-from-the-old-example-commands" class="level3">
 <h3>A database from the old example commands</h3>
@@ -1508,12 +1558,12 @@ change.</p>
 <section id="move-from-sqlite-to-postgresql" class="level2">
 <h2>Move from SQLite to PostgreSQL</h2>
 <p><code>yubikey-db-migrate.sh</code> copies every user and YubiKey,
-<strong>with their counters</strong>, from the SQLite database into an
-empty PostgreSQL database, in one transaction. It reads a consistent
-snapshot, so Radiator keeps running on SQLite meanwhile, and commits
-only after checking every copied row against an independent SHA-256
-fingerprint of the snapshot. Rows from the old example commands are
-normalized and each change is reported (for example, an
+<strong>with their counters</strong> and labels, from the SQLite
+database into an empty PostgreSQL database, in one transaction. It reads
+a consistent snapshot, so Radiator keeps running on SQLite meanwhile,
+and commits only after checking every copied row against an independent
+SHA-256 fingerprint of the snapshot. Rows from the old example commands
+are normalized and each change is reported (for example, an
 <code>active</code> of <code>false</code> becomes 0, and the report
 warns that those YubiKeys could log in before).</p>
 <p>The account that runs it must be a member of
@@ -1523,7 +1573,10 @@ by joining the <code>radiator</code> group
 <ol type="1">
 <li>Create the PostgreSQL database (see <a
 href="#create-the-database">Create the database</a>):
-<code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"</code>.</li>
+<code>sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"</code>.
+For a database made by an older version, run
+<code>./yubikey-db.sh -b pg init</code> instead, which brings it up to
+date.</li>
 <li>Rehearse:
 <code>./yubikey-db-migrate.sh --dry-run /etc/radiator/db/yubicred.db</code>.
 It does everything, then rolls back.</li>
@@ -1537,7 +1590,7 @@ then <code>sudo systemctl restart radiator</code>.</li>
 It moves counters forward where SQLite is ahead and adds YubiKeys added
 meanwhile. It never moves a counter backward, never deletes, and lists
 (without changing) rows that differ in username, PIN,
-<code>active</code> or key.</li>
+<code>active</code>, key or label.</li>
 </ol>
 <p>Without step 5, an OTP used on SQLite after the copy could be used
 once more on PostgreSQL. Keep the SQLite file afterwards, unchanged, for
@@ -3331,7 +3384,7 @@ then <code>init</code>.</td>
 <td><code>add</code></td>
 <td><code>-u USER</code>, <code>-P PUBLIC_ID</code>,
 <code>-p PRIVATE_ID</code>, <code>-k AES_KEY</code>,
-<code>-w PIN</code>, <code>--no-password</code>,
+<code>-w PIN</code>, <code>-l LABEL</code>, <code>--no-password</code>,
 <code>--inactive</code>, <code>--update</code> or
 <code>--replace</code></td>
 <td>Add one YubiKey; asks for missing values.</td>
@@ -3359,6 +3412,12 @@ accepted.</td>
 <td><code>USER [PUBLIC_ID]</code></td>
 <td>Set <code>active</code> to 1 or 0, or delete the user's rows (or one
 YubiKey).</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td><code>USER PUBLIC_ID LABEL</code></td>
+<td>Set the label of one of the user's YubiKeys: UTF-8 text, up to 255
+characters, no control characters; <code>''</code> removes it.</td>
 </tr>
 <tr>
 <td><code>export</code></td>
@@ -3725,13 +3784,20 @@ command line: test keys only.</p>
 <td>The replay counters (<code>low</code> is the session counter;
 Radiator sets <code>high</code> to 0)</td>
 </tr>
+<tr>
+<td><code>label</code></td>
+<td><code>varchar(255)</code></td>
+<td><code>varchar(255)</code></td>
+<td>Describes the YubiKey, for people; empty for none. Radiator doesn't
+read it. Added in 1.8.0.</td>
+</tr>
 </tbody>
 </table>
 <p>PostgreSQL roles: <code>yubikey_admin</code> owns the database and
 table; its members manage users. <code>radiator</code> can
 <code>SELECT</code> username, password, active, tokenId, userId, secret
 and the counters, and <code>UPDATE</code> only accessed and the
-counters.</p>
+counters; it can't read the labels.</p>
 <p>In both databases, the trigger <code>yubikeys_counters_forward</code>
 refuses an <code>UPDATE</code> of <code>counter</code> or
 <code>low</code> that doesn't move them forward, with the error
@@ -3742,10 +3808,13 @@ To reset a YubiKey's counters on purpose, replace its row
 <section id="export-format" class="level3">
 <h3>Export format</h3>
 <p><code>export</code> writes the header
-<code>username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high</code>
+<code>username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high,label</code>
 and one row per YubiKey: AES keys as 32 hex characters, PINs as stored,
 times in UTC, and fields with a comma, quote or line break quoted. Only
-<code>import --from-export</code> reads it.</p>
+<code>import --from-export</code> reads it. It also reads exports made
+before 1.8.0, which have no <code>label</code> column; with
+<code>--replace</code>, the YubiKeys in them keep the labels they
+have.</p>
 </section>
 <section id="how-radiator-430-checks-a-login" class="level3">
 <h3>How Radiator 4.30 checks a login</h3>

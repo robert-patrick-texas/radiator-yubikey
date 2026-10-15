@@ -26,11 +26,13 @@
 #   sync  Brings PostgreSQL up to date after a 'new' migration: inserts keys
 #         that are missing and moves counters forward where SQLite is ahead.
 #         It never moves a counter backward, never deletes, and leaves rows
-#         that differ in username, password, active or key unchanged (they are
-#         listed). Run it right after Radiator switches to PostgreSQL.
+#         that differ in username, password, active, key or label unchanged
+#         (they are listed). Run it right after Radiator switches to
+#         PostgreSQL.
 #
 # CUTOVER
 #   1. sudo -u postgres ./yubikey-db.sh -b pg init-pg --admin "$USER"
+#      (or, for a database made by an older version: ./yubikey-db.sh -b pg init)
 #   2. ./yubikey-db-migrate.sh --dry-run /etc/radiator/db/yubicred.db
 #   3. ./yubikey-db-migrate.sh /etc/radiator/db/yubicred.db
 #   4. Point Radiator at PostgreSQL (./yubikey-db.sh -b pg config), restart it
@@ -121,15 +123,18 @@ EOF
 # Columns read from SQLite. rowid identifies a row in messages and links the
 # two reads of the snapshot.
 SRC_COLUMNS="rowid, username, password, active, created, accessed, tokenId, userId, secret, counter, low, high"
+# The label column, or an empty label for a database made before 1.8.0 (set
+# once the snapshot is taken).
+SRC_LABEL="'' AS label"
 
 # Read the snapshot as JSON (a separate read from the CSV that is loaded) and
 # print "rowid,sha256" per row. The fingerprint covers username, password,
-# active, public ID, private ID and AES key, normalized by the same rules as
-# the SQL below but implemented independently, so a mistake in either shows
-# up as a mismatch.
+# active, public ID, private ID, AES key and label, normalized by the same
+# rules as the SQL below but implemented independently, so a mistake in
+# either shows up as a mismatch.
 source_fingerprints() {
     "$SQLITE3" -batch -readonly -json "$WORKDIR/snapshot.db" \
-        "SELECT rowid AS n, username, password, active, tokenId AS tokenid, userId AS userid, secret FROM yubikeys ORDER BY rowid;" \
+        "SELECT rowid AS n, username, password, active, tokenId AS tokenid, userId AS userid, secret, $SRC_LABEL FROM yubikeys ORDER BY rowid;" \
     | perl -MJSON::PP -MDigest::SHA=sha256_hex -MMIME::Base64 -MEncode=encode_utf8 -e '
         local $/;
         my $json = <STDIN>;
@@ -150,7 +155,8 @@ source_fingerprints() {
             my $s = trim($r->{secret}) // "";
             my $key = $s =~ /^[0-9A-Fa-f]{32}$/ ? lc $s
                     : $s =~ m{^[A-Za-z0-9+/]{22}==$} ? unpack("H*", decode_base64($s)) : "";
-            my $line = join "\x1f", $r->{username} // "", $r->{password} // "", $active, $token, $user, $key;
+            my $line = join "\x1f", $r->{username} // "", $r->{password} // "", $active, $token, $user, $key,
+                            $r->{label} // "";
             print "$r->{n},", sha256_hex(encode_utf8($line)), "\n";
         }'
 }
@@ -193,6 +199,7 @@ SELECT n, username,
        CASE WHEN accessed ~ '^\d{4}-\d{2}-\d{2}' AND pg_input_is_valid(accessed, 'timestamp')
             THEN accessed::timestamp AT TIME ZONE 'UTC' END AS accessed,
        coalesce(accessed, '') <> '' AS had_accessed,
+       coalesce(label, '') AS label,
        NULL::text AS problem
   FROM yk_src;
 
@@ -206,6 +213,8 @@ UPDATE yk_norm SET problem = CASE
     WHEN key_hex IS NULL THEN 'AES key is not 32 hex or 24 base64 characters'
     WHEN active IS NULL THEN 'active value ' || quote_literal(active_raw) || ' is not 1/0, true/false, yes/no or empty'
     WHEN counter IS NULL OR low IS NULL OR high IS NULL THEN 'counter, low or high is not a whole number'
+    WHEN length(label) > 255 THEN 'label is longer than 255 characters'
+    WHEN label ~ '[[:cntrl:]]' THEN 'label contains control characters'
 END;
 
 -- After normalization, two rows can name the same key (for example, a private
@@ -252,10 +261,10 @@ SELECT (:n_invalid > 0 AND NOT :skip_invalid) AS stop_invalid, (:n_valid = 0) AS
 -- with their counters.
 CREATE TEMP TABLE yk_inserted (userid text PRIMARY KEY) ON COMMIT DROP;
 WITH ins AS (
-    INSERT INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high)
+    INSERT INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, counter, low, high, label)
     SELECT username, password, active, coalesce(created, now()), accessed, tokenid, userid,
            CASE WHEN :'enc' = 'hex' THEN key_hex ELSE encode(decode(key_hex, 'hex'), 'base64') END,
-           counter, low, high
+           counter, low, high, label
       FROM yk_norm v
      WHERE problem IS NULL
        AND NOT EXISTS (SELECT FROM yubikeys y WHERE y.userid = v.userid)
@@ -314,7 +323,7 @@ SELECT v.n, v.username, v.tokenid, v.counter, v.low,
        encode(sha256(convert_to(concat_ws(E'\x1f', y.username, y.password, y.active::text, y.tokenid, y.userid,
            CASE WHEN y.secret ~ '^[0-9A-Fa-f]{32}$' THEN lower(y.secret)
                 WHEN y.secret ~ '^[A-Za-z0-9+/]{22}==$' THEN encode(decode(y.secret, 'base64'), 'hex')
-                ELSE '' END), 'UTF8')), 'hex') AS target_digest
+                ELSE '' END, y.label), 'UTF8')), 'hex') AS target_digest
   FROM yk_norm v
   LEFT JOIN yk_digest d USING (n)
   LEFT JOIN yubikeys y ON y.userid = v.userid
@@ -322,7 +331,7 @@ SELECT v.n, v.username, v.tokenid, v.counter, v.low,
  WHERE v.problem IS NULL;
 
 SELECT 'differs: user ' || username || ' (public ID ' || tokenid || ') has a different username, password,'
-       || ' active, public ID or AES key in PostgreSQL; left unchanged'
+       || ' active, public ID, AES key or label in PostgreSQL; left unchanged'
   FROM yk_check WHERE present AND NOT inserted AND target_digest IS DISTINCT FROM source_digest ORDER BY n;
 SELECT count(*) AS n_differs FROM yk_check
  WHERE present AND NOT inserted AND target_digest IS DISTINCT FROM source_digest \gset
@@ -413,6 +422,8 @@ SELECT CASE
     WHEN NOT (has_table_privilege('yubikeys', 'SELECT') AND has_table_privilege('yubikeys', 'INSERT')
               AND has_table_privilege('yubikeys', 'UPDATE')) THEN 'denied'
     WHEN NOT has_database_privilege(current_database(), 'TEMPORARY') THEN 'no-temp'
+    WHEN NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('yubikeys') AND attname = 'label'
+                     AND NOT attisdropped) THEN 'old'
     ELSE 'ok' END;
 EOF
 ) || die "cannot use $DB_DESC: ${state#psql: error: }"
@@ -420,6 +431,7 @@ case $state in
     ok)        ;;
     version*)  die "PostgreSQL 18 or later is required (this server runs ${state#version })" ;;
     missing)   die "$DB_DESC has no yubikeys table; run 'yubikey-db.sh -b pg init-pg' first" ;;
+    old)       die "the yubikeys table in $DB_DESC was made by an older version of yubikey-db.sh; run 'yubikey-db.sh -b pg init' first" ;;
     *)         die "${PGUSER:-$(id -un)} cannot write to the yubikeys table in $DB_DESC or create temporary tables (is it a member of ${PG_ADMIN_ROLE:-yubikey_admin}?)" ;;
 esac
 
@@ -434,6 +446,9 @@ if [[ $check != ok ]]; then
 fi
 "$SQLITE3" -batch -readonly "$WORKDIR/snapshot.db" "SELECT $SRC_COLUMNS FROM yubikeys LIMIT 0;" >/dev/null 2>&1 \
     || die "$SRC has no yubikeys table with the columns yubikey-db.sh uses"
+if "$SQLITE3" -batch -readonly "$WORKDIR/snapshot.db" "SELECT label FROM yubikeys LIMIT 0;" >/dev/null 2>&1; then
+    SRC_LABEL=label
+fi
 
 info "Source: $SRC (snapshot taken $snapshot_time)"
 info "Target: $DB_DESC, mode $MODE, AES keys stored as $SECRET_ENCODING"
@@ -460,10 +475,10 @@ EOF
     fi
     cat <<'EOF'
 CREATE TEMP TABLE yk_src (n bigint, username text, password text, active text, created text,
-    accessed text, tokenid text, userid text, secret text, counter text, low text, high text) ON COMMIT DROP;
+    accessed text, tokenid text, userid text, secret text, counter text, low text, high text, label text) ON COMMIT DROP;
 COPY yk_src FROM STDIN (FORMAT csv);
 EOF
-    "$SQLITE3" -batch -readonly -csv "$WORKDIR/snapshot.db" "SELECT $SRC_COLUMNS FROM yubikeys ORDER BY rowid;"
+    "$SQLITE3" -batch -readonly -csv "$WORKDIR/snapshot.db" "SELECT $SRC_COLUMNS, $SRC_LABEL FROM yubikeys ORDER BY rowid;"
     echo '\.'
     echo 'CREATE TEMP TABLE yk_digest (n bigint PRIMARY KEY, digest text NOT NULL) ON COMMIT DROP;'
     echo 'COPY yk_digest FROM STDIN (FORMAT csv);'

@@ -39,9 +39,9 @@ yubikey-db.sh: error: verify: rejected (disabled, static password)
 [exit 1]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 1 | 0
-carol |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 1 | 0 | 
+carol |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
 
 $ (as radiator) yubikey-db.sh -b pg -d <T>_db verify -u alice
 yubikey-db.sh: error: no write access to the yubikeys table in PostgreSQL database <T>_db (is <T>_radiator a member of <T>_admin?)

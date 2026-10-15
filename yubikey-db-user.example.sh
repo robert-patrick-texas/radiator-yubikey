@@ -23,8 +23,9 @@
 #   - A YubiKey that is not in the database yet is added. Any other
 #     YubiKeys the user has are left as they are.
 #   - A YubiKey that is already there gets this username, password and
-#     active flag. Its counters are kept if the private ID and AES key are
-#     unchanged, and start again at 0 if they changed (it was reprogrammed).
+#     active flag, and this label unless it is empty. Its counters are kept
+#     if the private ID and AES key are unchanged, and start again at 0 if
+#     they changed (it was reprogrammed).
 #   The values reach 'yubikey-db.sh import --update -' through a pipe, so they
 #   never appear in 'ps' output or in a temporary file.
 #
@@ -38,6 +39,8 @@ cred_publicid=''      # public ID, 12 modhex characters
 cred_privateid=''     # private ID, 12 hex characters
 cred_secret=''        # AES key, 32 hex characters
 cred_active=1         # 1 = may log in, 0 = disabled
+cred_label=''         # optional description of the YubiKey, e.g. spare slot 2
+                      # (empty keeps the label the YubiKey already has)
 
 # ---- The database ------------------------------------------------------------
 db_backend=sqlite     # sqlite or pg
@@ -73,7 +76,7 @@ done
 # yubikey-db.sh also trims spaces around each value and removes surrounding
 # double quotes, which would change a password silently. For such a password,
 # use 'yubikey-db.sh add --update', which asks for it.
-for var in cred_username cred_password cred_publicid cred_privateid cred_secret cred_active; do
+for var in cred_username cred_password cred_publicid cred_privateid cred_secret cred_active cred_label; do
     [[ ${!var} != *[,$'\n\r']* ]] || die "$var cannot contain a comma or a line break"
 done
 if [[ $cred_password =~ ^[[:space:]]|[[:space:]]$ || $cred_password == \"*\" ]]; then
@@ -93,8 +96,9 @@ if [[ -n $db_name ]]; then args+=(-d "$db_name"); fi
 
 # printf is a shell builtin, so the values are not on any command line. The
 # header row keeps a username such as "username" from being taken as one.
-printf 'username,public_id,private_id,aes_key,password,active\n%s,%s,%s,%s,%s,%s\n' \
+printf 'username,public_id,private_id,aes_key,password,active,label\n%s,%s,%s,%s,%s,%s,%s\n' \
         "$cred_username" "$cred_publicid" "$cred_privateid" "$cred_secret" "$cred_password" "$cred_active" \
+        "$cred_label" \
     | "$yubikey_db" "${args[@]}" import --update -
 "$yubikey_db" "${args[@]}" list "$cred_username"
 

@@ -1,6 +1,6 @@
 $ yubikey-db.sh -d <WORK>/yubicred.db import --from-export onboarding.csv
 yubikey-db.sh: error: onboarding.csv is not an export file; its first line must be:
-  username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high
+  username,public_id,private_id,aes_key,password,active,created,accessed,counter,low,high,label
 yubikey-db.sh: error: nothing imported
 [exit 1]
 
@@ -44,9 +44,9 @@ Imported 3 row(s) into <WORK>/yubicred.db
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-ok1 |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-badtimes |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c41 | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+ok1 |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+badtimes |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c41 | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | 
 multi | line1
-line2, "q" | 0 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdel | 4a6f8e2d1c42 | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 2 | 0
+line2, "q" | 0 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdel | 4a6f8e2d1c42 | ax8KnSx+TzqLXQwenyp7bQ== | 3 | 2 | 0 | 
 

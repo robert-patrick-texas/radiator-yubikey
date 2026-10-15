@@ -17,24 +17,24 @@ Updated YubiKey vvccccbbcdef for alice.b (active=1, moved from alice); counters 
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice.b |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 7 | 3 | 1
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice.b |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 7 | 3 | 1 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password
 Updated YubiKey vvccccbbcdef for alice (active=1, moved from alice.b); counters kept, since its private ID and AES key are unchanged
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 7 | 3 | 1
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 7 | 3 | 1 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add --update -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 0f1e2d3c4b5a69788796a5b4c3d2e1f0 --no-password
 Replaced YubiKey vvccccbbcdef for alice (active=1); counters reset, since its private ID or AES key changed
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 # times in yubicred.db (UTC)
 username | created | accessed
@@ -48,11 +48,11 @@ Imported 3 row(s) into <WORK>/yubicred.db
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
-bob | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0
-dave |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
+bob | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | 
+dave |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
 
 $ printf %s\n 'bob,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,other,0' 'erin,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -d <WORK>/yubicred.db import -
 Validated /dev/stdin: 2 valid row(s), 0 invalid row(s)
@@ -66,12 +66,12 @@ Dry run: database not changed
 [exit 0]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list
-username  public_id     active  created              accessed  counter
---------  ------------  ------  -------------------  --------  -------
-alice     vvccccbbcdef  1       <TIMESTAMP>            0      
-bob       vvccccbbcdeg  1       <TIMESTAMP>            5      
-carol     vvccccbbcdeh  1       <TIMESTAMP>            0      
-dave      vvccccbbcdei  1       <TIMESTAMP>            0      
+username  public_id     active  created              accessed  counter  label
+--------  ------------  ------  -------------------  --------  -------  -----
+alice     vvccccbbcdef  1       <TIMESTAMP>            0             
+bob       vvccccbbcdeg  1       <TIMESTAMP>            5             
+carol     vvccccbbcdeh  1       <TIMESTAMP>            0             
+dave      vvccccbbcdei  1       <TIMESTAMP>            0             
 [exit 0]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add -u frank -P vvccccbbcdefgh -p 4a6f8e2d1c40 -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d --no-password

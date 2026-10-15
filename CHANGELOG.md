@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A label for each YubiKey, such as `primary, slot 1` or `spare, slot 2`, to
+  tell a user's YubiKeys apart: a new `label` column (UTF-8 text, up to 255
+  characters, no control characters; empty for none). Radiator never reads
+  it, and Radiator's PostgreSQL role can't.
+- `label USER PUBLIC_ID LABEL` sets the label of one of a user's YubiKeys;
+  `''` removes it.
+- `add -l LABEL`. On a terminal, `add` without `-l` asks for a label (Enter
+  for none).
+- `import` takes the label as an optional 7th CSV field, after `active`.
+  Files with 4 to 6 fields load as before.
+- `list` shows each YubiKey's label, and `verify` shows it on its first line.
+- `export` writes the label as a 12th column, and `import --from-export`
+  restores it. Exports made before this version (11 columns) still restore.
+- `yubikey-db-migrate.sh` copies the labels, from a SQLite database with or
+  without the label column, and includes them in its row-by-row check;
+  `--mode sync` lists a row whose label differs, without changing it.
+- `yubikey-db-user.example.sh` has `cred_label`.
+
+### Changed
+
+- With `--update` or `--replace` (in `add`, `import` and
+  `import --from-export`), a YubiKey given no label keeps the label it has,
+  even when its private ID or AES key changed. A label that is given
+  replaces it.
+- `init` adds the `label` column to a table made by an older version, and
+  says so. Until then, the other commands stop with a message to run
+  `init`; Radiator keeps working either way. With two database servers or
+  three sites, run it once, against the primary.
+- `yubikey-db-migrate.sh` refuses a PostgreSQL table without the `label`
+  column, with a message to run `yubikey-db.sh -b pg init` first.
+- Your own `INSERT INTO yubikeys VALUES (...)` statements that don't name
+  the columns, like those of the old example commands, fail once the table
+  has the `label` column: name the columns, or use `add` or `import`.
+
+### Tests
+
+- New scenarios `labels` and `pg_labels`: labels set by `add`, `import` and
+  `label`, invalid labels, kept and replaced by `--update` and `--replace`,
+  exported and restored (also from an export made before this version),
+  hidden from Radiator's role, and added by `init` to a database made by
+  1.7.0. `migrate_new` migrates a 1.7.0 SQLite database, `migrate_invalid`
+  rejects invalid labels, and `migrate_errors` refuses a 1.7.0 PostgreSQL
+  table. The table dumps in every scenario show the label.
+- `e2e.sh` logs in with a labeled YubiKey on both databases.
+
 ## 1.7.0 - 2026-10-14
 
 Planned switchovers and clean restarts of the primary no longer reject

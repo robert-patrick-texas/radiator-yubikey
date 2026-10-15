@@ -3,9 +3,9 @@ yubikey-db.sh: error: no write access to <WORK>/yubicred.db or its directory (ru
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list test.user
-username   public_id     active  created              accessed  counter
----------  ------------  ------  -------------------  --------  -------
-test.user  cbdefghijkln  1       <TIMESTAMP>            0      
+username   public_id     active  created              accessed  counter  label         
+---------  ------------  ------  -------------------  --------  -------  --------------
+test.user  cbdefghijkln  1       <TIMESTAMP>            0        primary slot 2
 [exit 0]
 
 $ yubikey-db.sh -d <WORK>/yubicred.db list

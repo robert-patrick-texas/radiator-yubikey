@@ -9,9 +9,9 @@ Added bob with YubiKey vvccccbbcdeg (active=0)
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add -u alice -P vvccccbbcdef -p 111111111111 -k 00000000000000000000000000000000 --no-password
 Runtime error near line 3: UNIQUE constraint failed: yubikeys.tokenId (19)
@@ -23,17 +23,17 @@ Added alice with YubiKey vvccccbbcdef (active=1)
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 111111111111 | AAAAAAAAAAAAAAAAAAAAAA== | 0 | 0 | 0
-bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 111111111111 | AAAAAAAAAAAAAAAAAAAAAA== | 0 | 0 | 0 | 
+bob |  | 0 | integer | <TIMESTAMP> |  | vvccccbbcdeg | cccccccccccb | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add --replace -u carol -P vvccccbbcdeg -p 111111111111 -k ffffffffffffffffffffffffffffffff --no-password
 Added carol with YubiKey vvccccbbcdeg (active=1)
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 111111111111 | /////////////////////w== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+carol |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 111111111111 | /////////////////////w== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db add -u dave -P vvccccbbcdeh
 yubikey-db.sh: error: missing value for: YubiKey private ID (12 hex) (no terminal to prompt on; pass it as an option)

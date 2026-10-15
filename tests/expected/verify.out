@@ -89,6 +89,7 @@ yubikey-db.sh: error: verify: rejected (private ID)
 
 $ printf %s\n 's3cr3t' 'vvccccbbcdegdvgdnndfjntnlbfginufvletcedrtrcd' | yubikey-db.sh -d <WORK>/yubicred.db verify -u alice
 Checking alice with YubiKey vvccccbbcdeg in <WORK>/yubicred.db (Require2Factor on):
+  label:            spare, slot 2
   active:           yes
   static password:  matches
   OTP:              decrypts with the stored AES key
@@ -108,14 +109,14 @@ Accepted. The OTP's counters were saved, so it cannot be used again.
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 0 | 0
-alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0
-bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0
-carol | {crypt}$6$<HASH> | 0 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-dave | {clear}{weird}pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-erin | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c40 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-yubico |  | 1 | integer | <TIMESTAMP> |  | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 0 | 0 | 
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0 | spare, slot 2
+bob |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 0 | 0 | 0 | 
+carol | {crypt}$6$<HASH> | 0 | integer | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+dave | {clear}{weird}pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+erin | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdek | 4a6f8e2d1c40 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+yubico |  | 1 | integer | <TIMESTAMP> |  | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 0 | 0 | 0 | 
 
 $ printf %s\n '' 'vvccccbbcdehkcnfkbnghjlkighjkcnjkvvcthictefl' | yubikey-db.sh -d <WORK>/yubicred.db verify -u bob
 Checking bob with YubiKey vvccccbbcdeh in <WORK>/yubicred.db (Require2Factor on):
@@ -272,12 +273,12 @@ yubikey-db.sh: error: database <WORK>/none.db does not exist; run 'yubikey-db.sh
 [exit 1]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 6 | 0 | 0
-alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0
-bob |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 1 | 0 | 0
-carol | {crypt}$6$<HASH> | false | text | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 1 | 0 | 0
-dave | {nthash}0123456789abcdef0123456789abcdef | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 2 | 0 | 0
-erin | plain pw | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdek | 4a6f8e2d1c40 | not-a-key | 1 | 0 | 0
-yubico |  | 1 | integer | <TIMESTAMP> |  | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 6 | 0 | 0 | 
+alice | {crypt}$6$<HASH> | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeg | 4a6f8e2d1c3c | Dx4tPEtaaXiHlqW0w9Lh8A== | 1 | 0 | 0 | spare, slot 2
+bob |  | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdeh | 4a6f8e2d1c3d | 0f1e2d3c4b5a69788796a5b4c3d2e1f0 | 1 | 0 | 0 | 
+carol | {crypt}$6$<HASH> | false | text | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 1 | 0 | 0 | 
+dave | {nthash}0123456789abcdef0123456789abcdef | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 2 | 0 | 0 | 
+erin | plain pw | 1 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdek | 4a6f8e2d1c40 | not-a-key | 1 | 0 | 0 | 
+yubico |  | 1 | integer | <TIMESTAMP> |  | dteffuje | 8792ebfe26cc | ecde18dbe76fbd0c33330f1c354871db | 0 | 0 | 0 | 
 

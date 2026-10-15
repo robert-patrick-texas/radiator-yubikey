@@ -13,8 +13,8 @@ Updated YubiKey vvccccbbcdef for alice.b (active=1, moved from alice); counters 
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice.b |  | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 7 | 3 | 1
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice.b |  | 1 | smallint | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 7 | 3 | 1 | 
 
 # times in <T>_db (UTC)
 username | created | accessed
@@ -25,8 +25,8 @@ Replaced YubiKey vvccccbbcdef for alice (active=1); counters reset, since its pr
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
 
 # times in <T>_db (UTC)
 username | created | accessed
@@ -40,11 +40,11 @@ Imported 3 row(s) into PostgreSQL database <T>_db
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0
-bob | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0
-dave |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+alice |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | Dx4tPEtaaXiHlqW0w9Lh8A== | 0 | 0 | 0 | 
+bob | {crypt}$6$<HASH> | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 1 | 0 | 
+dave |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdei | 4a6f8e2d1c3e | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+carol |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdeh | 999999999999 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
 
 $ printf %s\n 'bob,vvccccbbcdeg,4a6f8e2d1c3c,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d,other,0' 'erin,vvccccbbcdej,4a6f8e2d1c3f,6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d' | yubikey-db.sh -b pg -d <T>_db import -
 Validated /dev/stdin: 2 valid row(s), 0 invalid row(s)
@@ -53,21 +53,21 @@ yubikey-db.sh: error: import failed and was rolled back; no rows imported (an ex
 [exit 1]
 
 $ yubikey-db.sh -b pg -d <T>_db list
- username |  public_id   | active |       created       | accessed | counter 
-----------+--------------+--------+---------------------+----------+---------
- alice    | vvccccbbcdef |      1 | <TIMESTAMP> |          |       0
- bob      | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       5
- carol    | vvccccbbcdeh |      1 | <TIMESTAMP> |          |       0
- dave     | vvccccbbcdei |      1 | <TIMESTAMP> |          |       0
+ username |  public_id   | active |       created       | accessed | counter | label 
+----------+--------------+--------+---------------------+----------+---------+-------
+ alice    | vvccccbbcdef |      1 | <TIMESTAMP> |          |       0 | 
+ bob      | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       5 | 
+ carol    | vvccccbbcdeh |      1 | <TIMESTAMP> |          |       0 | 
+ dave     | vvccccbbcdei |      1 | <TIMESTAMP> |          |       0 | 
 [exit 0]
 
 $ user.sh
 Validated /dev/stdin: 1 valid row(s), 0 invalid row(s)
 Updated YubiKey vvccccbbcdeg for bob (active=1); counters kept, since its private ID and AES key are unchanged
 Imported 1 row(s) into PostgreSQL database <T>_db
- username |  public_id   | active |       created       | accessed | counter 
-----------+--------------+--------+---------------------+----------+---------
- bob      | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       5
+ username |  public_id   | active |       created       | accessed | counter | label 
+----------+--------------+--------+---------------------+----------+---------+-------
+ bob      | vvccccbbcdeg |      1 | <TIMESTAMP> |          |       5 | 
 [exit 0]
 
 # crypt check for bob: match

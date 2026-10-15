@@ -11,8 +11,8 @@ Added envuser with YubiKey vvccccbbcdeh (active=1)
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-hexuser | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 0 | 0 | 0
-braceuser | {clear}{SHA}not-really | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-envuser | it's | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 00112233445566778899aabbccddeeff | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+hexuser | plain pw | 1 | integer | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d | 0 | 0 | 0 | 
+braceuser | {clear}{SHA}not-really | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeg | 4a6f8e2d1c3c | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+envuser | it's | 1 | integer | <TIMESTAMP> |  | vvccccbbcdeh | 4a6f8e2d1c3d | 00112233445566778899aabbccddeeff | 0 | 0 | 0 | 
 

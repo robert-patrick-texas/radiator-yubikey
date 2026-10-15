@@ -4,8 +4,8 @@ yubikey-db.sh: warning: line 3: invalid public ID 'abc' for ok1 (expected modhex
 yubikey-db.sh: warning: line 4: invalid private ID for ok2 (expected 12 hex or 12 modhex characters)
 yubikey-db.sh: warning: line 5: invalid AES key for ok3 (expected 32 hex characters)
 yubikey-db.sh: warning: line 6: invalid active value 'maybe' for ok4 (use 1/0, true/false, yes/no)
-yubikey-db.sh: warning: line 7: expected 4-6 fields, found 2
-yubikey-db.sh: warning: line 8: expected 4-6 fields, found 7
+yubikey-db.sh: warning: line 7: expected 4-7 fields, found 2
+yubikey-db.sh: warning: line 8: expected 4-7 fields, found 8
 yubikey-db.sh: warning: line 10: public ID vvccccbbcdej is already used on line 9
 yubikey-db.sh: warning: line 11: private ID for dup3 is already used on line 9
 Validated <WORK>/bad.csv: 1 valid row(s), 9 invalid row(s)
@@ -18,8 +18,8 @@ yubikey-db.sh: warning: line 3: invalid public ID 'abc' for ok1 (expected modhex
 yubikey-db.sh: warning: line 4: invalid private ID for ok2 (expected 12 hex or 12 modhex characters)
 yubikey-db.sh: warning: line 5: invalid AES key for ok3 (expected 32 hex characters)
 yubikey-db.sh: warning: line 6: invalid active value 'maybe' for ok4 (use 1/0, true/false, yes/no)
-yubikey-db.sh: warning: line 7: expected 4-6 fields, found 2
-yubikey-db.sh: warning: line 8: expected 4-6 fields, found 7
+yubikey-db.sh: warning: line 7: expected 4-7 fields, found 2
+yubikey-db.sh: warning: line 8: expected 4-7 fields, found 8
 yubikey-db.sh: warning: line 10: public ID vvccccbbcdej is already used on line 9
 yubikey-db.sh: warning: line 11: private ID for dup3 is already used on line 9
 Validated <WORK>/bad.csv: 1 valid row(s), 9 invalid row(s)
@@ -32,8 +32,8 @@ yubikey-db.sh: warning: line 3: invalid public ID 'abc' for ok1 (expected modhex
 yubikey-db.sh: warning: line 4: invalid private ID for ok2 (expected 12 hex or 12 modhex characters)
 yubikey-db.sh: warning: line 5: invalid AES key for ok3 (expected 32 hex characters)
 yubikey-db.sh: warning: line 6: invalid active value 'maybe' for ok4 (use 1/0, true/false, yes/no)
-yubikey-db.sh: warning: line 7: expected 4-6 fields, found 2
-yubikey-db.sh: warning: line 8: expected 4-6 fields, found 7
+yubikey-db.sh: warning: line 7: expected 4-7 fields, found 2
+yubikey-db.sh: warning: line 8: expected 4-7 fields, found 8
 yubikey-db.sh: warning: line 10: public ID vvccccbbcdej is already used on line 9
 yubikey-db.sh: warning: line 11: private ID for dup3 is already used on line 9
 Validated <WORK>/bad.csv: 1 valid row(s), 9 invalid row(s)
@@ -41,8 +41,8 @@ Imported 1 row(s) into <WORK>/yubicred.db
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-dup1 |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+dup1 |  | 1 | integer | <TIMESTAMP> |  | vvccccbbcdej | 4a6f8e2d1c3f | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
 
 $ yubikey-db.sh -d <WORK>/yubicred.db import <WORK>/empty.csv
 Validated <WORK>/empty.csv: 0 valid row(s), 0 invalid row(s)

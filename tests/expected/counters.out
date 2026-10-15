@@ -20,8 +20,8 @@ $ sqlite> update yubikeys set active=0 where username='alice' and tokenId='vvccc
 [exit 0]
 
 # yubikeys table in yubicred.db
-username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high
-alice | {crypt}$6$<HASH> | 0 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 3 | 0
+username | password | active | active_type | created | accessed | tokenId | userId | secret | counter | low | high | label
+alice | {crypt}$6$<HASH> | 0 | integer | <TIMESTAMP> | <TIMESTAMP> | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 5 | 3 | 0 | 
 
 $ sqlite> update yubikeys set accessed=datetime(1791314814,'unixepoch'), high=0, counter=5, low=3 where username='alice' and tokenId='vvccccbbcdef'
 [exit 0]

@@ -7,9 +7,9 @@ $ radiator> update yubikeys set accessed=to_timestamp(1791314814), counter=5, lo
 [exit 0]
 
 $ yubikey-db.sh -b pg -d <T>_db list test.user2
-  username  |  public_id   | active |       created       |      accessed       | counter 
-------------+--------------+--------+---------------------+---------------------+---------
- test.user2 | cbdefghijklr |      1 | <TIMESTAMP> | <TIMESTAMP> |       5
+  username  |  public_id   | active |       created       |      accessed       | counter | label 
+------------+--------------+--------+---------------------+---------------------+---------+-------
+ test.user2 | cbdefghijklr |      1 | <TIMESTAMP> | <TIMESTAMP> |       5 | 
 [exit 0]
 
 $ radiator> update yubikeys set accessed=to_timestamp(1791314815), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'

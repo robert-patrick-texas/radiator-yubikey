@@ -10,13 +10,15 @@ invalid: source row 7 (user badactive, public ID vvccccbbcdek): active value 'ma
 invalid: source row 8 (user badcounter, public ID vvccccbbcdel): counter, low or high is not a whole number
 invalid: source row 9 (user dup1, public ID vvccccbbcden): private ID is used by more than one source row (rows 9, 10)
 invalid: source row 10 (user dup2, public ID vvccccbbcder): private ID is used by more than one source row (rows 9, 10)
-Read 12 row(s) from the snapshot: 3 valid, 9 invalid
+invalid: source row 13 (user longlabel, public ID vvccccbbcdev): label is longer than 255 characters
+invalid: source row 14 (user tablabel, public ID vvccccbbcdbc): label contains control characters
+Read 14 row(s) from the snapshot: 3 valid, 11 invalid
 Nothing migrated: fix the rows above in SQLite, or re-run with --skip-invalid.
 [exit 1]
 
 $ yubikey-db.sh -b pg -d <T>_db list
- username | public_id | active | created | accessed | counter 
-----------+-----------+--------+---------+----------+---------
+ username | public_id | active | created | accessed | counter | label 
+----------+-----------+--------+---------+----------+---------+-------
 [exit 0]
 
 $ yubikey-db-migrate.sh -d <T>_db --skip-invalid src.db
@@ -31,7 +33,9 @@ invalid: source row 7 (user badactive, public ID vvccccbbcdek): active value 'ma
 invalid: source row 8 (user badcounter, public ID vvccccbbcdel): counter, low or high is not a whole number
 invalid: source row 9 (user dup1, public ID vvccccbbcden): private ID is used by more than one source row (rows 9, 10)
 invalid: source row 10 (user dup2, public ID vvccccbbcder): private ID is used by more than one source row (rows 9, 10)
-Read 12 row(s) from the snapshot: 3 valid, 9 invalid
+invalid: source row 13 (user longlabel, public ID vvccccbbcdev): label is longer than 255 characters
+invalid: source row 14 (user tablabel, public ID vvccccbbcdbc): label contains control characters
+Read 14 row(s) from the snapshot: 3 valid, 11 invalid
 Inserted 3 row(s), with their counters
 changed: 1 active value(s) like 'false' set to 0: Radiator treated these as active, so these keys could log in before and now cannot
 changed: 3 AES key(s) re-encoded as base64
@@ -42,8 +46,8 @@ If Radiator still uses SQLite, switch it to PostgreSQL now, then run: yubikey-db
 [exit 0]
 
 # yubikeys table in <T>_db
-username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high
-good |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-badtime |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdet | 4a6f8e2d1c43 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
-offuser |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeu | 4a6f8e2d1c44 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0
+username | password | active | active_type | created | accessed | tokenid | userid | secret | counter | low | high | label
+good |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdef | 4a6f8e2d1c3b | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+badtime |  | 1 | smallint | <TIMESTAMP> |  | vvccccbbcdet | 4a6f8e2d1c43 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
+offuser |  | 0 | smallint | <TIMESTAMP> |  | vvccccbbcdeu | 4a6f8e2d1c44 | ax8KnSx+TzqLXQwenyp7bQ== | 0 | 0 | 0 | 
 
