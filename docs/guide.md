@@ -395,9 +395,9 @@ another release, set `v` to its version instead.
 is installed, and exits 0 only when nothing is missing or left to do:
 
 ```text
-install.sh 1.7.0
+install.sh 1.8.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): /opt/radiator/radiator/radiusd
-Package:   radiator-yubikey 1.7.0, installed
+Package:   radiator-yubikey 1.8.0, installed
 
 Packages:
   ok       libauth-yubikey-decrypter-perl 0.07-2.1

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 - 2026-10-15
+
+Each YubiKey can have a label, such as `primary, slot 1` or `spare, slot 2`,
+to tell a user's YubiKeys apart. After upgrading, run `yubikey-db.sh init`
+(with `-b pg` for PostgreSQL, once, against the primary) to add the label
+column; until then the other commands ask for it, and Radiator keeps
+working either way.
 
 ### Added
 
