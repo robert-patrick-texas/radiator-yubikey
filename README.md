@@ -1,6 +1,6 @@
 # Radiator YubiKey Database Tools
 
-Version 1.6.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+Version 1.7.0 · [Guide](docs/guide.md) ([web version](https://robert-patrick-texas.github.io/radiator-yubikey/)) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 Offline YubiKey one-time-password (OTP) logins for
 [Radiator](https://radiatorsoftware.com/) RADIUS, with the YubiKeys in a local
@@ -61,8 +61,8 @@ On an Ubuntu 26.04 server, with the Radiator packages from Radiator Software
 
 ```bash
 sudo apt install ./radiator_4.30-1_all.deb ./radiator-radius-utilxs_2.4-4.resolute_amd64.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/radiator-yubikey_1.6.0_all.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/install.sh
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/radiator-yubikey_1.7.0_all.deb
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/install.sh
 sudo bash install.sh            # Perl modules, SQLite and PostgreSQL tools, the scripts
 cd /opt/radiator-yubikey
 

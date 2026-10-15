@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 - 2026-10-14
+
+Planned switchovers and clean restarts of the primary no longer reject
+logins: while no server accepts writes but every server answers, Radiator
+holds each login until the new primary is ready, for up to 5 s. After a
+database failure, Radiator tries again after 2 s instead of 10 s.
 
 ### Added
 

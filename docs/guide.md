@@ -357,8 +357,8 @@ a [release](https://github.com/robert-patrick-texas/radiator-yubikey/releases)
 into one directory, and run `install.sh` there:
 
 ```bash
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/radiator-yubikey_1.6.0_all.deb
-curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.6.0/install.sh
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/radiator-yubikey_1.7.0_all.deb
+curl -fLO https://github.com/robert-patrick-texas/radiator-yubikey/releases/download/v1.7.0/install.sh
 sudo bash install.sh
 ```
 
@@ -389,9 +389,9 @@ sudo bash install.sh
 is installed, and exits 0 only when nothing is missing or left to do:
 
 ```text
-install.sh 1.6.0
+install.sh 1.7.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): /opt/radiator/radiator/radiusd
-Package:   radiator-yubikey 1.6.0, installed
+Package:   radiator-yubikey 1.7.0, installed
 
 Packages:
   ok       libauth-yubikey-decrypter-perl 0.07-2.1

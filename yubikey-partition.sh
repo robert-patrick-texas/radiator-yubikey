@@ -5,7 +5,7 @@
 #                        users in from a copy of the keys on this server.
 #
 # VERSION
-#   1.6.0
+#   1.7.0
 #
 # HOW IT WORKS
 #   Normally each site's Radiator checks every login against the PostgreSQL
@@ -90,7 +90,7 @@ set -uo pipefail
 umask 027
 
 PROG=${0##*/}
-VERSION=1.6.0
+VERSION=1.7.0
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CONF=/etc/radiator/partition.conf
 STATE_DIR=${PARTITION_STATE_DIR:-/var/lib/yubikey-partition}
