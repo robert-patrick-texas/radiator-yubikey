@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- RadSec (RADIUS over TLS, RFC 6614) in `radiator.example.conf`, commented
+  out: TLS 1.2 and 1.3 with AES-256-GCM only; no client certificate needed,
+  and any one accepted (self-signed or from any CA); mutual TLS with your CA
+  as an option in its comments. The guide's new RadSec section sets it up
+  and checks it, and tells what devices see: a slow login holds up the
+  device's others on its connection, and after Radiator restarts, devices
+  connect again on their own timers.
+
+### Tests
+
+- `radsec.sh` (`tests/radiator/run.sh DIR radsec`): RadSec with that
+  clause, set up with the guide's commands, with radsecproxy as the device;
+  81 checks. The test image adds `radsecproxy` and `freeradius-utils` (for
+  `radclient`; no FreeRADIUS server).
+
 ## 1.8.1 - 2026-10-15
 
 The scripts are the same as in 1.8.0; this release adds a test with real
