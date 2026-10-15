@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- `e2e.sh` logs in, on SQLite and PostgreSQL, as a user with two YubiKeys:
+  each is found by its public ID, with its own counters (the second's lower
+  counter is accepted), its own PIN (the other's is refused) and its own
+  `active`; another user's YubiKey is refused, and `verify` shows the label
+  of the YubiKey that typed the OTP; 125 checks.
+
 ## 1.8.0 - 2026-10-15
 
 Each YubiKey can have a label, such as `primary, slot 1` or `spare, slot 2`,

@@ -244,12 +244,14 @@ Leave the container with `exit`; `--rm` deletes it.
 (and debhelper and lintian, to build and check the package) added, and runs
 four tests of real Radiator logins:
 
-- `e2e.sh`, 92 checks in a throwaway container: SQLite with and without
+- `e2e.sh`, 125 checks in a throwaway container: SQLite with and without
   `Require2Factor`, PostgreSQL over the local socket and over TLS, the example
-  wrapper, a cutover from SQLite to PostgreSQL while Radiator runs, and the
-  same OTP sent twice at the same moment to two of Radiator's farm processes
-  (accepted twice without the trigger, once with it). For each login it
-  checks Radiator's answer and the reason it logs, and that `verify` agrees.
+  wrapper, a user with two YubiKeys (each with its own counters, PIN and
+  `active`; another user's YubiKey refused), a cutover from SQLite to
+  PostgreSQL while Radiator runs, and the same OTP sent twice at the same
+  moment to two of Radiator's farm processes (accepted twice without the
+  trigger, once with it). For each login it checks Radiator's answer and the
+  reason it logs, and that `verify` agrees.
 - `ha.sh`, 62 checks with four containers: two PostgreSQL servers (primary
   and streaming standby, over TLS) and two Radiator servers, through a dead
   primary, a hung primary, failovers, an old primary coming back, a
@@ -302,7 +304,7 @@ tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or p
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
-`Radiator 4.30-1: 92 passed, 0 failed`,
+`Radiator 4.30-1: 125 passed, 0 failed`,
 `Two database servers: 62 passed, 0 failed`,
 `Three sites: 191 passed, 0 failed` and
 `Package: 49 passed, 0 failed`. Run them again with each new

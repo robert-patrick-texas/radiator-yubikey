@@ -7,9 +7,9 @@
 # the expected one. It also checks that 'yubikey-db.sh verify' reaches the
 # same verdict as Radiator, and that the example wrapper's records work.
 # Covers SQLite (with and without Require2Factor), PostgreSQL over the local
-# socket and over TLS, a cutover from SQLite to PostgreSQL, and the same OTP
-# sent twice at the same moment to Radiator's farm (FarmSize, from
-# radiator.example.conf).
+# socket and over TLS, a user with two YubiKeys on both, a cutover from
+# SQLite to PostgreSQL, and the same OTP sent twice at the same moment to
+# Radiator's farm (FarmSize, from radiator.example.conf).
 #
 # OTPs come from tests/make-otp.sh: encrypted with openssl, independently of
 # both Radiator and verify.
@@ -189,6 +189,34 @@ check "verify saved the counter without the trigger bit" "16" "$(sqlite3 "$DB" "
 login "next OTP after verify (counter 17)" ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 17 0)"
 
 echo
+echo "== Two YubiKeys for one user (SQLite): Radiator finds the row by user and public ID"
+# Each YubiKey has its own row, so its own counters, PIN and active flag.
+"$Y" add -u carol -P vvccccbbcdbb -p 4a6f8e2d1c60 -k $K1 -w pin-a -l 'primary, slot 2' >/dev/null
+"$Y" add -u carol -P vvccccbbcdbc -p 4a6f8e2d1c61 -k $K2 -w pin-b -l 'spare, slot 2' >/dev/null
+login "first YubiKey"                   ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 5 0)"
+login "second YubiKey, a lower counter" ACCEPT carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 1 0)"
+login "first YubiKey again"             ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 6 0)"
+login "second YubiKey's OTP again"      "REJECT: Replay attack detected" carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 1 0)"
+login "first YubiKey's PIN, second YubiKey" "REJECT: Bad static password" carol pin-a "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 2 0)"
+login "second YubiKey's PIN, first YubiKey" "REJECT: Bad static password" carol pin-b "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 7 0)"
+login "another user's YubiKey"          "REJECT: Yubikey secret not found in database" carol pin-a "$(otp vvccccbbcdeg 4a6f8e2d1c3c $K2 2 0)"
+check "each YubiKey's counter saved in its own row" "vvccccbbcdbb 6|vvccccbbcdbc 1" \
+    "$(sqlite3 "$DB" "SELECT tokenId || ' ' || counter FROM yubikeys WHERE username = 'carol' ORDER BY tokenId;" | paste -sd'|')"
+verify_label() {    # verify_label PIN OTP: the label verify shows for carol's YubiKey
+    cp "$DB" /tmp/verify-copy.db
+    printf '%s\n%s\n' "$1" "$2" | "$Y" -d /tmp/verify-copy.db verify -u carol 2>&1 | sed -n 's/^  label: *//p'
+}
+check "verify names the YubiKey that typed the OTP" "primary, slot 2|spare, slot 2" \
+    "$(verify_label pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 10 0)")|$(verify_label pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 10 0)")"
+"$Y" disable carol vvccccbbcdbc >/dev/null 2>&1
+login "second YubiKey disabled"         "REJECT: Yubikey is not active" carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 2 0)"
+login "first YubiKey still works"       ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 7 0)"
+"$Y" enable carol vvccccbbcdbc >/dev/null 2>&1
+"$Y" delete carol vvccccbbcdbb >/dev/null 2>&1
+login "first YubiKey deleted"           "REJECT: Yubikey secret not found in database" carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 8 0)"
+login "second YubiKey enabled again"    ACCEPT carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 2 0)"
+
+echo
 echo "== SQLite, without Require2Factor"
 make_conf no2fa
 start_radiator
@@ -243,6 +271,20 @@ check "verify, counter 3" ACCEPT "$(verify_says alice s3cr3t "$(otp vvccccbbcdef
 login "older OTP after verify (counter 2)" "REJECT: Replay attack detected" alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 2 1)"
 login "newer OTP after verify (counter 4)" ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 4 0)"
 check "verify, an OTP Radiator accepted" REJECT "$(verify_says alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 4 0)" live)"
+# Two YubiKeys for one user, as on SQLite.
+"$Y" -b pg add -u carol -P vvccccbbcdbb -p 4a6f8e2d1c60 -k $K1 -w pin-a -l 'primary, slot 2' >/dev/null
+"$Y" -b pg add -u carol -P vvccccbbcdbc -p 4a6f8e2d1c61 -k $K2 -w pin-b -l 'spare, slot 2' >/dev/null
+login "two YubiKeys: the first"         ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 5 0)"
+login "two YubiKeys: the second, a lower counter" ACCEPT carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 1 0)"
+login "two YubiKeys: the first again"   ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 6 0)"
+login "two YubiKeys: the second's OTP again" "REJECT: Replay attack detected" carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 1 0)"
+login "two YubiKeys: the first's PIN, the second" "REJECT: Bad static password" carol pin-a "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 2 0)"
+login "two YubiKeys: another user's YubiKey" "REJECT: Yubikey secret not found in database" carol pin-a "$(otp vvccccbbcdeg 4a6f8e2d1c3c $K2 2 0)"
+check "two YubiKeys: each counter saved in its own row" "vvccccbbcdbb 6|vvccccbbcdbc 1" \
+    "$(psql -X -At -d yubikey -c "SELECT tokenId || ' ' || counter FROM yubikeys WHERE username = 'carol' ORDER BY tokenId;" | paste -sd'|')"
+"$Y" -b pg disable carol vvccccbbcdbc >/dev/null 2>&1
+login "two YubiKeys: the second disabled" "REJECT: Yubikey is not active" carol pin-b "$(otp vvccccbbcdbc 4a6f8e2d1c61 $K2 2 0)"
+login "two YubiKeys: the first still works" ACCEPT carol pin-a "$(otp vvccccbbcdbb 4a6f8e2d1c60 $K1 7 0)"
 
 echo
 echo "== PostgreSQL over TCP with TLS (verify-full) and a password, as from another host"
