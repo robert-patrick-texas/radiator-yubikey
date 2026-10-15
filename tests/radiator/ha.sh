@@ -20,7 +20,9 @@
 # after the primary dies and the standby is promoted, logins work again
 # within FailureBackoffTime and OTPs used before the failure stay used; a
 # server rebuilt as a standby is skipped; a hung primary costs a few seconds,
-# not minutes; a planned switchover loses nothing; the same OTP sent to both
+# not minutes; a planned switchover loses nothing, and a login while no
+# server accepts writes but both answer is held until the standby is
+# promoted, or for 5 s, then rejected; the same OTP sent to both
 # Radiator servers at the same moment is accepted once. Two checks show the risks the guide warns about: an old
 # primary started as it was accepts OTPs already used, and an OTP whose
 # counter update had not reached the standby is accepted once more after a
@@ -173,13 +175,15 @@ node rad2 rad-setup db2.yk.test,db1.yk.test
 check "DBSource from 'config' (rad1)" \
     "dbi:Pg:dbname=yubikey;host=db1.yk.test,db2.yk.test;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write" \
     "$(docker exec yk-ha-rad1 awk '/^ +DBSource/ {print $2}' /etc/radiator/conf.d/yubikey.conf)"
-check "Timeouts from 'config'" "Timeout 2|ConnectTimeout 5|FailureBackoffTime 10" \
+check "Timeouts from 'config'" "Timeout 2|ConnectTimeout 5|FailureBackoffTime 2" \
     "$(docker exec yk-ha-rad1 awk '/^ +(Timeout|ConnectTimeout|FailureBackoffTime) / {printf "%s%s %s", sep, $1, $2; sep="|"}' \
         /etc/radiator/conf.d/yubikey.conf)"
 node rad1 admin add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t >/dev/null
 check "the admin adds alice from rad1 (PGHOST=db1,db2)" "alice" "$(node db1 sql yubikey 'SELECT username FROM yubikeys')"
 node rad1 rad-start
 node rad2 rad-start
+check "Radiator compiled the hooks from 'config'" 0 \
+    "$(docker exec yk-ha-rad1 grep -c 'Compilation error' /var/log/radiator/radiator.log)"
 
 echo
 echo "== Normal operation"
@@ -241,6 +245,10 @@ check "db1 streams to db2" "db2|streaming|async" "$(streams_to db1)"
 
 echo
 echo "== The primary (db1) hangs: it accepts connections but never answers"
+# For 10 s after a Radiator process connects, a query may take 6 s, not
+# Timeout (the hooks from 'config'): let that pass for the connections made
+# after the last failover.
+sleep 11
 docker pause yk-ha-db1 >/dev/null
 login "OTP 8, the primary hangs"                "REJECT: Yubikey secret not found in database" rad1 8
 check "Radiator answered within 7 s (Timeout + connect_timeout)" yes "$([[ $MS -lt 7000 ]] && echo yes || echo "no, $MS ms")"
@@ -262,14 +270,33 @@ wait_for "db1 has alice's counter (10)" 10 db1 "$ALICE"
 echo
 echo "== Planned switchover: stop the primary (db2) cleanly, promote db1"
 login "OTP 11, just before the switchover"      ACCEPT rad1 11
+node rad1 rad-start    # new farm processes: none has met a failure yet
 node db2 stop
-node db1 promote
-login_until "OTP 12 on db1" rad1 12
+# No server accepts writes, but both answer: db2 refuses connections and db1
+# is a standby. Radiator holds the login and tries again every 0.5 s.
+(sleep 2; node db1 promote >/dev/null) &
+login "OTP 12 while db1 is not promoted yet: held, then accepted" ACCEPT rad1 12
+wait $!
+check "...answered after the promotion, within 5 s" yes \
+    "$([[ $MS -ge 1500 && $MS -lt 5000 ]] && echo yes || echo "no, $MS ms")"
 login_settled "OTP 11: the clean stop sent every change" "REJECT: Replay attack detected" rad2 11
 node db2 standby db2 db1
 check "db1 streams to db2" "db2|streaming|async" "$(streams_to db1)"
 check "rad1 uses db1" db1 "$(uses rad1)"
 check "rad2 uses db1" db1 "$(uses rad2)"
+
+echo
+echo "== No server accepts writes for longer than Radiator holds a login"
+node rad1 rad-start
+node db1 stop
+login "OTP 13, db1 stopped, db2 a standby"      "REJECT: Yubikey secret not found in database" rad1 13
+check "...after holding it for 5 s" yes \
+    "$([[ $MS -ge 4500 && $MS -lt 7000 ]] && echo yes || echo "no, $MS ms")"
+check "Radiator logged why it held the login" yes \
+    "$(docker exec yk-ha-rad1 grep -q 'No database server accepts writes: trying again in 0.5 s' /var/log/radiator/radiator.log \
+        && echo yes || echo no)"
+node db1 start
+login_until "OTP 13 once db1 is back"           rad1 13
 
 echo
 echo "== The same OTP on both Radiator servers at the same moment"

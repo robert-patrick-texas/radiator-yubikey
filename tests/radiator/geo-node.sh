@@ -41,7 +41,16 @@
 #                            (ACCEPT, NO REPLY, or REJECT: reason) and the
 #                            milliseconds from request to reply ("-" for no
 #                            reply), on two lines
-#   frr-setup                FRR: BGP with BFD to the router, advertising the
+#   burst SECONDS FIRST USER:PUBLIC_ID:PRIVATE_ID...
+#                            each USER logs in again and again for SECONDS,
+#                            all of them at the same time, with new OTPs
+#                            (usage counters FIRST, FIRST+1, ...; key and
+#                            password as alice's); prints "MS ANSWER TOOK"
+#                            for each login: MS the Unix time in
+#                            milliseconds when it was sent, ANSWER ACCEPT,
+#                            REJECT or NOREPLY, TOOK the milliseconds until
+#                            the answer
+#   frr-setup               FRR: BGP with BFD to the router, advertising the
 #                            anycast addresses while they are on lo
 #   anycast-setup            install the radiator-yubikey package (built by
 #                            geo.sh in /lab/deb) if needed; give the anycast
@@ -433,6 +442,30 @@ login)
                         | grep -o 'Access rejected for [^:]*: .*' | head -1 | sed 's/^[^:]*: //')"
     fi
     echo "$ms"
+    ;;
+
+burst)
+    secs=$1 first=$2; shift 2
+    end=$((SECONDS + secs))
+    for u in "$@"; do
+        (
+            IFS=: read -r name pub priv <<<"$u"
+            c=$first
+            while ((SECONDS < end)); do
+                otp=$(/repo/tests/make-otp.sh "$pub" "$priv" $K1 "$c" 0)
+                t=${EPOCHREALTIME/./}
+                out=$(perl $RAD/radpwtst -s 127.0.0.1 -secret local-test-secret -auth_port 1812 -noacct \
+                        -timeout 10 -user "$name" -password "s3cr3t:$otp" 2>&1) || true
+                t2=${EPOCHREALTIME/./}
+                if grep -q '^OK' <<<"$out"; then a=ACCEPT
+                elif grep -q 'No reply' <<<"$out"; then a=NOREPLY
+                else a=REJECT; fi
+                echo "${t:0:-3} $a $(((t2 - t) / 1000))"
+                c=$((c + 1))
+            done
+        ) &
+    done
+    wait
     ;;
 
 frr-setup)

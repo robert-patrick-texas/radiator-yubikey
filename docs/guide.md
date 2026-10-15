@@ -249,24 +249,26 @@ four tests of real Radiator logins:
   same OTP sent twice at the same moment to two of Radiator's farm processes
   (accepted twice without the trigger, once with it). For each login it
   checks Radiator's answer and the reason it logs, and that `verify` agrees.
-- `ha.sh`, 56 checks with four containers: two PostgreSQL servers (primary
+- `ha.sh`, 62 checks with four containers: two PostgreSQL servers (primary
   and streaming standby, over TLS) and two Radiator servers, through a dead
   primary, a hung primary, failovers, an old primary coming back, a
-  planned switchover, the replay window (see
+  planned switchover (a login held until the standby is promoted, and one
+  held for 5 s, then rejected, when none is), the replay window (see
   [Two database servers](#two-database-servers)), and the same OTP sent to
   both Radiator servers at the same moment.
-- `geo.sh`, 175 checks with three containers, one per site, each running
+- `geo.sh`, 191 checks with three containers, one per site, each running
   systemd with etcd, PostgreSQL under Patroni, Radiator, FRR and
   `yubikey-anycast.sh` from the package, set up as in
   [Three sites](#three-sites) and [Anycast](#anycast), with traffic control adding the WAN delays (55 ms
   between West and East, 4 ms between the East sites). A fourth container
   stands in for West's router (FRR), and a fifth, behind it, is a RADIUS
   client that logs in at the anycast addresses, over IPv4 and IPv6. It
-  measures login times, then stops West's Radiator and West's check, reboots
-  each server in turn, cuts West's and then the primary's power, kills
-  Patroni on the primary, cuts West off, cuts the primary's site off,
-  breaks the link between the East sites, copies a standby again, and takes
-  two servers down at once. Then it sets up
+  measures login times, switches the primary over twice while four users at
+  each site log in at the same time, then stops West's Radiator and West's
+  check, reboots each server in turn, cuts West's and then the primary's
+  power, kills Patroni on the primary, cuts West off, cuts the primary's
+  site off, breaks the link between the East sites, copies a standby again,
+  and takes two servers down at once. Then it sets up
   [partition mode](#partition-mode) and cuts West off, cuts the primary's
   site off, takes two servers down at once, and breaks the link between the
   East sites again. Each time it checks which logins are accepted, which OTPs
@@ -294,14 +296,14 @@ four tests of real Radiator logins:
   purge.
 
 ```bash
-tests/radiator/run.sh ~/radiator-packages        # all four, about 21 minutes
+tests/radiator/run.sh ~/radiator-packages        # all four, about 23 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 92 passed, 0 failed`,
-`Two database servers: 56 passed, 0 failed`,
-`Three sites: 175 passed, 0 failed` and
+`Two database servers: 62 passed, 0 failed`,
+`Three sites: 191 passed, 0 failed` and
 `Package: 48 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
@@ -686,9 +688,13 @@ The clause it writes, for SQLite:
 - `CheckSecretId` checks the private ID inside the OTP against the database.
 - `Require2Factor`: see below.
 - For PostgreSQL, `config` also writes `Timeout 2`, `ConnectTimeout` and
-  `FailureBackoffTime 10`, so Radiator gives up quickly on a database server
-  that doesn't answer and tries again after 10 s, not 600 s (see
+  `FailureBackoffTime 2`, so Radiator gives up quickly on a database server
+  that doesn't answer and tries again after 2 s, not 600 s, and hooks that
+  hold a login for a few seconds while the primary changes (see
   [Configure Radiator for two servers](#configure-radiator-for-two-servers)).
+  The YubiKey clause is then `YubiKeySQL`, and `YubiKeyLocal`, the name the
+  Handlers use, is a group of two clauses: `YubiKeyConnect`, which connects
+  to the database first, then `YubiKeySQL`.
 
 ### Choose: PIN and OTP, or OTP only
 
@@ -1089,14 +1095,16 @@ Measured by the test, with the settings `yubikey-db.sh config` writes:
 
 | Situation | What Radiator does |
 |---|---|
-| The primary died or hangs, and the standby isn't promoted yet | It **rejects** every login with `Yubikey secret not found in database`. The first login after the failure takes 2 to 5 s (up to 2 s waiting for a query, plus up to 2 s for each server that doesn't answer), and so may the first one in each of Radiator's four farm processes. A process that has seen the failure rejects at once for the next 10 s (`FailureBackoffTime`) without trying, then tries again. |
-| The standby has been promoted | Logins work again within 10 s. |
+| The primary died or hangs, and the standby isn't promoted yet | It **rejects** every login with `Yubikey secret not found in database`. The first login after the failure takes 2 to 5 s (up to 2 s waiting for a query, plus up to 2 s for each server that doesn't answer), and so may the first one in each of Radiator's four farm processes. A process that has seen the failure rejects at once for the next 2 s (`FailureBackoffTime`) without trying, then tries again. |
+| The primary was stopped cleanly, or is restarting, and the standby answers but isn't promoted yet | It **holds** each login and tries again every 0.5 s, for up to 5 s: a login held until the standby is promoted is accepted, only later. After 5 s it rejects, as above. Each of the four farm processes holds one login at a time. |
+| The standby has been promoted | Logins work again within 2 to 3 s. |
 | A Radiator server's connection to the old primary ended, and a writable server exists | It reconnects and answers the same login: nothing is rejected. |
 | An OTP used before the failure | Still rejected as a replay, unless it was used in the replay window. |
 
-Radiator rejects logins while no server accepts writes; it doesn't stay
-silent. Its log says `Request is ignored`, but the YubiKey check returns a
-reject. Network devices that try their local accounts only when no RADIUS
+Radiator rejects logins while no server accepts writes, after holding them
+for up to 5 s if every server answers; it doesn't stay silent. Without the
+hooks that `config` writes, its log says `Request is ignored`, but the
+YubiKey check returns a reject. Network devices that try their local accounts only when no RADIUS
 server answers won't fall back to them, so keep your usual break-glass
 procedure for a long outage.
 
@@ -1234,8 +1242,11 @@ sudo systemctl restart radiator
 
     Timeout             2
     ConnectTimeout      5
-    FailureBackoffTime  10
+    FailureBackoffTime  2
 ```
+
+with two hooks, `ConnectionHook` and `NoConnectionsHook`, and two more
+clauses, `YubiKeyConnect` and the group `YubiKeyLocal` (see below).
 
 - `target_session_attrs=read-write` skips the standby, which only accepts
   reads. A server that doesn't answer is skipped too.
@@ -1243,11 +1254,41 @@ sudo systemctl restart radiator
   `ConnectTimeout` (Radiator's limit for the whole connection attempt) must
   be longer than that times the number of servers.
 - `Timeout 2` gives up on a query after 2 s. Radiator's default is 60 s, and
-  Radiator answers nothing else while it waits.
-- `FailureBackoffTime 10`: when no server accepts writes, Radiator rejects
-  logins without trying for 10 s, then tries again. Its default is 600 s,
+  Radiator answers nothing else while it waits. The hooks below allow 6 s
+  for 10 s after each new connection.
+- `FailureBackoffTime 2`: when no server accepts writes, each of Radiator's
+  processes rejects logins without trying for 2 s, then tries again, so
+  logins work again within about 2 s of a promotion. Its default is 600 s,
   which would leave logins failing for 10 minutes after the standby is
-  promoted.
+  promoted. A longer time keeps rejecting after the promotion: with 10 s
+  (and without the hooks below), a planned switchover on three sites
+  rejected logins for about 10 s instead of 2 to 5 s. A shorter one tries
+  more often while there is no primary, and each try waits up to 2 s for
+  each server that doesn't answer, so more rejects take that long: in the
+  lab, with the primary powered off, about 16% of rejects took about 3 s
+  (5% with 10 s), and at a site cut off from the other two, about 14% took
+  about 4 s (3% with 10 s).
+- `ConnectionHook` and `NoConnectionsHook`, a few lines of Perl: when no
+  server accepts writes but every listed server answers (the primary
+  refuses connections or is shutting down, the others are standbys), as
+  while you switch over, Radiator holds the login and tries again every
+  0.5 s, for up to 5 s, instead of rejecting it. When a server doesn't
+  answer at all (`timeout expired` or `No route to host` in the log), it
+  doesn't hold: that server may be down for a while, and each held login
+  keeps one of Radiator's processes busy. Radiator builds the query for a
+  login before it runs it, and needs a connection to build it, so a
+  process with no connection must connect first: the group `YubiKeyLocal`
+  that the Handlers use runs `YubiKeyConnect` (it connects, holding the
+  login the same way, then lets the login go on), then `YubiKeySQL`. And
+  for 10 s after each new
+  connection (Radiator reconnects only after a failure), a query may take
+  6 s instead of 2: a primary just promoted saves a change only once a
+  standby streams from it, 1.5 to 3 s in the lab, and a counter update cut
+  short by `Timeout` is saved anyway, so Radiator's second try would fail
+  as a replay and the login would get no answer. The hooks change
+  Radiator's `SQLRetries`, `FailureBackoffTime` and `Timeout` while it
+  runs, as Radiator 4.30's SQL module allows; the tests check them, so run
+  them again with each new Radiator version.
 
 For the admins, put both servers in `PGHOST` in `~/.profile`, as above. One
 `~/.pgpass` line with `*` as the host covers both:
@@ -1316,8 +1357,10 @@ example before patching the primary:
 2. On the standby: `sudo pg_ctlcluster 18 main promote`.
 3. Make the old primary a standby, as above.
 
-Logins are rejected from step 1 until a few seconds after step 2 (up to
-`FailureBackoffTime`).
+Run step 2 within a few seconds of step 1. For 5 s after step 1, Radiator
+holds logins and accepts them once the standby is promoted; after that it
+rejects them until step 2, and for up to `FailureBackoffTime` (2 s) after
+it.
 
 ### Automatic failover
 
@@ -1382,8 +1425,8 @@ Measured by the test:
 |---|---|
 | Normal | East1 about 15 ms, East2 about 25 ms, West about 125 ms: two round trips to East1 more. In the test, the East times are mostly disk writes on the primary and on East2. The first login handled by each of Radiator's four processes also opens its connection to PostgreSQL: about 0.5 s at West. |
 | West or East2 reboots | No login fails. While East2 is down, West confirms the primary's commits, so logins at the East sites take about 70 ms. |
-| East1 (the primary) reboots | Rejected for about 6 s, while Patroni stops PostgreSQL and East2 takes over. No OTP is lost. |
-| A planned switchover | Rejected for about 5 s. No OTP is lost. |
+| East1 (the primary) reboots | Nothing is rejected: while Patroni stops PostgreSQL and East2 takes over, Radiator holds the logins for a few seconds. No OTP is lost. |
+| A planned switchover | Nothing is rejected: Radiator holds the logins until East2 is promoted, so the slowest take 3.5 to 5.5 s (measured with four logins at a time at each site). No OTP is lost. |
 | East1 loses power | Rejected for about 35 s, until the lease expires and East2 is promoted. No OTP is lost. |
 | Patroni crashes on the primary | Nothing: systemd starts it again, and it keeps the lease. |
 | West is cut off from both East sites | No change at the East sites. At West, every login is rejected (`Yubikey secret not found in database`) after 4 to 6 s, until the network is back. West stays a standby and catches up within a minute afterwards. |
@@ -2297,9 +2340,10 @@ doesn't, the problem is in Radiator's configuration or the network.
 | Radiator logs `Bad Yubikey Secret-Id` | The stored private ID isn't the YubiKey's. Load it again with `add --update`. |
 | Radiator logs `Yubikey is not active` | The YubiKey is disabled: `enable` it. |
 | Radiator logs `Yubikey secret not found in database` | No row has that username and public ID, the public ID isn't 12 characters, or Radiator can't reach the database (look for `Could not connect` above it in `radiator.log`). |
-| Radiator logs `Could not connect to SQL database` | Check `DBSource`, `DBAuth`, the network and `pg_hba.conf`. With the configuration from `config`, Radiator tries again after 10 seconds (`FailureBackoffTime`); a configuration without that line waits 600 seconds, so after fixing it, `sudo systemctl restart radiator`. |
+| Radiator logs `Could not connect to SQL database` | Check `DBSource`, `DBAuth`, the network and `pg_hba.conf`. With the configuration from `config`, Radiator tries again after 2 seconds (`FailureBackoffTime`); a configuration without that line waits 600 seconds, so after fixing it, `sudo systemctl restart radiator`. |
 | Radiator logs `Could not connect ... session is read-only` | That server is a standby. Normal for the standby when both servers are listed. If every server says so, no server is the primary: promote the standby (see [Fail over](#fail-over)). |
-| Radiator logs `Could not connect to any SQL database. Request is ignored` | No listed server accepts writes. Logins are rejected (not ignored) until one does. |
+| Radiator logs `No database server accepts writes: trying again in 0.5 s` | No server accepts writes, but they all answer: the primary is being switched over or restarted. Radiator holds logins for up to 5 s. If it goes on, no server is the primary: promote the standby (see [Fail over](#fail-over)), or check Patroni (three sites). |
+| Radiator logs `Could not connect to any SQL database` | No listed server accepts writes. Logins are rejected (not ignored) until one does; Radiator tries again every 2 s. A configuration without `config`'s hooks adds `Request is ignored`. |
 | Radiator logs `counter violation` and `Access ignored ... Database update failed` | The same OTP arrived twice at the same moment (a retransmission, two Radiator servers, or a replay attempt). The first was accepted; the second gets no answer. If it happens without a reason, find where the second request came from. |
 | `journalctl -u yubikey-partition` shows `copy: cannot read this server's PostgreSQL` | Normal while Patroni stops or starts PostgreSQL, for example on a former primary that is cut off; the copy is updated again when it runs. Otherwise check `sudo -u postgres psql -d yubikey`. |
 | Partition mode stays on after the network is back | The primary can't be reached with Radiator's login in `yubikey-cluster.conf` (its `DBSource`, `DBAuth`, `pg_hba.conf`). See `journalctl -u yubikey-partition`; `sudo ./yubikey-partition.sh leave` shows the error. |
@@ -2368,7 +2412,7 @@ for a server other than the local socket, `config` copies `PGHOST`, `PGPORT`,
 | `verify` | `-u USER`, `--no-require2factor` | Check a PIN and OTP as Radiator would; save the counters if accepted. |
 | `enable`, `disable`, `delete` | `USER [PUBLIC_ID]` | Set `active` to 1 or 0, or delete the user's rows (or one YubiKey). |
 | `export` | `-f, --force`, `FILE` or `-` | Write every row and field to CSV (mode `0600`). |
-| `config` | | Print the `<AuthBy SQLYUBIKEY>` clause. |
+| `config` | | Print the `<AuthBy SQLYUBIKEY>` clause (for PostgreSQL, also the clauses `YubiKeyConnect` and `YubiKeyLocal`). |
 
 It exits with 0 on success and 1 on any error.
 

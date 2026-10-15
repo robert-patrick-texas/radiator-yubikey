@@ -24,9 +24,10 @@ yubikey-db.sh: error: PostgreSQL 18 or later is required (this server runs 16.4)
 
 $ yubikey-db.sh -b pg config
 # Sample Radiator <AuthBy SQLYUBIKEY> clause for PostgreSQL database yubikey
-# (secret stored as base64; see the comments below)
+# (secret stored as base64; see the comments below), and the
+# clause YubiKeyLocal that the Handlers use (at the end)
 <AuthBy SQLYUBIKEY>
-    Identifier   YubiKeyLocal
+    Identifier   YubiKeySQL
 
     # Radiator on the database host connects over the local socket
     # (dbi:Pg:dbname=NAME). With peer authentication, the Ubuntu default,
@@ -48,9 +49,46 @@ $ yubikey-db.sh -b pg config
     # again soon. Radiator's defaults wait up to 60 s for each query, and
     # when no server can be reached they reject every login for 600 s.
     # ConnectTimeout must cover connect_timeout for each listed server.
+    # After finding no server that accepts writes, each Radiator process
+    # rejects logins without trying for FailureBackoffTime seconds: keep it
+    # short, so logins work again soon after a standby is promoted.
     Timeout             2
     ConnectTimeout      5
-    FailureBackoffTime  10
+    FailureBackoffTime  2
+
+    # While no server accepts writes but every listed server answers, as
+    # during a planned switchover, hold the login and try again every 0.5 s,
+    # for up to 5 s from the first failure, instead of rejecting it at once
+    # (YubiKeyConnect below does the same before the login is looked up).
+    # Each of Radiator's processes holds one login at a time. When a server
+    # doesn't answer at all (powered off, network cut), or after those 5 s,
+    # back off as above. For 10 s after each new connection, which follows a
+    # failure, a query may take 6 s, not Timeout: a primary just promoted
+    # commits only once a standby streams from it, and a counter update cut
+    # short by Timeout has still been saved, so Radiator's retry would fail
+    # and leave the login unanswered. The hooks change SQLRetries (default
+    # 2), FailureBackoffTime and Timeout while Radiator runs, which works
+    # with Radiator 4.30's SQL module: run tests/radiator/run.sh with each
+    # new version.
+    ConnectionHook sub { my ($self) = @_; \
+        $self->{yk_failed_at} = 0; $self->{SQLRetries} = 2; \
+        $self->{yk_timeout} ||= $self->{Timeout}; $self->{Timeout} = 6; \
+        $self->{yk_slow_until} = time + 10; \
+        Radius::Select::add_timeout(time + 10, sub { my $s = $_[1]; \
+            $s->{Timeout} = $s->{yk_timeout} if time >= $s->{yk_slow_until}; }, $self); }
+    NoConnectionsHook sub { my ($self) = @_; \
+        require Time::HiRes; my $now = Time::HiRes::time(); \
+        $self->{yk_hold_until} = $now + 5 if $now - ($self->{yk_failed_at} || 0) > 30; \
+        $self->{yk_failed_at} = $now; \
+        if ($now < $self->{yk_hold_until} \
+            && ($DBI::errstr // '') !~ /timeout|no route|unreachable|authentication|pg_hba/i) { \
+            $self->log($main::LOG_WARNING, 'No database server accepts writes: trying again in 0.5 s'); \
+            $self->{FailureBackoffTime} = 0; $self->{SQLRetries}++; \
+            select(undef, undef, undef, 0.5); \
+        } else { \
+            $self->log($main::LOG_ERR, 'Could not connect to any SQL database. Backing off for 2 seconds'); \
+            $self->{FailureBackoffTime} = 2; $self->{SQLRetries} = 2; \
+        } }
 
     # Columns must come back in this order: secret, active, userId,
     # counter, session_use (low), ignored (high), static_password.
@@ -70,6 +108,24 @@ $ yubikey-db.sh -b pg config
 
     # Also check that the private ID in the OTP matches userId.
     CheckSecretId
+</AuthBy>
+
+# Before the YubiKey check: a Radiator process with no database connection
+# connects first, and holds the login as above while no server accepts
+# writes. YubiKeySQL builds its query (it quotes the username with the
+# connection) before it queries, so a query built without one would fail.
+<AuthBy INTERNAL>
+    Identifier   YubiKeyConnect
+    RequestHook sub { my $sql = Radius::Configurable::find('AuthBy', 'YubiKeySQL'); \
+        for (1 .. 20) { last if $sql->reconnect(); } \
+        return ($main::IGNORE, 'database connection checked'); }
+</AuthBy>
+
+# The clause that the Handlers use: YubiKeyConnect, then YubiKeySQL.
+<AuthBy GROUP>
+    Identifier   YubiKeyLocal
+    AuthBy       YubiKeyConnect
+    AuthBy       YubiKeySQL
 </AuthBy>
 [exit 0]
 

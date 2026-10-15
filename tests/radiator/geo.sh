@@ -46,7 +46,10 @@
 # when it rejoins; with the link between the East sites broken, East1 stays
 # the primary through West; a standby can be copied again; with two servers
 # down, the last one stops being the primary. Planned switchovers bring the
-# primary back to East1 after each failover.
+# primary back to East1 after each failover. Two planned switchovers while
+# four users at each site log in at the same time: every login is accepted
+# (Radiator holds them while no server accepts writes), within 8 s, and no
+# OTP is a replay.
 # Partition mode, as the guide's "Partition mode" section sets it up, last:
 # a server that no other site answers logs users in from its own copy of the
 # keys, and copies the counters back to the primary when the network is back
@@ -301,6 +304,65 @@ switchover() {
     login_until "OTP at $2 after a planned switchover to $1" "$2" 30
 }
 
+# Four more users for each site, each with a YubiKey of their own, who log in
+# there during the planned switchovers under load, as USER:PUBLIC_ID:PRIVATE_ID
+# (load-east1-1:vvccccbbdccb:4a6f8e2d1c01, ...).
+declare -A LOAD
+MODHEX=cbdefghijklnrtuv
+for i in 0 1 2; do
+    for j in 1 2 3 4; do
+        LOAD[${SITES[i]}]+="${LOAD[${SITES[i]}]:+ }load-${SITES[i]}-$j:vvccccbbdc${MODHEX:i:1}${MODHEX:j:1}:4a6f8e2d1c$i$j"
+    done
+done
+
+# under_load TO FIRST: a planned switchover to TO while the LOAD users log in
+# at their sites for 30 s (OTPs from usage counter FIRST on), four logins at a
+# time at each site, so that all four of Radiator's processes there meet the
+# switchover. Checks that each site answers every login, and accepts it:
+# Radiator holds the logins while no server accepts writes. Sets SWLOG.
+under_load() {
+    local n t0 f users slow=() pids=()
+    local -A res
+    for n in "${SITES[@]}"; do
+        res[$n]=$(mktemp)
+        read -r -a users <<<"${LOAD[$n]}"
+        node "$n" burst 30 "$2" "${users[@]}" >"${res[$n]}" &
+        pids+=($!)
+    done
+    sleep 5
+    t0=${EPOCHREALTIME/./}
+    t0=${t0:0:-3}
+    node "$1" ctl switchover --candidate "$1" --force >/dev/null
+    wait "${pids[@]}"
+    for n in "${SITES[@]}"; do
+        # "LOGINS REJECTS NOREPLY EARLY END SLOWEST HELD": EARLY, the logins
+        # not accepted before the switchover; END, the answer to the last
+        # login; SLOWEST, the longest wait for an answer after the
+        # switchover started, in ms; HELD, the logins that waited 1 s or
+        # more.
+        read -r -a f <<<"$(sort -n "${res[$n]}" | awk -v t0="$t0" '
+            { n++; end = $2 }
+            $2 != "ACCEPT" && $1 < t0 { early++ }
+            $1 >= t0 && $3 > slowest { slowest = $3 }
+            $1 >= t0 && $3 >= 1000 { held++ }
+            $2 == "REJECT" { rej++ }
+            $2 == "NOREPLY" { noreply++ }
+            END { printf "%d %d %d %d %s %d %d\n", n, rej, noreply, early, end, slowest, held }')"
+        rm -f "${res[$n]}"
+        check "$n, switchover to $1: ${f[0]} logins, ${f[6]} of them held 1 s or more" \
+            "0 rejected, 0 unanswered, 0 failed before, ACCEPT at the end" \
+            "${f[1]} rejected, ${f[2]} unanswered, ${f[3]} failed before, ${f[4]} at the end"
+        between "...the slowest answered within 8 s (ms)" 0 8000 "${f[5]}"
+        slow+=("${n^} $(tenths "${f[5]}") s")
+    done
+    SWLOG+="${SWLOG:+; }to $1: ${slow[*]}"
+}
+# tenths MS: MS milliseconds as seconds, to a tenth: "2.7".
+tenths() {
+    printf '%d.%d' $(($1 / 1000)) $(($1 % 1000 / 100))
+}
+SWLOG=''
+
 # one_leader LABEL: wait for all three to be up, streaming, with East1 or
 # East2 as the leader, for up to 90 s.
 one_leader() {
@@ -460,6 +522,25 @@ for n in "${SITES[@]}"; do median_login "$n"; done
 between "login time at East1, median ms"                           1 100 "${LAT[east1]}"
 between "login time at East2, median ms"                           1 100 "${LAT[east2]}"
 between "login time at West, median ms (two round trips to East1)" 110 300 "${LAT[west]}"
+
+echo
+echo "== Planned switchovers under load: four logins at a time at each site"
+read -r -a all_load <<<"${LOAD[*]}"
+for u in "${all_load[@]}"; do
+    IFS=: read -r user pub priv <<<"$u"
+    node west admin add -u "$user" -P "$pub" -p "$priv" -k $K1 -w s3cr3t >/dev/null
+done
+under_load east2 1
+cluster "East2 is the primary" "east1=quorum east2=leader west=quorum" east2
+under_load east1 1001
+cluster "back to normal, East1 the primary" "$NORMAL" east1
+check "none of their logins was rejected as a replay" 0 \
+    "$(($(for n in "${SITES[@]}"; do
+        docker exec "yk-geo-$n" grep -c "user='load-.*Replay" /var/log/radiator/authentication.log
+    done | paste -sd+)))"
+for u in "${all_load[@]}"; do node west admin delete "${u%%:*}" >/dev/null; done
+T0=$SECONDS
+routes_until "all three sites advertise" "$ALL3" 60
 
 echo
 echo "== Anycast: one address for the three sites"
@@ -809,5 +890,6 @@ echo "Login times (median, warm connections): East1 ${LAT[east1]} ms, East2 ${LA
 echo "Anycast: West withdrawn ${withdraw_s} s after its Radiator stopped, back ${advertise_s} s after it started;" \
      "dropped in under $((bfd_s + 1)) s after a power loss (BFD); back ${failover_s} s after the primary lost power"
 echo "Partition mode: West, cut off, used its copy ${part_s} s after the cut"
+echo "Planned switchovers, four logins at a time at each site, all accepted; the slowest login: $SWLOG"
 printf 'Three sites: %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]]

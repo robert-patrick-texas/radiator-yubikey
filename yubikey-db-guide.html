@@ -649,35 +649,38 @@ PostgreSQL while Radiator runs, and the same OTP sent twice at the same
 moment to two of Radiator's farm processes (accepted twice without the
 trigger, once with it). For each login it checks Radiator's answer and
 the reason it logs, and that <code>verify</code> agrees.</li>
-<li><code>ha.sh</code>, 56 checks with four containers: two PostgreSQL
+<li><code>ha.sh</code>, 62 checks with four containers: two PostgreSQL
 servers (primary and streaming standby, over TLS) and two Radiator
 servers, through a dead primary, a hung primary, failovers, an old
-primary coming back, a planned switchover, the replay window (see <a
-href="#two-database-servers">Two database servers</a>), and the same OTP
-sent to both Radiator servers at the same moment.</li>
-<li><code>geo.sh</code>, 175 checks with three containers, one per site,
+primary coming back, a planned switchover (a login held until the
+standby is promoted, and one held for 5 s, then rejected, when none is),
+the replay window (see <a href="#two-database-servers">Two database
+servers</a>), and the same OTP sent to both Radiator servers at the same
+moment.</li>
+<li><code>geo.sh</code>, 191 checks with three containers, one per site,
 each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
 and <code>yubikey-anycast.sh</code> from the package, set up as in <a
 href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
 with traffic control adding the WAN delays (55 ms between West and East,
 4 ms between the East sites). A fourth container stands in for West's
 router (FRR), and a fifth, behind it, is a RADIUS client that logs in at
-the anycast addresses, over IPv4 and IPv6. It measures login times, then
-stops West's Radiator and West's check, reboots each server in turn,
-cuts West's and then the primary's power, kills Patroni on the primary,
-cuts West off, cuts the primary's site off, breaks the link between the
-East sites, copies a standby again, and takes two servers down at once.
-Then it sets up <a href="#partition-mode">partition mode</a> and cuts
-West off, cuts the primary's site off, takes two servers down at once,
-and breaks the link between the East sites again. Each time it checks
-which logins are accepted, which OTPs are replays, that the cluster
-recovers, which servers the router has anycast routes from, and which
-server answers the client. The containers have the
-<code>SYS_ADMIN</code> capability (for systemd) and
-<code>NET_ADMIN</code> (for traffic control and addresses in their own
-network), but aren't privileged. Docker sets the two kernel settings of
-<a href="#set-up-anycast-on-each-server">Set up anycast on each
-server</a>, step 2, in the containers (<code>--sysctl</code>); the
+the anycast addresses, over IPv4 and IPv6. It measures login times,
+switches the primary over twice while four users at each site log in at
+the same time, then stops West's Radiator and West's check, reboots each
+server in turn, cuts West's and then the primary's power, kills Patroni
+on the primary, cuts West off, cuts the primary's site off, breaks the
+link between the East sites, copies a standby again, and takes two
+servers down at once. Then it sets up <a
+href="#partition-mode">partition mode</a> and cuts West off, cuts the
+primary's site off, takes two servers down at once, and breaks the link
+between the East sites again. Each time it checks which logins are
+accepted, which OTPs are replays, that the cluster recovers, which
+servers the router has anycast routes from, and which server answers the
+client. The containers have the <code>SYS_ADMIN</code> capability (for
+systemd) and <code>NET_ADMIN</code> (for traffic control and addresses
+in their own network), but aren't privileged. Docker sets the two kernel
+settings of <a href="#set-up-anycast-on-each-server">Set up anycast on
+each server</a>, step 2, in the containers (<code>--sysctl</code>); the
 step's commands themselves were run in a container whose kernel settings
 it could change for its own network only.</li>
 <li><code>package.sh</code>, 48 checks of the package and
@@ -697,13 +700,13 @@ commands; the package's units neither enabled nor started by the
 install, restarted by an upgrade only while they run, stopped by a
 removal, and gone after a purge.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all four, about 21 minutes
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all four, about 23 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 92 passed, 0 failed</code>,
-<code>Two database servers: 56 passed, 0 failed</code>,
-<code>Three sites: 175 passed, 0 failed</code> and
+<code>Two database servers: 62 passed, 0 failed</code>,
+<code>Three sites: 191 passed, 0 failed</code> and
 <code>Package: 48 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
@@ -1090,10 +1093,14 @@ against the database.</li>
 <li><code>Require2Factor</code>: see below.</li>
 <li>For PostgreSQL, <code>config</code> also writes
 <code>Timeout 2</code>, <code>ConnectTimeout</code> and
-<code>FailureBackoffTime 10</code>, so Radiator gives up quickly on a
-database server that doesn't answer and tries again after 10 s, not 600
-s (see <a href="#configure-radiator-for-two-servers">Configure Radiator
-for two servers</a>).</li>
+<code>FailureBackoffTime 2</code>, so Radiator gives up quickly on a
+database server that doesn't answer and tries again after 2 s, not 600
+s, and hooks that hold a login for a few seconds while the primary
+changes (see <a href="#configure-radiator-for-two-servers">Configure
+Radiator for two servers</a>). The YubiKey clause is then
+<code>YubiKeySQL</code>, and <code>YubiKeyLocal</code>, the name the
+Handlers use, is a group of two clauses: <code>YubiKeyConnect</code>,
+which connects to the database first, then <code>YubiKeySQL</code>.</li>
 </ul>
 </section>
 <section id="choose-pin-and-otp-or-otp-only" class="level3">
@@ -1615,12 +1622,20 @@ replication.</p>
 the failure takes 2 to 5 s (up to 2 s waiting for a query, plus up to 2
 s for each server that doesn't answer), and so may the first one in each
 of Radiator's four farm processes. A process that has seen the failure
-rejects at once for the next 10 s (<code>FailureBackoffTime</code>)
+rejects at once for the next 2 s (<code>FailureBackoffTime</code>)
 without trying, then tries again.</td>
 </tr>
 <tr>
+<td>The primary was stopped cleanly, or is restarting, and the standby
+answers but isn't promoted yet</td>
+<td>It <strong>holds</strong> each login and tries again every 0.5 s,
+for up to 5 s: a login held until the standby is promoted is accepted,
+only later. After 5 s it rejects, as above. Each of the four farm
+processes holds one login at a time.</td>
+</tr>
+<tr>
 <td>The standby has been promoted</td>
-<td>Logins work again within 10 s.</td>
+<td>Logins work again within 2 to 3 s.</td>
 </tr>
 <tr>
 <td>A Radiator server's connection to the old primary ended, and a
@@ -1634,11 +1649,13 @@ window.</td>
 </tr>
 </tbody>
 </table>
-<p>Radiator rejects logins while no server accepts writes; it doesn't
-stay silent. Its log says <code>Request is ignored</code>, but the
-YubiKey check returns a reject. Network devices that try their local
-accounts only when no RADIUS server answers won't fall back to them, so
-keep your usual break-glass procedure for a long outage.</p>
+<p>Radiator rejects logins while no server accepts writes, after holding
+them for up to 5 s if every server answers; it doesn't stay silent.
+Without the hooks that <code>config</code> writes, its log says
+<code>Request is ignored</code>, but the YubiKey check returns a reject.
+Network devices that try their local accounts only when no RADIUS server
+answers won't fall back to them, so keep your usual break-glass
+procedure for a long outage.</p>
 </section>
 <section id="set-up-the-two-servers" class="level3">
 <h3>Set up the two servers</h3>
@@ -1749,7 +1766,11 @@ sudo systemctl restart radiator</code></pre>
 
     Timeout             2
     ConnectTimeout      5
-    FailureBackoffTime  10</code></pre>
+    FailureBackoffTime  2</code></pre>
+<p>with two hooks, <code>ConnectionHook</code> and
+<code>NoConnectionsHook</code>, and two more clauses,
+<code>YubiKeyConnect</code> and the group <code>YubiKeyLocal</code> (see
+below).</p>
 <ul>
 <li><code>target_session_attrs=read-write</code> skips the standby,
 which only accepts reads. A server that doesn't answer is skipped
@@ -1759,11 +1780,43 @@ answer after 2 s. <code>ConnectTimeout</code> (Radiator's limit for the
 whole connection attempt) must be longer than that times the number of
 servers.</li>
 <li><code>Timeout 2</code> gives up on a query after 2 s. Radiator's
-default is 60 s, and Radiator answers nothing else while it waits.</li>
-<li><code>FailureBackoffTime 10</code>: when no server accepts writes,
-Radiator rejects logins without trying for 10 s, then tries again. Its
+default is 60 s, and Radiator answers nothing else while it waits. The
+hooks below allow 6 s for 10 s after each new connection.</li>
+<li><code>FailureBackoffTime 2</code>: when no server accepts writes,
+each of Radiator's processes rejects logins without trying for 2 s, then
+tries again, so logins work again within about 2 s of a promotion. Its
 default is 600 s, which would leave logins failing for 10 minutes after
-the standby is promoted.</li>
+the standby is promoted. A longer time keeps rejecting after the
+promotion: with 10 s (and without the hooks below), a planned switchover
+on three sites rejected logins for about 10 s instead of 2 to 5 s. A
+shorter one tries more often while there is no primary, and each try
+waits up to 2 s for each server that doesn't answer, so more rejects
+take that long: in the lab, with the primary powered off, about 16% of
+rejects took about 3 s (5% with 10 s), and at a site cut off from the
+other two, about 14% took about 4 s (3% with 10 s).</li>
+<li><code>ConnectionHook</code> and <code>NoConnectionsHook</code>, a
+few lines of Perl: when no server accepts writes but every listed server
+answers (the primary refuses connections or is shutting down, the others
+are standbys), as while you switch over, Radiator holds the login and
+tries again every 0.5 s, for up to 5 s, instead of rejecting it. When a
+server doesn't answer at all (<code>timeout expired</code> or
+<code>No route to host</code> in the log), it doesn't hold: that server
+may be down for a while, and each held login keeps one of Radiator's
+processes busy. Radiator builds the query for a login before it runs it,
+and needs a connection to build it, so a process with no connection must
+connect first: the group <code>YubiKeyLocal</code> that the Handlers use
+runs <code>YubiKeyConnect</code> (it connects, holding the login the
+same way, then lets the login go on), then <code>YubiKeySQL</code>. And
+for 10 s after each new connection (Radiator reconnects only after a
+failure), a query may take 6 s instead of 2: a primary just promoted
+saves a change only once a standby streams from it, 1.5 to 3 s in the
+lab, and a counter update cut short by <code>Timeout</code> is saved
+anyway, so Radiator's second try would fail as a replay and the login
+would get no answer. The hooks change Radiator's
+<code>SQLRetries</code>, <code>FailureBackoffTime</code> and
+<code>Timeout</code> while it runs, as Radiator 4.30's SQL module
+allows; the tests check them, so run them again with each new Radiator
+version.</li>
 </ul>
 <p>For the admins, put both servers in <code>PGHOST</code> in
 <code>~/.profile</code>, as above. One <code>~/.pgpass</code> line with
@@ -1829,8 +1882,10 @@ A clean stop sends every change to the standby first.</li>
 <code>sudo pg_ctlcluster 18 main promote</code>.</li>
 <li>Make the old primary a standby, as above.</li>
 </ol>
-<p>Logins are rejected from step 1 until a few seconds after step 2 (up
-to <code>FailureBackoffTime</code>).</p>
+<p>Run step 2 within a few seconds of step 1. For 5 s after step 1,
+Radiator holds logins and accepts them once the standby is promoted;
+after that it rejects them until step 2, and for up to
+<code>FailureBackoffTime</code> (2 s) after it.</p>
 </section>
 <section id="automatic-failover" class="level3">
 <h3>Automatic failover</h3>
@@ -1922,12 +1977,14 @@ commits, so logins at the East sites take about 70 ms.</td>
 </tr>
 <tr>
 <td>East1 (the primary) reboots</td>
-<td>Rejected for about 6 s, while Patroni stops PostgreSQL and East2
-takes over. No OTP is lost.</td>
+<td>Nothing is rejected: while Patroni stops PostgreSQL and East2 takes
+over, Radiator holds the logins for a few seconds. No OTP is lost.</td>
 </tr>
 <tr>
 <td>A planned switchover</td>
-<td>Rejected for about 5 s. No OTP is lost.</td>
+<td>Nothing is rejected: Radiator holds the logins until East2 is
+promoted, so the slowest take 3.5 to 5.5 s (measured with four logins at
+a time at each site). No OTP is lost.</td>
 </tr>
 <tr>
 <td>East1 loses power</td>
@@ -2956,7 +3013,7 @@ characters, or Radiator can't reach the database (look for
 <td>Radiator logs <code>Could not connect to SQL database</code></td>
 <td>Check <code>DBSource</code>, <code>DBAuth</code>, the network and
 <code>pg_hba.conf</code>. With the configuration from
-<code>config</code>, Radiator tries again after 10 seconds
+<code>config</code>, Radiator tries again after 2 seconds
 (<code>FailureBackoffTime</code>); a configuration without that line
 waits 600 seconds, so after fixing it,
 <code>sudo systemctl restart radiator</code>.</td>
@@ -2970,9 +3027,18 @@ the standby (see <a href="#fail-over">Fail over</a>).</td>
 </tr>
 <tr>
 <td>Radiator logs
-<code>Could not connect to any SQL database. Request is ignored</code></td>
+<code>No database server accepts writes: trying again in 0.5 s</code></td>
+<td>No server accepts writes, but they all answer: the primary is being
+switched over or restarted. Radiator holds logins for up to 5 s. If it
+goes on, no server is the primary: promote the standby (see <a
+href="#fail-over">Fail over</a>), or check Patroni (three sites).</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Could not connect to any SQL database</code></td>
 <td>No listed server accepts writes. Logins are rejected (not ignored)
-until one does.</td>
+until one does; Radiator tries again every 2 s. A configuration without
+<code>config</code>'s hooks adds <code>Request is ignored</code>.</td>
 </tr>
 <tr>
 <td>Radiator logs <code>counter violation</code> and
@@ -3302,7 +3368,9 @@ YubiKey).</td>
 <tr>
 <td><code>config</code></td>
 <td></td>
-<td>Print the <code>&lt;AuthBy SQLYUBIKEY&gt;</code> clause.</td>
+<td>Print the <code>&lt;AuthBy SQLYUBIKEY&gt;</code> clause (for
+PostgreSQL, also the clauses <code>YubiKeyConnect</code> and
+<code>YubiKeyLocal</code>).</td>
 </tr>
 </tbody>
 </table>

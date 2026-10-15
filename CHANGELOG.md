@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `config` for PostgreSQL adds two hooks to Radiator's clause
+  (`ConnectionHook` and `NoConnectionsHook`). While no server accepts
+  writes but every listed server answers, as during a planned switchover or
+  a clean restart of the primary, Radiator holds each login and tries again
+  every 0.5 s, for up to 5 s, instead of rejecting it; when a server doesn't
+  answer at all, it backs off as before. For 10 s after each new
+  connection, a query may take 6 s instead of 2: a primary just promoted
+  saves a change only once a standby streams from it (1.5 to 3 s in the
+  test), and a counter update cut short at 2 s was saved anyway, so
+  Radiator's second try failed as a replay and the login got no answer. On
+  three sites, with four logins at a time at each site, a planned
+  switchover now rejects no login and leaves none unanswered; the slowest
+  login at each site took 3.5 to 5.5 s. Radiator builds a login's query before it runs it, and
+  needs a connection to build it, so `config` also writes a clause
+  `YubiKeyConnect` that connects first (holding the login the same way),
+  and makes `YubiKeyLocal`, the name the Handlers use, a group of
+  `YubiKeyConnect` and the YubiKey clause, now `YubiKeySQL`. Existing
+  configurations are not changed: write `config` again and restart
+  Radiator.
+
+### Changed
+
+- `config` for PostgreSQL writes `FailureBackoffTime 2` instead of 10. Each
+  of Radiator's processes that finds no server accepting writes rejects
+  logins without trying for that long, so a planned switchover on three
+  sites rejected logins for about 10 s, though the new primary was ready
+  2 to 3 s after the old one began to hand over; with 2 s, and without the
+  hooks above, for 2 to 5 s. The guide's "about 5 s" was measured with one
+  login a second, which missed the processes still waiting. In return,
+  while there is no primary, more rejects wait for servers that don't
+  answer: with the primary powered off, about 16% of rejects took about 3 s
+  (5% before); at a site cut off from the other two, about 14% took about
+  4 s (3% before).
+
+### Tests
+
+- `geo.sh` switches the primary over twice while four users at each site log
+  in at the same time, and checks that every login is accepted, within 8 s,
+  and that none of their OTPs is a replay.
+- `ha.sh` checks that Radiator compiles the hooks, that a login is held
+  until the standby is promoted and then accepted, and that with no
+  primary for longer it is held for 5 s, then rejected.
+
 ## 1.6.0 - 2026-10-13
 
 The scripts as a Debian package, `radiator-yubikey`, in
