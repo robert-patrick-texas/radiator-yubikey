@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.11.0 - 2026-10-16
+
+The turn-key setup: three sites, with partition mode, anycast, groups and
+TACACS+, set up from one input file with `yubikey-turnkey` (see the
+guide's new section, [Turn-key setup](docs/guide.md#turn-key-setup)).
+Nothing changes for an installation that doesn't use it, and there is
+nothing to do after upgrading from 1.10.0. The package now depends on
+`python3`.
 
 ### Added
 
