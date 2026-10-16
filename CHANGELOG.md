@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 - 2026-10-15
 
 A planned switchover no longer leaves a login unanswered now and then. After
 upgrading, run `yubikey-db.sh -b pg init` (once, against the primary), and
