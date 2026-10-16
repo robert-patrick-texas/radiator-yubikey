@@ -1,11 +1,7 @@
 # Ubuntu 26.04 with Radiator, the Perl modules its YubiKey support needs, SQLite,
-# PostgreSQL 18, Patroni, etcd and FRR for the three-site test, radsecproxy
-# and radclient (freeradius-utils, no FreeRADIUS server) as RadSec clients for
-# the RadSec test, and debhelper and lintian to build and check the
-# radiator-yubikey package. Built by tests/radiator/run.sh, which copies the
-# Radiator packages next to this file. radsecproxy's package enables its
-# service, which would take UDP 1812 from Radiator in the containers that run
-# systemd: it is masked.
+# PostgreSQL 18, Patroni, etcd and FRR for the three-site test, and debhelper
+# and lintian to build and check the radiator-yubikey package. Built by
+# tests/radiator/run.sh, which copies the Radiator packages next to this file.
 FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 COPY *.deb /tmp/radiator/
@@ -15,6 +11,4 @@ RUN apt-get update \
       libdbd-sqlite3-perl libdbd-pg-perl \
       sqlite3 postgresql postgresql-client openssl procps sudo \
       patroni python3-etcd etcd-server etcd-client iproute2 curl frr debhelper lintian \
-      radsecproxy freeradius-utils \
- && ln -sf /dev/null /etc/systemd/system/radsecproxy.service \
  && rm -rf /var/lib/apt/lists/* /tmp/radiator

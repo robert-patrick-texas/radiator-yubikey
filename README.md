@@ -36,9 +36,8 @@ and Radiator need, after checking that Radiator is installed (from Radiator
 Software's packages or from their source).
 
 Tested with **Radiator 4.30**, **Ubuntu 26.04 LTS** and **PostgreSQL 18**
-(with Patroni 4.1 and etcd 3.5 for three sites, FRR 10.5 for anycast, and
-radsecproxy 1.11 as a RadSec client), including real Radiator logins in
-containers (`tests/radiator/run.sh`).
+(with Patroni 4.1 and etcd 3.5 for three sites, and FRR 10.5 for anycast),
+including real Radiator logins in containers (`tests/radiator/run.sh`).
 
 ## Documentation
 
@@ -48,8 +47,8 @@ PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, two database servers with replication and failover,
 three sites with automatic failover, partition mode for a site that is cut
-off, one anycast address for all sites, RADIUS over TLS (RadSec), security,
-troubleshooting, and a reference.
+off, one anycast address for all sites, security, troubleshooting, and a
+reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.
@@ -130,7 +129,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | `install.sh` | Installs the `radiator-yubikey` package with the packages it and Radiator need, after checking for Radiator; `--check` changes nothing |
 | `yubikey-db-migrate.sh` | Verified copy from SQLite to PostgreSQL, and counter sync for a cutover |
 | `yubikey-db-user.example.sh` | Example wrapper: add or update one test account from variables |
-| `radiator.example.conf` | Radiator configuration for YubiKey logins, with a RadSec clause (TLS 1.2 and 1.3) to turn on |
+| `radiator.example.conf` | Radiator configuration for YubiKey logins |
 | `yubikey-partition.sh` | Partition mode: a copy of the keys on each server, used while it can reach no other site; with `yubikey-partition.service` and `yubikey-partition.example.conf` |
 | `yubikey-anycast.sh` | Advertises the anycast addresses (through FRR) only while the local Radiator accepts logins; with `yubikey-anycast.service` and `yubikey-anycast.example.conf` |
 | `users.example.csv` | Sample CSV file (test values only) |
@@ -145,7 +144,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 
 ```bash
 tests/run-tests.sh                           # 40 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 125 + 81 + 62 + 191 + 49 checks with real Radiator, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 125 + 62 + 191 + 49 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

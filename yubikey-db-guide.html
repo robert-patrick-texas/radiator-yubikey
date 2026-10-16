@@ -304,7 +304,6 @@ database servers</a></li>
 <li><a href="#partition-mode" id="toc-partition-mode">Partition
 mode</a></li>
 <li><a href="#anycast" id="toc-anycast">Anycast</a></li>
-<li><a href="#radsec" id="toc-radsec">RadSec</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
 id="toc-troubleshooting">Troubleshooting</a></li>
@@ -323,8 +322,7 @@ you can build in a container, a server installation, adding accounts,
 checking credentials, day-to-day maintenance, moving from SQLite to
 PostgreSQL, a second PostgreSQL server that takes over when the first
 fails, three sites with automatic failover, logins at a site that is cut
-off, one anycast address for all of them, and RADIUS over TLS
-(RadSec).</p>
+off, and one anycast address for all of them.</p>
 <p>The scripts, this guide and the releases are on GitHub, under the <a
 href="https://github.com/robert-patrick-texas/radiator-yubikey/blob/main/LICENSE">MIT
 license</a>: <a
@@ -332,9 +330,9 @@ href="https://github.com/robert-patrick-texas/radiator-yubikey">https://github.c
 <p>Every procedure in this guide was run as written with
 <strong>Radiator 4.30</strong> on <strong>Ubuntu 26.04 LTS</strong> with
 <strong>PostgreSQL 18</strong> (and Ubuntu's Patroni 4.1 and etcd 3.5
-for three sites, FRR 10.5 for anycast, and radsecproxy 1.11 as a RadSec
-client), and <code>tests/radiator/run.sh</code> repeats the checks (see
-<a href="#testing">Testing</a>).</p>
+for three sites, and FRR 10.5 for anycast), and
+<code>tests/radiator/run.sh</code> repeats the checks (see <a
+href="#testing">Testing</a>).</p>
 <section id="how-it-works" class="level2">
 <h2>How it works</h2>
 <p>Each time someone touches a YubiKey, it types a 44-character OTP. The
@@ -403,8 +401,7 @@ variables at the top of the file.</td>
 <tr>
 <td><code>radiator.example.conf</code></td>
 <td>A Radiator configuration for YubiKey logins, to replace the
-package's sample, with a RadSec clause to turn on (see <a
-href="#radsec">RadSec</a>).</td>
+package's sample.</td>
 </tr>
 <tr>
 <td><code>yubikey-partition.sh</code></td>
@@ -558,14 +555,6 @@ and <code>sqlite3</code> or <code>postgresql-client</code>);
 <td><code>frr</code></td>
 </tr>
 <tr>
-<td>Each server, for RadSec</td>
-<td>A certificate (see <a href="#radsec">RadSec</a>)</td>
-</tr>
-<tr>
-<td>A test machine, for RadSec</td>
-<td><code>radsecproxy</code>, <code>freeradius-utils</code></td>
-</tr>
-<tr>
 <td>Workstation that programs keys</td>
 <td><code>ykman</code></td>
 </tr>
@@ -656,9 +645,8 @@ it.</p>
 <section id="the-automated-test" class="level3">
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
-Patroni, etcd, FRR, radsecproxy and <code>radclient</code> (and
-debhelper and lintian, to build and check the package) added, and runs
-five tests of real Radiator logins:</p>
+Patroni, etcd and FRR (and debhelper and lintian, to build and check the
+package) added, and runs four tests of real Radiator logins:</p>
 <ul>
 <li><code>e2e.sh</code>, 125 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
@@ -669,23 +657,6 @@ runs, and the same OTP sent twice at the same moment to two of
 Radiator's farm processes (accepted twice without the trigger, once with
 it). For each login it checks Radiator's answer and the reason it logs,
 and that <code>verify</code> agrees.</li>
-<li><code>radsec.sh</code>, 81 checks in a throwaway container: <a
-href="#radsec">RadSec</a> with the clause from
-<code>radiator.example.conf</code>, set up with that section's commands.
-With <code>openssl s_client</code>, the TLS versions, ciphers and
-key-exchange groups that are allowed and refused, and client
-certificates: none, self-signed, another CA's (with and without its
-chain, and with that CA in <code>TLS_CAFile</code>), and ours with any
-name, by default and with mutual TLS, with an RSA and an ECDSA server
-certificate. With radsecproxy as the device, real logins over TLS 1.3
-and 1.2 (from <code>radclient</code> as in step 5, and from
-<code>radpwtst</code>), 100 in a row and four users at once, a
-<code>Secret</code> of the clause's own, Radiator restarting, the groups
-with <code>OPENSSL_CONF</code> and with <code>TLS_ECDH_Curve</code>,
-and, on PostgreSQL, a slow login holding up another on the same
-connection (but not over UDP). Last, the clause without
-<code>TLS_CertificateType PEM</code> and without
-<code>TLS_CAFile</code>.</li>
 <li><code>ha.sh</code>, 62 checks with four containers: two PostgreSQL
 servers (primary and streaming standby, over TLS) and two Radiator
 servers, through a dead primary, a hung primary, failovers, an old
@@ -737,12 +708,11 @@ commands; the package's units neither enabled nor started by the
 install, restarted by an upgrade only while they run, stopped by a
 removal, and gone after a purge.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all five, about 28 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, radsec, geo, or package)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all four, about 23 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 125 passed, 0 failed</code>,
-<code>RadSec: 81 passed, 0 failed</code>,
 <code>Two database servers: 62 passed, 0 failed</code>,
 <code>Three sites: 191 passed, 0 failed</code> and
 <code>Package: 49 passed, 0 failed</code>. Run them again with each new
@@ -2977,249 +2947,6 @@ its check's user:
 </ul>
 </section>
 </section>
-<section id="radsec" class="level2">
-<h2>RadSec</h2>
-<p>RadSec carries RADIUS over TLS (RFC 6614), on TCP port 2083, instead
-of over UDP port 1812. TLS encrypts the whole request and reply, not
-only the password, and devices can check the server's certificate.
-Radiator has it built in (<code>&lt;ServerRADSEC&gt;</code>), and
-<code>radiator.example.conf</code> has a clause for it, commented out:
-TLS 1.2 and 1.3 with AES-256-GCM only, and no client certificate needed.
-Devices without RadSec keep using UDP 1812 alongside it.</p>
-<p>Radiator Software calls TLS 1.3 in Radiator 4.30 "available but not
-supported yet". <code>tests/radiator/radsec.sh</code> tests it, with
-radsecproxy in the place of a network device (see <a
-href="#testing">Testing</a>).</p>
-<section id="how-radsec-works-here" class="level3">
-<h3>How RadSec works here</h3>
-<ul>
-<li><p><strong>The same logins.</strong> A request over RadSec goes to
-the same <code>&lt;Handler&gt;</code>, the same YubiKey database and the
-same counters as one over UDP: an OTP used over UDP is a replay over
-RadSec.</p></li>
-<li><p><strong>TLS 1.2 and 1.3, with AES-256-GCM only:</strong></p>
-<table>
-<thead>
-<tr>
-<th></th>
-<th>Allowed</th>
-<th>Refused</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>TLS 1.3</td>
-<td><code>TLS_AES_256_GCM_SHA384</code></td>
-<td><code>TLS_AES_128_GCM_SHA256</code>,
-<code>TLS_CHACHA20_POLY1305_SHA256</code></td>
-</tr>
-<tr>
-<td>TLS 1.2</td>
-<td><code>ECDHE-RSA-AES256-GCM-SHA384</code> (RSA certificate),
-<code>ECDHE-ECDSA-AES256-GCM-SHA384</code> (ECDSA certificate)</td>
-<td>AES-128, CBC, ChaCha20</td>
-</tr>
-<tr>
-<td>TLS 1.1 and older</td>
-<td>—</td>
-<td>All</td>
-</tr>
-</tbody>
-</table></li>
-<li><p><strong>Key exchange:</strong> a TLS 1.3 device that offers it
-gets <code>X25519MLKEM768</code>, which adds the post-quantum ML-KEM to
-X25519 (OpenSSL 3.5, as in Ubuntu 26.04); others get X25519, P-256 or
-P-384. Don't set <code>TLS_ECDH_Curve</code>: it allows one group only,
-and turns ML-KEM off. To choose the groups, see step 6 below.</p></li>
-<li><p><strong>No client certificate needed.</strong> Radiator asks each
-device for one, but accepts the connection without one, and accepts any
-certificate a device sends: self-signed, or from any CA. Except: a
-device that sends its CA's certificates (its chain) with its own is
-refused (<code>unknown ca</code>), unless that CA is in
-<code>TLS_CAFile</code>. Radiator can overlook a problem with the
-device's own certificate only.</p></li>
-<li><p><strong>So a device is known by its address and the shared
-secret</strong>, <code>radsec</code> (RFC 6614's, the same everywhere)
-unless you set another. Open TCP 2083 only to your devices. Logins still
-need the PIN and a fresh OTP.</p></li>
-<li><p><strong>Mutual TLS is an option</strong> in the clause's
-comments: devices must then send a certificate from a CA in
-<code>TLS_CAFile</code>, with a name that
-<code>TLS_ExpectedPeerName</code> matches, and any other device is
-refused. Use a CA for RadSec only, not the <a
-href="#set-up-the-three-servers">three sites'</a> CA: any certificate
-that one signs can change the cluster's state in etcd.</p></li>
-</ul>
-</section>
-<section id="what-devices-see-with-radsec" class="level3">
-<h3>What devices see with RadSec</h3>
-<p>Measured by the test, with radsecproxy as the device:</p>
-<table>
-<thead>
-<tr>
-<th>Situation</th>
-<th>What happens</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Normal</td>
-<td>As over UDP: logins accepted, replays and wrong PINs rejected, over
-TLS 1.3 or 1.2, on one connection that stays open.</td>
-</tr>
-<tr>
-<td>A login is slow (the database is busy or failing over)</td>
-<td>The device's other logins wait for it, because one Radiator process
-serves each connection: another user's login took 1.1 s instead of 0.3 s
-while one waited 1.5 s for the database. Over UDP, Radiator's other
-processes answer it at once.</td>
-</tr>
-<tr>
-<td>Radiator restarts (<code>systemctl restart</code>, an upgrade,
-partition mode)</td>
-<td>Every connection closes, and each device connects again on its own
-timer: radsecproxy's logins got no answer for up to about 30 s. Over
-UDP, logins work again as soon as Radiator answers.</td>
-</tr>
-</tbody>
-</table>
-<p>With anycast, a connection lasts until the route moves to another
-site; then it breaks, and the device connects to the new site. Give each
-device a second RadSec server (another site's own address), and find out
-how soon your devices connect again.</p>
-</section>
-<section id="set-up-radsec" class="level3">
-<h3>Set up RadSec</h3>
-<p><strong>1. A certificate for each server.</strong> Devices check it
-against the name or address they connect to, so it lists the server's
-own name, a name for all the servers, and, with <a
-href="#anycast">anycast</a>, the anycast addresses. On an admin machine,
-a CA for RadSec and west's certificate, for 5 years (the same for east1
-and east2, with their names):</p>
-<pre class="bash"><code>openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj &quot;/CN=RadSec CA&quot; \
-        -addext &quot;basicConstraints=critical,CA:TRUE&quot; -addext &quot;keyUsage=critical,keyCertSign,cRLSign&quot; \
-        -keyout radsec-ca.key -out radsec-ca.crt
-openssl req -newkey rsa:3072 -nodes -subj &quot;/CN=west.example.com&quot; \
-        -addext &quot;subjectAltName=DNS:west.example.com,DNS:radius.example.com,IP:192.0.2.153,IP:2001:db8:153::153&quot; \
-        -addext &quot;keyUsage=critical,digitalSignature,keyEncipherment&quot; \
-        -addext &quot;extendedKeyUsage=serverAuth&quot; -keyout west-radsec.key -out west-radsec.csr
-openssl x509 -req -in west-radsec.csr -CA radsec-ca.crt -CAkey radsec-ca.key -CAcreateserial -days 1826 \
-        -copy_extensions copy -out west-radsec.crt</code></pre>
-<p>Keep <code>radsec-ca.key</code> offline; give
-<code>radsec-ca.crt</code> to the devices, to check the servers with.
-Copy <code>west-radsec.crt</code>, <code>west-radsec.key</code> and
-<code>radsec-ca.crt</code> to west, and there:</p>
-<pre class="bash"><code>sudo install -d -m 0750 -o root -g radiator /etc/radiator/tls
-sudo install -m 0644 west-radsec.crt /etc/radiator/tls/server.crt
-sudo install -m 0640 -o root -g radiator west-radsec.key /etc/radiator/tls/server.key
-sudo install -m 0644 radsec-ca.crt /etc/radiator/tls/ca.crt</code></pre>
-<p>The clause needs <code>TLS_CAFile</code> even though devices need no
-certificate: Radiator asks every device for one, and doesn't start the
-listener without a CA file.</p>
-<p><strong>2. Turn on the clause</strong> (this removes the first
-<code>#</code> from each of its lines) and restart Radiator:</p>
-<pre class="bash"><code>sudo sed -i &#39;/^#&lt;ServerRADSEC&gt;/,/^#&lt;\/ServerRADSEC&gt;/s/^#//&#39; /etc/radiator/radiator.conf
-sudo systemctl restart radiator</code></pre>
-<p>A <code>radiator.conf</code> from before this clause doesn't have it:
-copy it from <code>radiator.example.conf</code> first. With
-<code>BindAddress</code> set (for anycast), RadSec listens on those
-addresses.</p>
-<p><strong>3. Open TCP 2083</strong> to your devices' addresses
-only.</p>
-<p><strong>4. Check the TLS</strong>, from a machine with
-<code>radsec-ca.crt</code>:</p>
-<pre class="bash"><code>openssl s_client -brief -connect west.example.com:2083 -CAfile radsec-ca.crt &lt;/dev/null
-openssl s_client -brief -connect west.example.com:2083 -CAfile radsec-ca.crt -tls1_2 &lt;/dev/null</code></pre>
-<p>The first shows <code>Protocol version: TLSv1.3</code>,
-<code>Ciphersuite: TLS_AES_256_GCM_SHA384</code>,
-<code>Verification: OK</code> and
-<code>Negotiated TLS1.3 group: X25519MLKEM768</code>; the second
-<code>TLSv1.2</code> and <code>ECDHE-RSA-AES256-GCM-SHA384</code>.</p>
-<p><strong>5. Log in over RadSec</strong>, from a test machine rather
-than the Radiator server: radsecproxy stands in for a device, and
-<code>radclient</code> (from <code>freeradius-utils</code>, which has no
-FreeRADIUS server) sends it the login. The radsecproxy package starts a
-service of its own, which listens on UDP 1812 like Radiator, so don't
-install it on a Radiator server; the second line stops it. In a folder
-with <code>radsec-ca.crt</code>:</p>
-<pre class="bash"><code>sudo apt install radsecproxy freeradius-utils
-sudo systemctl disable --now radsecproxy
-openssl req -x509 -newkey rsa:3072 -nodes -days 30 -subj &quot;/CN=radsec-test&quot; -keyout test.key -out test.crt
-cat &gt;radsecproxy-test.conf &lt;&lt;EOF
-ListenUDP 127.0.0.1:11812
-tls test {
-    CACertificateFile $PWD/radsec-ca.crt
-    CertificateFile $PWD/test.crt
-    CertificateKeyFile $PWD/test.key
-}
-client localhost {
-    host 127.0.0.1
-    type udp
-    secret radsec-test
-}
-server west {
-    host west.example.com
-    port 2083
-    type tls
-    tls test
-    secret radsec
-}
-realm * {
-    server west
-}
-EOF
-radsecproxy -f -c radsecproxy-test.conf &gt;radsecproxy-test.log 2&gt;&amp;1 &amp;
-read -rsp &#39;PIN: &#39; PIN; echo; read -rp &#39;Touch the YubiKey: &#39; OTP
-printf &#39;User-Name = &quot;alice&quot;\nUser-Password = &quot;%s&quot;\n&#39; &quot;$PIN:$OTP&quot; | radclient -x 127.0.0.1:11812 auth radsec-test
-kill %1</code></pre>
-<p><code>radclient</code> prints <code>Received Access-Accept</code>;
-the same OTP again gets <code>Received Access-Reject</code> (and
-<code>Replay attack detected</code> in Radiator's log).
-<code>radsecproxy-test.log</code> shows
-<code>TLSv1.3 with cipher TLS_AES_256_GCM_SHA384</code>. With mutual
-TLS, the test machine needs a certificate from your RadSec CA, with a
-name that <code>TLS_ExpectedPeerName</code> matches, instead of
-<code>test.crt</code>.</p>
-<p><strong>6. Optional: choose the key-exchange groups.</strong>
-Radiator reads the OpenSSL configuration that <code>OPENSSL_CONF</code>
-names. With this one, a TLS 1.3 device gets X25519MLKEM768 or
-SecP384r1MLKEM1024 if it offers either, and otherwise X25519 or P-384;
-one that offers only P-256 is refused. It applies to all of Radiator's
-TLS, including its connections to PostgreSQL, so keep X25519 in it
-(PostgreSQL 18 offers X25519 and P-256):</p>
-<pre class="bash"><code>sudo tee /etc/radiator/tls/openssl.cnf &gt;/dev/null &lt;&lt;&#39;EOF&#39;
-openssl_conf = openssl_init
-[openssl_init]
-ssl_conf = ssl_sect
-[ssl_sect]
-system_default = system_default_sect
-[system_default_sect]
-Groups = X25519MLKEM768:SecP384r1MLKEM1024:X25519:secp384r1
-EOF
-sudo mkdir -p /etc/systemd/system/radiator.service.d
-printf &#39;[Service]\nEnvironment=OPENSSL_CONF=/etc/radiator/tls/openssl.cnf\n&#39; \
-    | sudo tee /etc/systemd/system/radiator.service.d/openssl.conf
-sudo systemctl daemon-reload
-sudo systemctl restart radiator</code></pre>
-<p>(The test sets <code>OPENSSL_CONF</code> in Radiator's environment
-directly.)</p>
-</section>
-<section id="mutual-tls" class="level3">
-<h3>Mutual TLS</h3>
-<p>To accept only devices with a certificate from your RadSec CA: in the
-clause, delete the <code>TLS_RequireClientCert 0</code> and
-<code>TLS_CertificateVerifyFailedHook</code> lines, remove the
-<code>#</code> from <code>TLS_ExpectedPeerName</code>, and change its
-pattern to your devices' names (it is matched against the certificate's
-subject, such as <code>/CN=nas1.example.com</code>). Without
-<code>TLS_ExpectedPeerName</code>, Radiator accepts any certificate the
-CA signed. Then sign a certificate for each device with the RadSec CA,
-with <code>extendedKeyUsage=clientAuth</code>, and restart Radiator. The
-test checks that this refuses devices without a certificate, with a
-self-signed one, with another CA's, and with ours under another
-name.</p>
-</section>
-</section>
 <section id="security" class="level2">
 <h2>Security</h2>
 <ul>
@@ -3286,14 +3013,6 @@ it before the one for everyone else.
 router accepts only the two anycast routes from its server. If your
 routers require BGP passwords, FRR sets them with
 <code>neighbor ADDRESS password</code> (the test doesn't use them).</li>
-<li><strong>RadSec:</strong> without client certificates, anything that
-reaches TCP 2083 can send requests, with the shared secret
-<code>radsec</code>: open the port to your devices only, and set a
-<code>Secret</code> of your own in the clause if they allow it. For
-mutual TLS, use a CA for RadSec only and set
-<code>TLS_ExpectedPeerName</code>; without it, Radiator accepts any
-certificate the CA signed. <code>/etc/radiator/tls/server.key</code>:
-mode <code>0640</code>, owner <code>root:radiator</code>.</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -3464,40 +3183,6 @@ route</td>
 session that isn't <code>Established</code> (firewall, AS numbers,
 addresses), or <code>(Policy)</code>, which means a route map is
 missing.</td>
-</tr>
-<tr>
-<td>RadSec: <code>Connection refused</code> on port 2083</td>
-<td>The clause isn't on, or Radiator didn't start the listener: look in
-<code>radiator.log</code> for
-<code>could not use TLS_CertificateFile</code> (the file is missing,
-<code>radiator</code> can't read it, or
-<code>TLS_CertificateType PEM</code> is missing) or
-<code>could not load TLS_CAFile</code>.</td>
-</tr>
-<tr>
-<td>RadSec: a device is refused with <code>unknown ca</code> (Radiator
-logs <code>SSL_accept Certificate verification error</code>)</td>
-<td>The device sends its CA's certificates with its own: add that CA to
-<code>TLS_CAFile</code>, or have it send its own certificate only. With
-mutual TLS, its certificate isn't from a CA in
-<code>TLS_CAFile</code>.</td>
-</tr>
-<tr>
-<td>RadSec with mutual TLS: Radiator logs
-<code>Verification of certificate presented by ... failed</code></td>
-<td>The certificate's subject doesn't match
-<code>TLS_ExpectedPeerName</code>.</td>
-</tr>
-<tr>
-<td>RadSec: Radiator logs
-<code>ERR: ... Disconnecting: SSL_read ... SSL_ERROR_ZERO_RETURN</code></td>
-<td>A device closed its connection. Normal, despite the
-<code>ERR</code>.</td>
-</tr>
-<tr>
-<td>RadSec: no answer for a while after Radiator restarts</td>
-<td>The device hasn't connected again yet: it does so on its own timer
-(radsecproxy: up to about 30 s).</td>
 </tr>
 <tr>
 <td><code>radiusd</code> fails with
