@@ -1,0 +1,107 @@
+$ yubikey-anycast.sh -c anycast.conf renew
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+[exit 0]
+
+anycast_user | same_public_id | key_file_private_id | key_file_aes_key | stored_as | pin_kept | counter | low | high
+t | t | t | t | base64 | t | 0 | 0 | 0
+
+# counter file: 0; new private ID: yes
+# next renewal 365 days after the key was made: yes
+
+$ yubikey-anycast.sh -c anycast.conf renew
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+[exit 0]
+
+anycast_user | same_public_id | key_file_private_id | key_file_aes_key | stored_as | pin_kept | counter | low | high
+t | t | t | t | hex | t | 0 | 0 | 0
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: psql: error: server closed the connection unexpectedly
+[exit 1]
+
+# key.next: state/key.next; the database has its key: t
+
+# check warns: yubikey-anycast.sh: a renewal of the key isn't finished: run 'yubikey-anycast.sh renew'
+
+$ yubikey-anycast.sh -c anycast.conf renew
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+[exit 0]
+
+# key.next: ; new private ID: yes
+
+anycast_user | same_public_id | key_file_private_id | key_file_aes_key | stored_as | pin_kept | counter | low | high
+t | t | t | t | hex | t | 0 | 0 | 0
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: the database has no function anycast_renew: run 'yubikey-db.sh -b pg init' (once)
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Added the function anycast_renew, with which the anycast check renews its key
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: the database has no key for anycast-<HOST> with public ID vv<PUBLIC ID> and this key file's private ID (was it replaced with 'enroll'?)
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: this server is in partition mode (Radiator uses the copy)
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: psql: error: connection to server <SERVER> failed: FATAL:  password authentication failed for user "<T>_radiator"
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: Radiator's database (DBSource in <WORK>/conf.d/yubikey.conf) isn't PostgreSQL
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf renew
+yubikey-anycast.sh: cannot renew the key: cannot read <WORK>/conf.d/yubikey.conf
+[exit 3]
+
+$ radiator> select anycast_renew('cbdefghijklr', '0a1b2c3d4e5f', 'abcdefabcdef', '00112233445566778899aabbccddeeff')
+anycast_renew
+f
+[exit 0]
+
+$ radiator> select anycast_renew('vv<PUBLIC ID>', '<PRIVATE ID>', 'xyz', '00')
+ERROR:  anycast_renew: the new private ID must be 12 hex digits, and the AES key 32
+[exit 1]
+
+username | counter
+test.user2 | 0
+
+$ yubikey-anycast.sh -c anycast.conf status
+not running
+on lo: none
+OTPs left: 8388352 (485 days at one check every 5 s)
+key: next renewal on <DATE>
+[exit 1]
+
+# still the old key, while it works: yes
+# status: the next renewal when 30 days of OTPs are left: yes
+# run exited with 0; its log:
+started: anycast-<HOST> logs in every 1 s; 192.0.2.153 on lo after 2 good checks, off after 3 failed; <N> OTPs left (<N> days); key made <DATE>, next renewal on <DATE>
+check: ACCEPT in <N> ms
+renewing the key (made <DATE>)
+cannot renew the key: psql: error: server closed the connection unexpectedly; trying again in 1 hour, or sooner if the check's logins fail
+check: REJECT in <N> ms: Yubikey secret not found in database
+renewed the key of anycast-<HOST> (public ID vv<PUBLIC ID>): a new private ID and AES key; next renewal on <DATE>
+check: ACCEPT in <N> ms
+stopped; 192.0.2.153 removed from lo
+
+# new private ID: yes
+# the server accepts the new key: yes
+anycast_user | same_public_id | key_file_private_id | key_file_aes_key | stored_as | pin_kept | counter | low | high
+t | t | t | t | hex | t | 0 | 0 | 0
+

@@ -246,7 +246,7 @@ Leave the container with `exit`; `--rm` deletes it.
 (and debhelper and lintian, to build and check the package) added, and runs
 five tests of real Radiator logins:
 
-- `e2e.sh`, 140 checks in a throwaway container: SQLite with and without
+- `e2e.sh`, 145 checks in a throwaway container: SQLite with and without
   `Require2Factor`, PostgreSQL over the local socket and over TLS, the example
   wrapper, a user with two YubiKeys (each with its own counters, PIN and
   `active`; another user's YubiKey refused), a cutover from SQLite to
@@ -255,9 +255,11 @@ five tests of real Radiator logins:
   trigger, once with it), and a counter save on PostgreSQL whose answer is
   lost (its session ended while it waits for a standby: not answered with
   1.8.1's `UpdateQuery`, accepted with this one's), and a YubiKey stored for
-  the username `DEFAULT`, which logs in no one else. For each login it checks
+  the username `DEFAULT`, which logs in no one else, and the anycast check
+  renewing its key with Radiator's login over TLS, then logging in with the
+  new key (Radiator refuses the old one). For each login it checks
   Radiator's answer and the reason it logs, and that `verify` agrees.
-- `groups.sh`, 107 checks in a throwaway container, with
+- `groups.sh`, 133 checks in a throwaway container, with
   `radiator-groups.example.conf` and devices at addresses in 127.0.0.0/8:
   logins over TACACS+ (with a small client on Radiator's own modules, and
   with Radiator's `tacacsplustest`) and RADIUS, by YubiKey and by service
@@ -267,7 +269,13 @@ five tests of real Radiator logins:
   followed by eight authorizations at once, which several of Radiator's
   processes answer; `enable`; accounting; that a change in the groups, or a
   disabled account, applies to a session already open; and that nothing is
-  allowed while PostgreSQL is stopped.
+  allowed while PostgreSQL is stopped. It also runs the anycast check's
+  `check` over RADIUS and TACACS+, set up as in
+  [Set up anycast on each server](#set-up-anycast-on-each-server), step 5,
+  with its service account disabled, its group's access taken away,
+  another password in the database, a wrong key, a wrong port and an
+  address Radiator doesn't listen on; and that its accounts can't log in
+  from a device.
 - `ha.sh`, 63 checks with four containers: two PostgreSQL servers (primary
   and streaming standby, over TLS) and two Radiator servers, through a dead
   primary, a hung primary, failovers, an old primary coming back, a
@@ -275,7 +283,7 @@ five tests of real Radiator logins:
   held for 5 s, then rejected, when none is), the replay window (see
   [Two database servers](#two-database-servers)), and the same OTP sent to
   both Radiator servers at the same moment.
-- `geo.sh`, 191 checks with three containers, one per site, each running
+- `geo.sh`, 196 checks with three containers, one per site, each running
   systemd with etcd, PostgreSQL under Patroni, Radiator, FRR and
   `yubikey-anycast.sh` from the package, set up as in
   [Three sites](#three-sites) and [Anycast](#anycast), with traffic control adding the WAN delays (55 ms
@@ -288,7 +296,8 @@ five tests of real Radiator logins:
   power, kills Patroni on the primary, cuts West off, cuts the primary's
   site off, breaks the link between the East sites, copies a standby again,
   and takes two servers down at once. Then it sets up
-  [partition mode](#partition-mode) and cuts West off, cuts the primary's
+  [partition mode](#partition-mode), has West's check renew its key under
+  systemd (and West's copy get it), and cuts West off, cuts the primary's
   site off, takes two servers down at once, and breaks the link between the
   East sites again. Each time it checks which logins are accepted, which OTPs
   are replays, that the cluster recovers, which servers the router has
@@ -320,9 +329,9 @@ tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, g
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
-`Radiator 4.30-1: 140 passed, 0 failed` (and `107 passed` for `groups.sh`),
+`Radiator 4.30-1: 145 passed, 0 failed` (and `133 passed` for `groups.sh`),
 `Two database servers: 63 passed, 0 failed`,
-`Three sites: 191 passed, 0 failed` and
+`Three sites: 196 passed, 0 failed` and
 `Package: 49 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
@@ -1039,6 +1048,12 @@ mode, as `yubikey-cluster.conf`), put Radiator's password back on the
 done, Radiator works as before, and once both are, a login whose counters
 were saved just as the primary stopped is answered (see
 [Database layout](#database-layout)).
+Version 1.10.0 adds the service-account and group tables (`init` prints
+`Added the service-account and group tables`), and in PostgreSQL the
+function with which the anycast check renews its key (`init` prints
+`Added the function anycast_renew, with which the anycast check renews its key`);
+until then, the check logs that it can't renew its key, and works as
+before.
 With two database servers or three sites, run `init` once, against the
 primary; the standbys get the change by replication.
 
@@ -2029,12 +2044,14 @@ Radiator uses: yubikey-cluster.conf
 With anycast, every Radiator server has the same IPv4 and IPv6 address on
 its loopback interface, and **FRR** advertises it to the site's router with
 BGP. The network devices are given that one address as their RADIUS server
-and reach their own site's server. When a server can't log anyone in, it
-stops advertising the address, and its site's devices reach another site.
+(and TACACS+ server) and reach their own site's server. When a server can't
+log anyone in, it stops advertising the address, and its site's devices
+reach another site.
 
 `yubikey-anycast.sh` decides: every 5 s it logs in to the local Radiator,
-with a key of its own that works like a YubiKey's. The example below adds anycast to the three
-sites of the previous section. `tests/radiator/geo.sh` runs it with an FRR
+with a key of its own that works like a YubiKey's, and, with
+[TACACS+](#groups-and-tacacs), over TACACS+ too. The example below adds
+anycast to the three sites of the previous section. `tests/radiator/geo.sh` runs it with an FRR
 router in front of the three servers (see [Testing](#testing)).
 
 ### How anycast works
@@ -2051,6 +2068,21 @@ router in front of the three servers (see [Testing](#testing)).
   OTP's counter. After 2 good checks in a row the addresses go on `lo`, and
   FRR advertises them. After 3 failed checks they come off, and FRR
   withdraws them.
+- **With TACACS+, a check is two logins.** With `TACACS_KEY` in its
+  settings, each check also logs in over TACACS+, at the same time, as the
+  service account `svc.anycast-` and the server's name, with a password of
+  its own; asks for the session's authorization, as a device does; and
+  checks that Radiator listens on TCP port 49 on the anycast addresses. The
+  check fails if either login fails, so a server whose TACACS+ is broken is
+  withdrawn like one whose RADIUS is. The TACACS+ login goes through the
+  same password and group checks as anyone's, and uses no OTPs.
+- **The check renews its key every year.** Like a YubiKey's, its OTPs have
+  counters that only go up, so a key runs out: after about 485 days at one
+  check every 5 s. Every 365 days, after a good check, the running check
+  gives its key a new private ID and AES key, in the database and in its
+  key file, and its counters start again. It writes with Radiator's own
+  login, through a function in the database that can change only the keys
+  of `anycast-*` users. Never in partition mode.
 - **Nothing is advertised unless the check says so.** The addresses aren't
   in the server's network configuration, and FRR's configuration never
   changes: FRR advertises what is on `lo`, even after it restarts. A server
@@ -2066,9 +2098,9 @@ router in front of the three servers (see [Testing](#testing)).
   are back. Its `BindAddress` lists them, so the reply to a request sent to
   an anycast address comes from that address: network devices drop a reply
   from any other address.
-- **The check's user works nowhere else.** Radiator accepts `anycast-*`
-  users only from 127.0.0.1, and doesn't write their logins to the
-  authentication log.
+- **The check's users work nowhere else.** Radiator accepts `anycast-*`
+  users (and `svc.anycast-*` service accounts) only from 127.0.0.1, and
+  doesn't write their logins to the authentication log.
 
 The check withdraws a server whenever its logins fail, whatever the reason.
 While no server can log anyone in, for example while Patroni replaces a
@@ -2112,10 +2144,11 @@ East2:
 - **AS numbers:** the servers use one private AS, `65053` below, the same on
   all three; the routers use yours, `64500` below.
 - **Firewall:** between each server and its router, TCP 179 (BGP) and UDP
-  3784 (BFD). From the devices to the anycast addresses, UDP 1812.
-- **The devices** get the anycast addresses as their RADIUS server. Each
-  server still needs a `<Client>` for each device, with the same secret on
-  every server.
+  3784 (BFD). From the devices to the anycast addresses, UDP 1812, and TCP
+  49 for TACACS+.
+- **The devices** get the anycast addresses as their RADIUS server (and
+  TACACS+ server). Each server still needs a `<Client>` for each device,
+  with the same secret (and TACACS+ key) on every server.
 
 ### Set up anycast on each server
 
@@ -2139,9 +2172,10 @@ sudo sysctl -p /etc/sysctl.d/60-radiator-anycast.conf
 
 **3. Radiator.** `radiator.example.conf` has the two `<Handler>` clauses
 for the check's users, before the one for everyone else; copy them into an
-older `radiator.conf`. Then set `BindAddress` (commented out in the
-example) to 127.0.0.1, the server's own addresses and the anycast
-addresses. On west:
+older `radiator.conf`. (`radiator-groups.example.conf` has them, and a
+third, for the check's TACACS+ login.) Then set `BindAddress` (commented
+out in the example) to 127.0.0.1, the server's own addresses and the
+anycast addresses. On west:
 
 ```apache
 BindAddress     127.0.0.1, 203.0.113.33, ipv6:2001:db8:33::33, 192.0.2.153, ipv6:2001:db8:153::153
@@ -2152,9 +2186,10 @@ sudo systemctl restart radiator
 ss -Hlun 'sport = :1812'
 ```
 
-`ss` lists one socket for each of the five addresses. Without
-`BindAddress`, Radiator listens on all addresses, and its replies to
-requests sent to an anycast address come from the server's own address.
+`ss` lists one socket for each of the five addresses (and so does
+`ss -Hltn 'sport = :49'`, with TACACS+). Without `BindAddress`, Radiator
+listens on all addresses, and its replies to requests sent to an anycast
+address come from the server's own address.
 
 **4. FRR.** Turn on its BGP and BFD daemons:
 
@@ -2228,21 +2263,42 @@ Both sessions should be up (a time under `Up/Down`) and both BFD peers
 
 **5. The check.** Put the anycast addresses and the secret of
 `<Client 127.0.0.1>` in `/etc/radiator/anycast.conf`
-(`sudoedit /etc/radiator/anycast.conf`). Then give the check its key, in the
+(`sudoedit /etc/radiator/anycast.conf`), and with TACACS+, its
+`TACACSPLUSKey` as `TACACS_KEY`. Then give the check its key, in the
 database, as the admin (with the `PGHOST` and `~/.pgpass` from
-[Set up the three servers](#set-up-the-three-servers), step 7), try it, and
-start it:
+[Set up the three servers](#set-up-the-three-servers), step 7):
 
 ```bash
 sudo ./yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
-sudo ./yubikey-anycast.sh check
-sudo systemctl enable --now yubikey-anycast
 ```
 
 `enroll` makes a key, a PIN and the user `anycast-west`, keeps them in
 `/var/lib/yubikey-anycast/key` (mode `0600`), and prints them as one CSV
-line for `import`, through the pipe, never on a command line. `check`
-prints `ACCEPT in 148 ms` (at West). About 10 s after the start, the
+line for `import`, through the pipe, never on a command line.
+
+With TACACS+, also give the check its service account, in a group that may
+log in to the server itself (device group `localhost`). The group and its
+access are made once, on the first server:
+
+```bash
+sudo ./yubikey-anycast.sh enroll-tacacs | ./yubikey-db.sh -b pg service add "svc.anycast-$(hostname -s)" -l 'anycast check'
+./yubikey-db.sh -b pg group add anycast-check -l 'yubikey-anycast.sh over TACACS+'   # first server only
+./yubikey-db.sh -b pg access set anycast-check localhost 1                           # first server only
+./yubikey-db.sh -b pg member add anycast-check "svc.anycast-$(hostname -s)"
+```
+
+`enroll-tacacs` makes a password of 32 letters and digits for
+`svc.anycast-west`, keeps it in `/var/lib/yubikey-anycast/tacacs` (mode
+`0600`), and prints it for `service add`, through the pipe. Then try the
+check, and start it:
+
+```bash
+sudo ./yubikey-anycast.sh check
+sudo systemctl enable --now yubikey-anycast
+```
+
+`check` prints `ACCEPT in 148 ms` (at West); with TACACS+, it adds
+`; TACACS+ PASS` and that login's time. About 10 s after the start, the
 addresses are on `lo`, and the router has the routes:
 
 ```text
@@ -2251,6 +2307,7 @@ advertised since 2026-10-13 12:26:43 UTC
 last check: ACCEPT in 127 ms, 1 s ago
 on lo: 192.0.2.153 2001:db8:153::153
 OTPs left: 8386814 (485 days at one check every 5 s)
+key: next renewal on 2027-10-13
 ```
 
 On the server, `sudo vtysh -c 'show bgp summary'` now shows 1 route sent
@@ -2327,7 +2384,7 @@ and 100.
   of check result:
 
   ```text
-  started: anycast-west logs in every 5 s; 192.0.2.153 2001:db8:153::153 on lo after 2 good checks, off after 3 failed; 8388095 OTPs left (485 days)
+  started: anycast-west logs in every 5 s; 192.0.2.153 2001:db8:153::153 on lo after 2 good checks, off after 3 failed; 8388095 OTPs left (485 days); key made 2026-10-13, next renewal on 2027-10-13
   check: ACCEPT in 580 ms
   advertising 192.0.2.153 2001:db8:153::153: 2 good checks
   check: NO REPLY: Connection refused
@@ -2336,7 +2393,10 @@ and 100.
 
   (The first login of each of Radiator's processes at West takes about
   0.5 s, while it connects to the primary. Radiator was stopped before the
-  fourth line.)
+  fourth line.) With TACACS+, each `check:` line also has the result of
+  the TACACS+ login, for example
+  `check: ACCEPT in 31 ms; TACACS+ FAIL in 12 ms: No such user` (see
+  [Troubleshooting](#troubleshooting)).
 
   On a router, `show bgp ipv4 unicast 192.0.2.153/32` lists the servers
   that advertise it.
@@ -2345,15 +2405,38 @@ and 100.
   site at once. Start it when you are done; the server is back after two
   good checks. A reboot does this by itself: the check stops before
   Radiator and FRR do.
-- **Replace the check's key when it runs out.** Like a YubiKey's, its OTPs
-  have counters that only go up: one key lasts about 485 days at one check
-  every 5 s. `status` shows how many OTPs are left, and the log warns when
-  fewer than 30 days remain. Stop the check, run the `enroll` and `check`
-  lines of step 5 again, and start it. `enroll` keeps the public ID, so
-  `import --replace` replaces the old key.
+- **The check renews its key by itself,** 365 days after the key was made
+  (`RENEW_DAYS` in `/etc/radiator/anycast.conf`), or sooner if only 30 days
+  of OTPs are left, after a good check. The log says so:
+
+  ```text
+  renewing the key (made 2026-10-16)
+  renewed the key of anycast-west (public ID vvcbdefhijkl): a new private ID and AES key; next renewal on 2028-10-15
+  ```
+
+  `status` ends with the date of the next renewal
+  (`key: next renewal on 2027-10-16`). To renew the key now, stop the
+  check, run `sudo ./yubikey-anycast.sh renew`, and start it.
+- **Renewing needs PostgreSQL:** the function `anycast_renew`, which
+  `yubikey-db.sh -b pg init` adds; `psql`; and Radiator's login, with its
+  password on the `DBAuth` line, as in the three-site setup. The check
+  reads it from `yubikey-cluster.conf`, or from `yubikey.conf` without
+  partition mode. If a renewal fails, the check tries again an hour later,
+  or 6 checks later if its logins with the old key fail (the database may
+  have the new one). Without these (SQLite, or a database from before
+  1.10.0 that `init` hasn't updated), replace the key by hand: stop the
+  check, run the `enroll` and `check` lines of step 5 again, and start it.
+  `enroll` keeps the public ID, so `import --replace` replaces the old key.
+- **With partition mode,** a renewal waits while the server is in partition
+  mode, and the copy gets the new key at its next sync (within `SYNC`
+  seconds, 300 by default). A server that enters partition mode before then
+  withdraws, as its check's logins fail, until it leaves partition mode.
+  After a renewal by hand, `sudo ./yubikey-partition.sh sync` closes that
+  gap.
 - **Taking a server away for good:**
   `sudo systemctl disable --now yubikey-anycast`, then remove its check's
-  user: `./yubikey-db.sh -b pg delete anycast-west`.
+  user: `./yubikey-db.sh -b pg delete anycast-west`, and with TACACS+, its
+  service account: `./yubikey-db.sh -b pg service delete svc.anycast-west`.
 
 ## Groups and TACACS+
 
@@ -2442,7 +2525,8 @@ cd /opt/radiator-yubikey
 
    In the editor, change the `Secret` and `TACACSPLUSKey` of
    `<Client 127.0.0.1>`, and set `BindAddress` as for
-   [anycast](#set-up-anycast-on-each-server) if you use it.
+   [anycast](#set-up-anycast-on-each-server) if you use it (step 5 there
+   lets the anycast check log in over TACACS+ too).
 
 3. Write the clauses again, as in
    [Install the configuration](#install-the-configuration): `config` now
@@ -2640,11 +2724,17 @@ package).
   owner `root:radiator`); partition mode uses that login to copy counters
   back. See [the risks](#how-partition-mode-works) of using the copy.
 - **Anycast:** `/var/lib/yubikey-anycast/key` holds a working login, the
-  check's PIN and AES key: mode `0600`, root only. Radiator accepts the
-  check's users (`anycast-*`) only from 127.0.0.1, because of the first
-  `<Handler>` in `radiator.example.conf`; keep it before the one for
-  everyone else. `/etc/radiator/anycast.conf` holds the secret of
-  `<Client 127.0.0.1>`: mode `0600`. Each router accepts only the two
+  check's PIN and AES key, and `/var/lib/yubikey-anycast/tacacs` the
+  password of its TACACS+ service account: mode `0600`, root only.
+  Radiator accepts the check's users (`anycast-*`, and `svc.anycast-*` in
+  `radiator-groups.example.conf`) only from 127.0.0.1, because of the
+  `<Handler>` clauses for them; keep those before the ones for everyone
+  else. `/etc/radiator/anycast.conf` holds the secret and TACACS+ key of
+  `<Client 127.0.0.1>`: mode `0600`. Radiator's PostgreSQL role may run the
+  function `anycast_renew`, which gives the key of an `anycast-*` user a new
+  private ID and AES key (and nothing else); since that role can already
+  read every AES key, it lets it do little more than log in as the check
+  from a Radiator server. Each router accepts only the two
   anycast routes from its server. If your routers require BGP passwords,
   FRR sets them with `neighbor ADDRESS password` (the test doesn't use
   them).
@@ -2695,6 +2785,14 @@ doesn't, the problem is in Radiator's configuration or the network.
 | `yubikey-anycast.sh check` prints `NO REPLY: Connection refused` | Radiator isn't running, or `BindAddress` doesn't list 127.0.0.1. |
 | `yubikey-anycast.sh check` prints `REJECT ...: Yubikey secret not found in database` | The check's key isn't in the database (run the `enroll` line of step 5 again), or Radiator can't reach the primary. |
 | `yubikey-anycast.sh check` prints `REJECT ...: Replay attack detected` | The counter file is older than the database, for example restored from a backup. The running check skips ahead by itself after a few checks; or make a new key with `enroll`. |
+| `yubikey-anycast.sh check` prints `...; TACACS+ FAIL ...: No such user` | The check's service account isn't in the database, or is disabled, or none of its groups may log in to device group `localhost`: `./yubikey-db.sh -b pg access check svc.anycast-west localhost` says which. |
+| `yubikey-anycast.sh check` prints `...; TACACS+ FAIL ...: Bad Password` | The database has another password for the check's service account than `/var/lib/yubikey-anycast/tacacs`. Stop the check, then `sudo ./yubikey-anycast.sh enroll-tacacs \| ./yubikey-db.sh -b pg service password svc.anycast-west`. |
+| `yubikey-anycast.sh check` prints `...; TACACS+ BAD REPLY ... (wrong TACACS_KEY?)` | `TACACS_KEY` in `/etc/radiator/anycast.conf` isn't the `TACACSPLUSKey` of `<Client 127.0.0.1>`. |
+| `yubikey-anycast.sh check` prints `...; TACACS+ NO REPLY: Connection refused` | Radiator has no `<ServerTACACSPLUS>` (`radiator.example.conf` has none; `radiator-groups.example.conf` has), or `BindAddress` doesn't list 127.0.0.1. |
+| The check logs `cannot renew the key: the database has no function anycast_renew` | Run `./yubikey-db.sh -b pg init` once, as an admin, against the primary. |
+| The check logs `cannot renew the key: psql: error: ...` | It couldn't reach the primary with Radiator's login from `yubikey-cluster.conf` (or `yubikey.conf`): check that Radiator's password is on its first `DBAuth` line. It tries again an hour later. |
+| The check logs `cannot renew the key: Radiator's database ... isn't PostgreSQL` | Renewing needs PostgreSQL: replace the key by hand with `enroll` (see [Run anycast](#run-anycast)). |
+| `yubikey-anycast.sh check` says `a renewal of the key isn't finished` | A renewal's answer from the database was lost. Run `sudo ./yubikey-anycast.sh renew` (with the check stopped) or start the check: either finishes it with the same key. |
 | `yubikey-anycast.sh: error: net.ipv4.ip_nonlocal_bind is not 1` | Step 2 of [Set up anycast on each server](#set-up-anycast-on-each-server). |
 | The check says `advertised`, but the router has no route | On the server, `sudo vtysh -c 'show bgp summary'`: a session that isn't `Established` (firewall, AS numbers, addresses), or `(Policy)`, which means a route map is missing. |
 | With groups, Radiator logs `Access rejected for alice: No such user` after her YubiKey or password was accepted | None of her groups may use the device's group, or her account isn't active: `sudo ./yubikey-db.sh access check alice DEVICE_GROUP`. The device group is the `Identifier` of the `<Client>` the device matched. |
@@ -2826,9 +2924,11 @@ yubikey-anycast.sh [-c FILE] COMMAND
 | Command | What it does |
 |---|---|
 | `enroll` | Make a new key, PIN and user (`anycast-` and the host name) for the check, keep them in `/var/lib/yubikey-anycast/key`, and print them as CSV for `yubikey-db.sh import --replace -`. Keeps the public ID of an earlier key. Not while the check runs. |
-| `check` | Log in once, and check that Radiator listens on the anycast addresses; exits 0 if both work. Not while the check runs. |
+| `enroll-tacacs` | Make a new password (32 letters and digits) for the check's TACACS+ service account (`svc.anycast-` and the host name), keep it in `/var/lib/yubikey-anycast/tacacs`, and print it for `yubikey-db.sh service add` (or `service password`), which reads it from standard input. Not while the check runs. |
+| `check` | Log in once (and over TACACS+, with `TACACS_KEY`), and check that Radiator listens on the anycast addresses; exits 0 if all of it works. Not while the check runs. |
+| `renew` | Give the key a new private ID and AES key, in the database (through `anycast_renew`, with Radiator's login) and in `/var/lib/yubikey-anycast/key`, as the running check does every `RENEW_DAYS` days. PostgreSQL only; not in partition mode, and not while the check runs. |
 | `run` | The check, as `yubikey-anycast.service` runs it. |
-| `status` | Whether the addresses are on `lo`, since when, the last check, and the OTPs left. Exits 0 only while they are on `lo`. |
+| `status` | Whether the addresses are on `lo`, since when, the last check, the OTPs left, and the next renewal of the key. Exits 0 only while they are on `lo`. |
 | `withdraw` | Take the addresses off `lo` (the service does this when it stops). |
 
 `-c FILE` reads the settings from FILE instead of
@@ -2844,10 +2944,14 @@ shell code):
 | `TIMEOUT` | `3` | Seconds to wait for Radiator's answer (at most `INTERVAL`) |
 | `FALL` | `3` | Failed checks in a row that take the addresses off `lo` |
 | `RISE` | `2` | Good checks in a row that put them back |
+| `TACACS_KEY` | | The `TACACSPLUSKey` of Radiator's `<Client 127.0.0.1>`. When set, each check also logs in over TACACS+, and must pass both logins. |
+| `TACACS_PORT` | `49` | Radiator's TACACS+ port |
+| `RENEW_DAYS` | `365` | Days after which the running check renews its key (sooner if only 30 days of OTPs are left); `0`: never |
 
 It exits with 0 on success, 1 when a check fails (`check`) or the addresses
-aren't on `lo` (`status`), and 3 for a problem with the settings, the key or
-the system, which the service then doesn't restart on.
+aren't on `lo` (`status`), and 3 for a problem with the settings, the key,
+the TACACS+ account's file or the system, which the service then doesn't
+restart on.
 
 ### `install.sh`
 
@@ -2936,6 +3040,17 @@ keeps the ID in `login_id`. A save that names no login, from the scripts or
 from a clause written by `config` before 1.9.0, empties `login_id`. Two
 logins with the same OTP have different IDs, so the second is still refused.
 
+In PostgreSQL, the function `anycast_renew(public ID, private ID, new
+private ID, new AES key)` (added in 1.10.0) is how the
+[anycast check](#run-anycast) renews its key with Radiator's login. It runs
+with the rights of its owner, `yubikey_admin`, and `radiator` may run it.
+It replaces only the row of an `anycast-*` user with that public ID and
+private ID, by a row with the new private ID and AES key (stored as hex or
+base64, as the row's was), the same username, PIN, public ID and label, and
+counters at 0. It answers `true` when the row has the new key, also when
+called again after the answer was lost, and `false` when there is no such
+row.
+
 The service accounts and groups (added in 1.10.0; `init` adds them to an
 older database) are in five more tables, the same in both databases but for
 the types of times and `active`:
@@ -3003,12 +3118,14 @@ same steps.
 
 ## Testing
 
-`tests/run-tests.sh` runs the scripts through 42 scenarios against throwaway
+`tests/run-tests.sh` runs the scripts through 43 scenarios against throwaway
 SQLite and PostgreSQL databases and compares each transcript (commands,
 output, exit codes, and the final table) with `tests/expected/`, where the
 scripts' version shows as `<VERSION>`. The two `anycast` scenarios run
 `yubikey-anycast.sh` against a stand-in RADIUS server, which checks each
-request the way Radiator does, and stand-ins for `ip` and `ss`. `pg_partition` runs `yubikey-partition.sh` with the test's
+request the way Radiator does, a stand-in TACACS+ server, and stand-ins for
+`ip` and `ss`; `pg_anycast` renews the check's key in the test's
+PostgreSQL, with Radiator's login. `pg_partition` runs `yubikey-partition.sh` with the test's
 PostgreSQL as both the local database and the primary, a stand-in for
 `systemctl`, and a peer that is a port that listens or doesn't. `groups`
 and `pg_groups` also run Radiator's `GroupAccess` query from `config` on

@@ -333,6 +333,20 @@ login "the same OTP again"              "REJECT: Replay attack detected" alice s
 check "Radiator's session uses TLS" "t" \
     "$(su postgres -c "psql -At -c \"SELECT bool_and(s.ssl) FROM pg_stat_ssl s JOIN pg_stat_activity a USING (pid) WHERE a.usename = 'radiator'\"")"
 
+# The anycast check renews its key with Radiator's login, as on the three
+# sites. (Radiator listens on every address here, so the check also says it
+# doesn't listen on the anycast address: only its first word counts.)
+A=/repo/yubikey-anycast.sh
+H=$(hostname -s | tr '[:upper:]' '[:lower:]')
+printf 'ADDRESSES=127.0.0.153\nSECRET=local-test-secret\n' >/etc/radiator/anycast.conf
+"$A" enroll 2>/dev/null | "$Y" -b pg import --replace - >/dev/null
+check "the anycast check logs in" ACCEPT "$("$A" check | cut -d' ' -f1)"
+read -r pin pub priv aes < <(sed -n 's/^\(pin\|public_id\|private_id\|aes_key\)=//p' /var/lib/yubikey-anycast/key | paste -sd' ')
+check "it renews its key" "renewed the key of anycast-$H" "$("$A" renew | cut -d' ' -f1-5)"
+check "the check logs in with the new key" ACCEPT "$("$A" check | cut -d' ' -f1)"
+check "the new key's counters" "1 0" "$(su postgres -c "psql -At -F' ' -d yubikey -c \"SELECT counter, low FROM yubikeys WHERE username = 'anycast-$H'\"")"
+login "the old key, from this server"   "REJECT: Bad Yubikey password" "anycast-$H" "$pin" "$(otp "$pub" "$priv" "$aes" 100 0)"
+
 echo
 echo "== Cutover from SQLite to PostgreSQL while Radiator runs (yubikey-db-migrate.sh)"
 B=()

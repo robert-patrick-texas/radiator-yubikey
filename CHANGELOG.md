@@ -7,7 +7,9 @@ that doesn't use them. To use them, run `yubikey-db.sh init` (or `-b pg
 init`), which adds their tables, and follow the guide's new section,
 [Groups and TACACS+](docs/guide.md#groups-and-tacacs). A clause written
 again with `config` for a remote PostgreSQL has three `DBAuth` lines, one
-for each clause: put Radiator's password on each.
+for each clause: put Radiator's password on each. With PostgreSQL, `init`
+also adds the function with which the anycast check renews its key; until
+then, the check logs that it can't, and works as before.
 
 ### Added
 
@@ -56,6 +58,29 @@ for each clause: put Radiator's password on each.
 - `yubikey-db-migrate.sh` copies only the YubiKeys, as before, and warns
   when the SQLite database has service accounts or groups, which it doesn't
   copy.
+- The anycast check can log in over TACACS+ too. With `TACACS_KEY` (the
+  `TACACSPLUSKey` of `<Client 127.0.0.1>`) in `/etc/radiator/anycast.conf`,
+  each check of `yubikey-anycast.sh` also logs in over TACACS+, at the same
+  time as the RADIUS login, as the service account `svc.anycast-HOSTNAME`;
+  asks for the session's authorization, as a device does; and checks that
+  Radiator listens on TCP port 49 on the anycast addresses. The addresses
+  come off `lo` when either login fails. `yubikey-anycast.sh enroll-tacacs`
+  makes the account's password and prints it for `yubikey-db.sh service
+  add`. `radiator-groups.example.conf` accepts these accounts only from
+  127.0.0.1 and doesn't log their logins; they need a group with access to
+  device group `localhost`. Without `TACACS_KEY`, the check works as before.
+- The anycast check renews its key by itself: every 365 days
+  (`RENEW_DAYS`), or sooner when only 30 days of OTPs are left, after a
+  good check, it gives the key a new private ID and AES key, in the
+  database and in its key file, and its counters start again. It writes
+  with Radiator's own login (from `yubikey-cluster.conf`, or
+  `yubikey.conf`) through the new PostgreSQL function `anycast_renew`,
+  which Radiator's role may run and which changes only the keys of
+  `anycast-*` users. A renewal whose answer was lost is finished with the
+  same key. Not in partition mode, and not with SQLite. `status` shows the
+  next renewal; `yubikey-anycast.sh renew` renews the key at once. The key
+  file has a new line, `made=`; a key file from before has the date it was
+  written.
 
 ### Tests
 
@@ -65,7 +90,18 @@ for each clause: put Radiator's password on each.
 - `tests/radiator/groups.sh` (`run.sh DIR groups`): Radiator with
   `radiator-groups.example.conf`, logins over TACACS+ and RADIUS on SQLite
   and PostgreSQL, with `tests/radiator/tacacs.pl`, a small TACACS+ client
-  on Radiator's own modules.
+  on Radiator's own modules, and the anycast check over both.
+- The `anycast` and `anycast_run` scenarios also run the check against a
+  stand-in TACACS+ server: its answers, a wrong key, no answer, and the
+  addresses withdrawn when only the TACACS+ login fails.
+- `tests/run-tests.sh`: scenario `pg_anycast` (43 in all), the key renewed
+  in PostgreSQL: by hand and by the running check, hex and base64 keys, a
+  lost answer, no function, partition mode, and what Radiator's role may
+  do with the function.
+- `e2e.sh`: the check renews its key over TLS with Radiator's login, then
+  logs in with the new key, and Radiator refuses the old one. `geo.sh`:
+  West's check renews its key under systemd, with partition mode set up,
+  and West's copy gets it.
 
 ## 1.9.0 - 2026-10-15
 

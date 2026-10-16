@@ -6,15 +6,20 @@
 # and logs in over TACACS+ (with tacacs.pl) and RADIUS (with radpwtst), by
 # YubiKey and by service account, from devices in different device groups:
 # the login, the privilege level, the command rules and the RADIUS reply must
-# be the ones the groups in the database give. With SQLite, then PostgreSQL.
+# be the ones the groups in the database give. Then the anycast check
+# (yubikey-anycast.sh check) logs in over both, as it does on a server. With
+# SQLite, then PostgreSQL.
 #
 # The devices are addresses in 127.0.0.0/8, which the loopback interface
 # already has: core switches (127.0.0.11 and .12), an access subnet
 # (127.0.0.20/30) and anything else (the catch-all <Client DEFAULT>).
+# Radiator listens on 127.0.0.1 and on 127.0.0.153, which stands in for the
+# anycast address.
 
 set -uo pipefail
 
 Y=/repo/yubikey-db.sh
+A=/repo/yubikey-anycast.sh
 RAD=/opt/radiator/radiator
 LOG=/var/log/radiator/radiator.log
 CONF=/etc/radiator/conf.d/yubikey.conf
@@ -72,6 +77,7 @@ burst() {
 }
 
 changed() { sleep 2.1; }
+H=$(hostname -s | tr '[:upper:]' '[:lower:]')   # the anycast check's users are anycast-H and svc.anycast-H
 
 start_radiator() {
     pkill -f radiusd 2>/dev/null
@@ -86,9 +92,11 @@ start_radiator() {
     echo "radiusd did not start:"; tail -20 "$LOG" /tmp/radiusd.out; exit 1
 }
 
-# The configuration, as the guide installs it, with the test devices.
+# The configuration, as the guide installs it, with the test devices, and
+# BindAddress set as for anycast.
 install -m 0644 /repo/dictionary.yubikey /etc/radiator/dictionary.yubikey
 install -m 0640 -o root -g radiator /repo/radiator-groups.example.conf /etc/radiator/radiator.conf
+sed -i 's/^#BindAddress .*/BindAddress     127.0.0.1, 127.0.0.153/' /etc/radiator/radiator.conf
 mkdir -p /etc/radiator/clients.d /etc/radiator/conf.d /var/lib/radiator
 chown radiator /var/lib/radiator
 cat >/etc/radiator/clients.d/test.conf <<'EOF'
@@ -143,6 +151,57 @@ setup_db() {
     "$Y" "${B[@]}" rule add backup core 'permit service=shell cmd=show cmd-arg=running-config' >/dev/null
     "$Y" "${B[@]}" rule add backup core 'permit service=shell cmd=copy' >/dev/null
     "$Y" "${B[@]}" rule add backup core 'deny .*' >/dev/null
+}
+
+# The anycast check's key, its TACACS+ account, and a group for it with
+# access to this server (device group localhost), as the guide sets them up.
+setup_anycast() {
+    "$A" enroll 2>/dev/null | "$Y" "${B[@]}" import --replace - >/dev/null
+    "$A" enroll-tacacs 2>/dev/null | "$Y" "${B[@]}" service add "svc.anycast-$H" -l 'anycast check' >/dev/null
+    "$Y" "${B[@]}" group add anycast-check >/dev/null
+    "$Y" "${B[@]}" member add anycast-check "svc.anycast-$H" >/dev/null
+    "$Y" "${B[@]}" access set anycast-check localhost 1 >/dev/null
+}
+
+# acheck [SETTING...]: 'yubikey-anycast.sh check' with these settings added,
+# without the times, and its exit status.
+acheck() {
+    printf '%s\n' 'ADDRESSES=127.0.0.153' 'SECRET=local-test-secret' 'TACACS_KEY=local-test-key' "$@" \
+        >/etc/radiator/anycast.conf
+    local out rc
+    out=$("$A" check 2>&1); rc=$?
+    printf '%s exit %s' "$(sed -E 's/ in [0-9]+ ms//g' <<<"$out")" "$rc"
+}
+
+# The anycast check, logging in over RADIUS and TACACS+.
+anycast_checks() {
+    echo "-- The anycast check, over RADIUS and TACACS+"
+    check "both logins" "ACCEPT; TACACS+ PASS exit 0" "$(acheck)"
+    check "RADIUS only, without TACACS_KEY" "ACCEPT exit 0" "$(acheck 'TACACS_KEY=')"
+    "$Y" "${B[@]}" service disable "svc.anycast-$H" >/dev/null
+    check "its service account disabled" "ACCEPT; TACACS+ FAIL: No such user exit 1" "$(acheck)"
+    "$Y" "${B[@]}" service enable "svc.anycast-$H" >/dev/null
+    "$Y" "${B[@]}" access delete anycast-check localhost >/dev/null
+    changed
+    check "its group without access to localhost" "ACCEPT; TACACS+ FAIL: No such user exit 1" "$(acheck)"
+    "$Y" "${B[@]}" access set anycast-check localhost 1 >/dev/null
+    changed
+    check "with access again" "ACCEPT; TACACS+ PASS exit 0" "$(acheck)"
+    printf 'another-password-1\n' | "$Y" "${B[@]}" service password "svc.anycast-$H" >/dev/null
+    check "another password in the database" "ACCEPT; TACACS+ FAIL: Bad Password exit 1" "$(acheck)"
+    "$A" enroll-tacacs 2>/dev/null | "$Y" "${B[@]}" service password "svc.anycast-$H" >/dev/null
+    check "a new one from enroll-tacacs, set with 'service password'" "ACCEPT; TACACS+ PASS exit 0" "$(acheck)"
+    check "a wrong TACACS_KEY" "ACCEPT; TACACS+ BAD REPLY (wrong TACACS_KEY?) exit 1" "$(acheck 'TACACS_KEY=wrong-key')"
+    check "nothing on TACACS_PORT" "ACCEPT; TACACS+ NO REPLY: Connection refused exit 1" "$(acheck 'TACACS_PORT=50')"
+    check "an address Radiator doesn't listen on" \
+        "ACCEPT, but Radiator does not listen on 127.0.0.154 port 1812; TACACS+ PASS, but Radiator does not listen on 127.0.0.154 TCP port 49 exit 1" \
+        "$(acheck 'ADDRESSES="127.0.0.153 127.0.0.154"')"
+    check "its TACACS+ account, from a device: refused" FAIL \
+        "$(tac "${CORE[@]}" authen "svc.anycast-$H" "$(sed -n 's/^password=//p' /var/lib/yubikey-anycast/tacacs)")"
+    check "its TACACS+ account over RADIUS, from a device: refused" REJECT \
+        "$(rad 127.0.0.11 core-secret "svc.anycast-$H" "$(sed -n 's/^password=//p' /var/lib/yubikey-anycast/tacacs)")"
+    check "only those two in the authentication log" 2 "$(grep -c "user='svc.anycast-$H'" /var/log/radiator/authentication.log)"
+    rm -f /var/log/radiator/authentication.log
 }
 
 # Every check, against the database Radiator is using now.
@@ -259,9 +318,11 @@ check "radiusd -c accepts radiator-groups.example.conf" ok \
 echo "== SQLite"
 "$Y" init --owner radiator:radiator >/dev/null 2>&1
 setup_db
+setup_anycast
 "$Y" config >"$CONF"
 start_radiator
 logins
+anycast_checks
 
 echo
 echo "== PostgreSQL (local socket)"
@@ -269,9 +330,11 @@ pg_ctlcluster 18 main start
 su postgres -c "$Y -b pg init-pg --admin root" >/dev/null
 B=(-b pg)
 setup_db
+setup_anycast
 "$Y" "${B[@]}" config >"$CONF"
 start_radiator
 logins
+anycast_checks
 
 echo "-- PostgreSQL stopped"
 # Each of Radiator's processes refuses the first request it gets whose query

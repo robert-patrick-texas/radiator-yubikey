@@ -1,6 +1,6 @@
 # yubikey-anycast.service - Runs yubikey-anycast.sh, which puts Radiator's
 # anycast addresses on lo, for FRR to advertise, only while this server's
-# Radiator accepts YubiKey logins. The radiator-yubikey package installs it,
+# Radiator accepts logins. The radiator-yubikey package installs it,
 # not enabled; with the scripts in /opt/radiator-yubikey from git instead:
 #
 #   sudo install -m 0644 yubikey-anycast.service /etc/systemd/system/
@@ -10,7 +10,7 @@
 # to another site. At shutdown it stops before Radiator and FRR.
 
 [Unit]
-Description=Advertise Radiator's anycast addresses while YubiKey logins work
+Description=Advertise Radiator's anycast addresses while its logins work
 Documentation=https://robert-patrick-texas.github.io/radiator-yubikey/#anycast
 After=network-online.target radiator.service frr.service
 Wants=network-online.target

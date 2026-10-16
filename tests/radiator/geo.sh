@@ -801,6 +801,37 @@ check "normal mode: Radiator uses the cluster" "normal normal normal" \
 login "OTP at West"                             ACCEPT west
 
 echo
+echo "== Anycast: West's check renews its key, under systemd"
+# Its key, made 366 days ago, is due: the running check renews it after its
+# first good check, with Radiator's login from yubikey-cluster.conf.
+docker exec yk-geo-west systemctl stop yubikey-anycast
+docker exec yk-geo-west sed -i "s/^made=.*/made=$(($(date +%s) - 366 * 86400))/" /var/lib/yubikey-anycast/key
+old_priv=$(docker exec yk-geo-west sed -n 's/^private_id=//p' /var/lib/yubikey-anycast/key)
+since=$(date +%s)
+T0=$SECONDS
+docker exec yk-geo-west systemctl start yubikey-anycast
+for _ in $(seq 30); do
+    docker exec yk-geo-west journalctl -u yubikey-anycast --since "@$since" -o cat | grep -q -e 'renewed the key' -e 'cannot renew' && break
+    sleep 1
+done
+check "West's check renews its key" "renewed the key of anycast-west" \
+    "$(docker exec yk-geo-west journalctl -u yubikey-anycast --since "@$since" -o cat \
+         | grep -o -e 'renewed the key of anycast-west' -e 'cannot renew the key: .*' | head -1)"
+west_priv=$(docker exec yk-geo-west sed -n 's/^private_id=//p' /var/lib/yubikey-anycast/key)
+check "...with a new private ID, which the primary has" "new t" \
+    "$([[ $west_priv != "$old_priv" ]] && echo new || echo same) $(node east1 sql yubikey \
+        "SELECT userId = '$west_priv' FROM yubikeys WHERE username = 'anycast-west'")"
+check "...and the next renewal is in 365 days" "key: next renewal on $(date -u -d '+365 days' +%F)" \
+    "$(node west anycast-status | grep '^key:')"
+routes_until "West advertises again" "$ALL3" 30
+# yubikey-partition.service copies it within SYNC seconds (300); now, so
+# that West's copy has it before the partitions below.
+docker exec yk-geo-west /opt/radiator-yubikey/yubikey-partition.sh sync >/dev/null
+check "West's copy has the new key" 1 \
+    "$(docker exec yk-geo-west sqlite3 -cmd '.timeout 10000' /var/lib/yubikey-partition/keys.db \
+         "SELECT userId = '$west_priv' FROM yubikeys WHERE username = 'anycast-west'")"
+
+echo
 echo "== Partition mode: West is cut off from both East sites"
 login "OTP at East2, just before the cut"       ACCEPT east2
 before_cut=$C

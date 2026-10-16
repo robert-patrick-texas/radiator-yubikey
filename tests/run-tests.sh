@@ -351,7 +351,8 @@ normalize() {
         -e "s/\(is $(id -un) a member of/(is <USER> a member of/" \
         -e "s/anycast-$HOST_S\b/anycast-<HOST>/g" \
         -e 's/ in [0-9]+ ms/ in <N> ms/g' \
-        -e 's/(does not listen on .*) port [0-9]+/\1 port <PORT>/'
+        -e 's/(does not listen on [^;]*) port [0-9]+/\1 port <PORT>/g' \
+        -e 's/\b(made|on) [0-9]{4}-[0-9]{2}-[0-9]{2}\b/\1 <DATE>/g'
 }
 
 # --------------------------------------------------------------------------
@@ -1418,8 +1419,9 @@ EOF
 # yubikey-anycast.sh, against stand-ins: a RADIUS server that checks each
 # request the way Radiator 4.30's AuthBy SQLYUBIKEY checks a login (the
 # Message-Authenticator, the user, PIN and public ID, the OTP and its
-# counters), and ip and ss commands that keep lo's addresses and the
-# listening sockets in files.
+# counters), a TACACS+ server that checks the login and authorization the
+# way Radiator's <ServerTACACSPLUS> answers them, and ip and ss commands that
+# keep lo's addresses and the listening sockets in files.
 # --------------------------------------------------------------------------
 
 # Start the stand-in RADIUS server, with the shared secret SECRET, for the
@@ -1456,7 +1458,9 @@ sub hmac_md5 {
 sub slurp { open my $f, "<", $_[0] or return ""; local $/; my $c = <$f> // ""; $c =~ s/\s+\z//; $c }
 sub note { open my $f, ">>", "$dir/log" or die; print $f "$_[0]\n"; close $f }
 
-my ($counter, $session) = (0, 0);   # a row just imported with --replace
+# The counters of each key (by private ID), as in a row just imported with
+# --replace or renewed.
+my %seen;
 while (1) {
     my $from = recv($s, my $req, 4096, 0);
     next unless defined $from && length $req >= 20;
@@ -1504,8 +1508,11 @@ while (1) {
         }
         my ($priv, $c, $sess) = unpack "H12 v x3 C", $token;
         $c &= 0x7fff;
+        my $last = $seen{$k{private_id}} //= [0, 0];
+        my ($counter, $session) = @$last;
         if ($mode =~ /^ahead (\d+)$/) {
             ($counter, $session) = ($counter + $1, 0);
+            @$last = ($counter, $session);
             open my $m, ">", "$dir/mode" or die;
             print $m "accept\n";
             close $m;
@@ -1515,7 +1522,7 @@ while (1) {
         } elsif ($counter > $c || ($counter == $c && $session >= $sess)) {
             ($result, $reason) = (3, "Replay attack detected");
         } else {
-            ($counter, $session) = ($c, $sess);
+            @$last = ($c, $sess);
         }
         note("$user: OTP with usage counter $c, session $sess: " . ($result == 2 ? "accepted" : "rejected: $reason"));
     }
@@ -1531,13 +1538,116 @@ EOF
     PORT=$(<"$WORK/radius/port")
 }
 
+# Start the stand-in TACACS+ server, with the key KEY, for the account in
+# $WORK/state/tacacs. Like Radiator, it asks for the password of an ASCII
+# login, answers an authorization of service=shell with priv-lvl=1, and
+# answers a request it can't decrypt with an error, then closes the
+# connection. It reads what to do with each connection from
+# $WORK/tacacs/mode: accept (check the user and password), fail (refuse the
+# login), authorfail (refuse the authorization), silent (no answer), close
+# (close the connection at once) or badkey (answer with another key), and
+# logs each request to $WORK/tacacs/log. Sets TACACS_PID and TPORT.
+start_tacacs() {
+    mkdir -p "$WORK/tacacs"
+    echo accept >"$WORK/tacacs/mode"
+    cat >"$WORK/tacacs/server.pl" <<'EOF'
+use strict;
+use warnings;
+use IO::Socket::INET;
+use Digest::MD5 qw(md5);
+
+my ($dir, $file, $key) = @ARGV;
+my $l = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 0, Listen => 5, Proto => "tcp")
+    or die "listen: $!";
+open my $fh, ">", "$dir/port.tmp" or die;
+print $fh $l->sockport, "\n";
+close $fh;
+rename "$dir/port.tmp", "$dir/port" or die;
+
+sub slurp { open my $f, "<", $_[0] or return ""; local $/; my $c = <$f> // ""; $c =~ s/\s+\z//; $c }
+sub note { open my $f, ">>", "$dir/log" or die; print $f "$_[0]\n"; close $f }
+sub hide {
+    my ($k, $sid, $ver, $seq, $body) = @_;
+    my ($out, $pad) = ("", "");
+    for (my $i = 0; $i < length $body; $i += 16) {
+        $pad = md5(pack("N", $sid) . $k . pack("C C", $ver, $seq) . $pad);
+        $out .= substr($body, $i, 16) ^ $pad;
+    }
+    substr($out, 0, length $body);
+}
+# One packet from the connection: (version, type, seq, session ID, body),
+# the body decrypted with KEY.
+sub packet {
+    my $c = shift;
+    my $buf = "";
+    while (length $buf < 12 || length $buf < 12 + unpack("x8 N", $buf)) {
+        sysread($c, $buf, 4096, length $buf) or return;
+    }
+    my ($v, $t, $seq, undef, $sid, $len) = unpack "C C C C N N", $buf;
+    ($v, $t, $seq, $sid, hide($key, $sid, $v, $seq, substr($buf, 12, $len)));
+}
+sub reply {
+    my ($c, $k, $v, $t, $seq, $sid, $body) = @_;
+    syswrite($c, pack("C C C C N N", $v, $t, $seq, 0, $sid, length $body) . hide($k, $sid, $v, $seq, $body));
+}
+sub authen { my ($st, $msg) = @_; pack("C C n n", $st, 0, length $msg, 0) . $msg }
+
+my @held;   # connections kept open without an answer
+while (my $c = $l->accept) {
+    my $mode = slurp("$dir/mode");
+    my %k = map { /^(\w+)=(.*)$/ ? ($1, $2) : () } split /\n/, slurp($file);
+    my $rk = $mode eq "badkey" ? "another key" : $key;
+    my ($v, $t, $seq, $sid, $body) = packet($c) or next;
+    if ($mode eq "close") { close $c; note("closed"); next }
+    if ($mode eq "silent") { push @held, $c; note("no answer"); next }
+    note("answers with another key") if $mode eq "badkey";
+    if ($t == 1) {
+        my ($action, $priv, $type, $svc, $ul, $pl, $rl, $dl, $rest) = unpack "C8 a*", $body;
+        if ($ul + $pl + $rl + $dl != length $rest) {
+            reply($c, $rk, $v, $t, $seq + 1, $sid, authen(7, "Inconsistent lengths"));
+            note("authentication: cannot decrypt (a wrong key?)");
+            next;
+        }
+        my $user = substr($rest, 0, $ul);
+        my $port = substr($rest, $ul, $pl);
+        reply($c, $rk, $v, $t, $seq + 1, $sid, authen(5, "Password: "));
+        (undef, undef, $seq, undef, $body) = packet($c) or next;
+        my ($ml, undef, undef, $pw) = unpack "n n C a*", $body;
+        $pw = substr($pw, 0, $ml);
+        my $ok = $mode ne "fail" && $user eq ($k{user} // "") && $pw eq ($k{password} // "");
+        reply($c, $rk, $v, $t, $seq + 1, $sid, $ok ? authen(1, "") : authen(2, "No such user"));
+        note("authentication: ASCII login (type $type, action $action, service $svc, priv-lvl $priv) of $user from port $port: "
+             . ($ok ? "PASS" : "FAIL"));
+    } elsif ($t == 2) {
+        my ($meth, $priv, $type, $svc, $ul, $pl, $rl, $n, $rest) = unpack "C8 a*", $body;
+        my @lens = unpack "C$n", $rest;
+        my $i = $n + $ul + $pl + $rl;
+        my @args = map { my $a = substr($rest, $i, $_); $i += $_; $a } @lens;
+        my $user = substr($rest, $n, $ul);
+        my $ok = $mode ne "authorfail" && $args[0] eq "service=shell";
+        my @r = $ok ? ("priv-lvl=1") : ();
+        reply($c, $rk, $v, $t, $seq + 1, $sid, pack("C C n n", $ok ? 1 : 0x10, scalar @r, 0, 0)
+                                               . pack("C*", map { length } @r) . join("", @r));
+        note("authorization (method $meth) of $user: @args: " . ($ok ? "PASS_ADD @r" : "FAIL"));
+    }
+    close $c;
+}
+EOF
+    perl "$WORK/tacacs/server.pl" "$WORK/tacacs" "$WORK/state/tacacs" "$1" &
+    TACACS_PID=$!
+    for _ in $(seq 50); do [[ -s $WORK/tacacs/port ]] && break; sleep 0.1; done
+    TPORT=$(<"$WORK/tacacs/port")
+}
+
 # Stand-ins for ip and ss: $WORK/lo has lo's addresses besides 127.0.0.1
 # (ADDRESS/PREFIX lines), and ip logs each change to $WORK/ip.log;
-# $WORK/listen has the UDP sockets ss lists (see listening). Also $WORK/proc,
-# with net.ipv4.ip_nonlocal_bind and net.ipv6.ip_nonlocal_bind set to 1.
+# $WORK/listen and $WORK/listen-tcp have the UDP and TCP sockets ss lists
+# (see listening). Also $WORK/proc, with net.ipv4.ip_nonlocal_bind and
+# net.ipv6.ip_nonlocal_bind set to 1.
 make_fakes() {
     : >"$WORK/lo"
     : >"$WORK/listen"
+    : >"$WORK/listen-tcp"
     cat >"$WORK/ip" <<'EOF'
 #!/bin/bash
 lo=$FAKE_DIR/lo
@@ -1562,8 +1672,11 @@ esac
 EOF
     cat >"$WORK/ss" <<'EOF'
 #!/bin/bash
-[[ "$*" == -Hlun ]] || { echo "ss stand-in: unexpected arguments: $*" >&2; exit 1; }
-cat "$FAKE_DIR/listen"
+case "$*" in
+    -Hlun) cat "$FAKE_DIR/listen" ;;
+    -Hltn) cat "$FAKE_DIR/listen-tcp" ;;
+    *)     echo "ss stand-in: unexpected arguments: $*" >&2; exit 1 ;;
+esac
 EOF
     chmod +x "$WORK/ip" "$WORK/ss"
     mkdir -p "$WORK/proc/net/ipv4" "$WORK/proc/net/ipv6"
@@ -1578,17 +1691,25 @@ listening() {
     for a in "$@"; do printf 'UNCONN 0      0      %s      0.0.0.0:*\n' "$a" >>"$WORK/listen"; done
 }
 
+# listening_tcp ADDRESS:PORT...: the TCP sockets it lists.
+listening_tcp() {
+    : >"$WORK/listen-tcp"
+    local a
+    for a in "$@"; do printf 'LISTEN 0      4096   %s      0.0.0.0:*\n' "$a" >>"$WORK/listen-tcp"; done
+}
+
 # Run yubikey-anycast.sh with the test's directories and stand-ins.
 anycast_env() {
     env TZ=UTC ANYCAST_STATE_DIR="$WORK/state" ANYCAST_RUN_DIR="$WORK/run" PROC_SYS="$WORK/proc" \
-        IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" "$@"
+        ANYCAST_CONF_D="$WORK/conf.d" IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" "$@"
 }
 
 # Start 'run' in the background, its output in $WORK/run.log. Sets RUN_PID
 # (the script's own process, which env replaces itself with).
 start_run() {
     env TZ=UTC ANYCAST_STATE_DIR="$WORK/state" ANYCAST_RUN_DIR="$WORK/run" PROC_SYS="$WORK/proc" \
-        IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" -c anycast.conf run >"$WORK/run.log" 2>&1 &
+        ANYCAST_CONF_D="$WORK/conf.d" IP="$WORK/ip" SS="$WORK/ss" FAKE_DIR="$WORK" "$ANYCAST" -c anycast.conf run \
+        >"$WORK/run.log" 2>&1 &
     RUN_PID=$!
 }
 
@@ -1611,6 +1732,20 @@ enroll() {
     cat "$WORK/enroll.err"
     printf '[exit %d]\n\n' "$rc"
     run_from "$WORK/enroll.csv" -d "$DB" import --replace -
+}
+
+# enroll_tacacs: 'enroll-tacacs', recorded with the new password masked (if
+# it has the right form), then 'yubikey-db.sh service add' (or 'service
+# password', if the account exists) with its output into $DB.
+enroll_tacacs() {
+    local rc=0 sub=add
+    anycast_env enroll-tacacs >"$WORK/enroll.pw" 2>"$WORK/enroll.err" || rc=$?
+    printf '$ yubikey-anycast.sh enroll-tacacs\n'
+    sed -E 's/^[A-Za-z0-9]{32}$/<PASSWORD>/' "$WORK/enroll.pw"
+    cat "$WORK/enroll.err"
+    printf '[exit %d]\n\n' "$rc"
+    if [[ -n $(sqlite3 "$DB" "SELECT 1 FROM service_accounts WHERE username = 'svc.anycast-$HOST_S'") ]]; then sub=password; fi
+    run_from "$WORK/enroll.pw" -d "$DB" service "$sub" "svc.anycast-$HOST_S"
 }
 
 # conf LINE...: write the settings file anycast.conf.
@@ -1687,6 +1822,60 @@ scenario_anycast() {
     cat radius/log
     echo
 
+    # TACACS+ too: with TACACS_KEY, the check also logs in over TACACS+, as
+    # the account that enroll-tacacs makes, at the same time, and both must
+    # pass. The counter file first moves past the OTPs the RADIUS server has
+    # seen.
+    echo 100 >state/counter
+    local -a base=('ADDRESSES = "192.0.2.153  2001:DB8:153:0::153"' "SECRET='a secret with spaces'" 'TIMEOUT=1' "PORT=$PORT")
+    conf "${base[@]}" "TACACS_KEY='a key'" 'TACACS_PORT=0'
+    any -c anycast.conf check
+    conf "${base[@]}" "TACACS_KEY='a key'"
+    any -c anycast.conf check
+    enroll_tacacs
+    stat -c '# %n mode %a' state/tacacs
+    printf '# tacacs file: %s\n\n' "$(cut -d= -f1 state/tacacs | paste -sd' ')"
+    start_tacacs 'a key'
+    conf "${base[@]}" "TACACS_KEY='a key'" "TACACS_PORT=$TPORT"
+    any -c anycast.conf check
+    listening_tcp "192.0.2.153:$TPORT" "[2001:db8:153::153]:$TPORT"
+    any -c anycast.conf check
+    echo fail >tacacs/mode
+    any -c anycast.conf check
+    echo authorfail >tacacs/mode
+    any -c anycast.conf check
+    echo silent >tacacs/mode
+    any -c anycast.conf check
+    echo close >tacacs/mode
+    any -c anycast.conf check
+    # An answer with another key, and the check with another key.
+    echo badkey >tacacs/mode
+    any -c anycast.conf check
+    echo accept >tacacs/mode
+    conf "${base[@]}" "TACACS_KEY='another key'" "TACACS_PORT=$TPORT"
+    any -c anycast.conf check
+    # Only the RADIUS login fails.
+    conf "${base[@]}" "TACACS_KEY='a key'" "TACACS_PORT=$TPORT"
+    echo reject >radius/mode
+    any -c anycast.conf check
+    echo accept >radius/mode
+    # A new password, set in the database with 'service password'.
+    enroll_tacacs
+    any -c anycast.conf check
+    printf '# the TACACS+ server saw:\n'
+    cat tacacs/log
+    echo
+    kill "$TACACS_PID"
+    wait "$TACACS_PID" 2>/dev/null
+    any -c anycast.conf check
+    cp state/tacacs tacacs.saved
+    echo 'user=svc.someone-else' >state/tacacs
+    any -c anycast.conf check
+    echo 'name=x' >state/tacacs
+    any -c anycast.conf check
+    mv tacacs.saved state/tacacs
+    conf "${base[@]}"
+
     # Nothing listening on the port.
     kill "$RADIUS_PID"
     wait "$RADIUS_PID" 2>/dev/null
@@ -1708,17 +1897,21 @@ scenario_anycast() {
     cat ip.log
 }
 
-# The running check: the addresses go on lo after RISE good checks, off after
-# FALL failed ones, back if removed, off when it stops; it skips ahead past
-# OTPs the database has already seen.
+# The running check, over RADIUS and TACACS+: the addresses go on lo after
+# RISE good checks, off after FALL failed ones (of either login), back if
+# removed, off when it stops; it skips ahead past OTPs the database has
+# already seen.
 scenario_anycast_run() {
     make_fakes
     run -d "$DB" init >/dev/null
     enroll >/dev/null
+    enroll_tacacs >/dev/null
     start_radius s3cret
+    start_tacacs k3y
     conf 'ADDRESSES="192.0.2.153 2001:db8:153::153"' 'SECRET=s3cret' "PORT=$PORT" \
-         'INTERVAL=1' 'TIMEOUT=1' 'FALL=3' 'RISE=2'
+         'INTERVAL=1' 'TIMEOUT=1' 'FALL=3' 'RISE=2' 'TACACS_KEY=k3y' "TACACS_PORT=$TPORT"
     listening "192.0.2.153:$PORT" "[2001:db8:153::153]:$PORT"
+    listening_tcp "192.0.2.153:$TPORT" "[2001:db8:153::153]:$TPORT"
     echo 0 >proc/net/ipv6/ip_nonlocal_bind
     any -c anycast.conf run
     echo 1 >proc/net/ipv6/ip_nonlocal_bind
@@ -1737,10 +1930,17 @@ scenario_anycast_run() {
     echo accept >radius/mode
     wait_status advertised
 
+    # Only the TACACS+ login fails.
+    echo fail >tacacs/mode
+    wait_status withdrawn
+    printf '# on lo: %s\n\n' "$(paste -sd' ' lo)"
+    echo accept >tacacs/mode
+    wait_status advertised
+
     # Two OTPs rejected as replays, then one accepted: still advertised.
     echo 'ahead 1' >radius/mode
     for _ in $(seq 100); do
-        [[ $(grep -c 'check: ACCEPT' run.log) == 3 ]] && break
+        [[ $(grep -c 'check: ACCEPT.*TACACS+ PASS' run.log) == 4 ]] && break
         sleep 0.1
     done
     printf '# %s\n' "$(grep state= run/status)"
@@ -1763,8 +1963,169 @@ scenario_anycast_run() {
     printf '# the server saw, from the first replay:\n'
     awk '/Replay/ { p = 1 } p { print } p && /accepted/ { exit }' radius/log \
         | sed -E 's/usage counter 1, session [0-9]+/usage counter 1, session <N>/'
+    kill "$RADIUS_PID" "$TACACS_PID"
+    wait "$RADIUS_PID" "$TACACS_PID" 2>/dev/null
+}
+
+# The check's key renewed in PostgreSQL, with Radiator's login from
+# Radiator's clause (anycast_renew): by hand with 'renew', after a lost
+# answer, without the function, in partition mode, and by the running check
+# when the key is due.
+scenario_pg_anycast() {
+    local priv renewal_on
+    make_fakes
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv example.csv <"$ROOT/users.example.csv"
+    run -b pg -d "$PGDB" import example.csv >/dev/null
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    # Radiator's clause, as 'config' writes it, with Radiator's password.
+    mkdir conf.d
+    PGHOST=127.0.0.1 PGSSLMODE=disable PGCONNECT_TIMEOUT=2 "$SCRIPT" -b pg -d "$PGDB" config \
+        | sed 's/^\( *\)DBAuth *$/\1DBAuth       test-only/' >conf.d/yubikey.conf
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=s3cret'
+    anycast_env enroll >enroll.csv 2>/dev/null
+    run_from enroll.csv -b pg -d "$PGDB" import --replace - >/dev/null
+    priv=$(sed -n 's/^private_id=//p' state/key)
+
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+    anycast_row
+    printf '# counter file: %s; new private ID: %s\n' "$(<state/counter)" \
+        "$([[ $(sed -n 's/^private_id=//p' state/key) != "$priv" ]] && echo yes || echo no)"
+    printf '# next renewal 365 days after the key was made: %s\n\n' \
+        "$([[ $(anycast_env -c anycast.conf status | sed -n 's/^key: next renewal on //p') == $(date -u -d '+365 days' +%F) ]] \
+           && echo yes || echo no)"
+
+    # With the AES keys stored as hex.
+    SECRET_ENCODING=hex run_from enroll.csv -b pg -d "$PGDB" import --replace - >/dev/null
+    awk -F, 'NR == 2 { printf "user=%s\npin=%s\npublic_id=%s\nprivate_id=%s\naes_key=%s\n", $1, $5, $2, $3, $4 }' \
+        enroll.csv >state/key
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+    anycast_row
+
+    # The database's answer is lost: the new key waits in key.next, and the
+    # next try finishes the renewal with the same key.
+    printf '#!/bin/sh\npsql "$@" >/dev/null 2>&1\necho "psql: error: server closed the connection unexpectedly" >&2\nexit 2\n' \
+        >psql-lost
+    chmod +x psql-lost
+    priv=$(sed -n 's/^private_id=//p' state/key)
+    PSQL=$WORK/psql-lost any -c anycast.conf renew
+    printf '# key.next: %s; the database has its key: %s\n\n' "$(ls state/key.next 2>/dev/null)" \
+        "$(pgq "$PGDB" "SELECT userId = '$(sed -n 's/^private_id=//p' state/key.next)' FROM yubikeys WHERE username LIKE 'anycast-%'")"
+    printf '# check warns: %s\n\n' "$(anycast_env -c anycast.conf check 2>&1 >/dev/null)"
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+    printf '# key.next: %s; new private ID: %s\n\n' "$(ls state/key.next 2>/dev/null)" \
+        "$([[ $(sed -n 's/^private_id=//p' state/key) != "$priv" ]] && echo yes || echo no)"
+    anycast_row
+
+    # A database made before the function: init adds it.
+    pgq "$PGDB" "DROP FUNCTION anycast_renew(text, text, text, text);"
+    any -c anycast.conf renew
+    run -b pg -d "$PGDB" init
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+
+    # The key in the database was replaced by hand.
+    pgq "$PGDB" "UPDATE yubikeys SET userId = 'abcdefabcdef' WHERE username LIKE 'anycast-%';"
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+    pgq "$PGDB" "UPDATE yubikeys SET userId = '$(sed -n 's/^private_id=//p' state/key)' WHERE username LIKE 'anycast-%';"
+
+    # Partition mode: yubikey.conf is a link to the copy's clause, and the
+    # cluster's clause is yubikey-cluster.conf.
+    mv conf.d/yubikey.conf conf.d/yubikey-cluster.conf
+    ln -s yubikey-partition.conf conf.d/yubikey.conf
+    any -c anycast.conf renew
+    ln -sfn yubikey-cluster.conf conf.d/yubikey.conf
+    any -c anycast.conf renew | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/'
+
+    # Another password, a database that isn't PostgreSQL, no clause.
+    sed -i 's/test-only/wrong/' conf.d/yubikey-cluster.conf
+    any -c anycast.conf renew
+    sed -i 's/wrong/test-only/' conf.d/yubikey-cluster.conf
+    rm conf.d/yubikey.conf conf.d/yubikey-cluster.conf
+    printf '<AuthBy SQLYUBIKEY>\n    DBSource  dbi:SQLite:dbname=/var/lib/yubikey/yubicred.db\n</AuthBy>\n' >conf.d/yubikey.conf
+    any -c anycast.conf renew
+    rm conf.d/yubikey.conf
+    any -c anycast.conf renew
+    ln -s yubikey-cluster.conf conf.d/yubikey.conf
+    PGHOST=127.0.0.1 PGSSLMODE=disable PGCONNECT_TIMEOUT=2 "$SCRIPT" -b pg -d "$PGDB" config \
+        | sed 's/^\( *\)DBAuth *$/\1DBAuth       test-only/' >conf.d/yubikey-cluster.conf
+
+    # Radiator's role may renew only the keys of anycast-* users, and only
+    # to a key of the right form.
+    as_radiator "select anycast_renew('cbdefghijklr', '$(pgq "$PGDB" "SELECT userId FROM yubikeys WHERE tokenId = 'cbdefghijklr'")', 'abcdefabcdef', '00112233445566778899aabbccddeeff')"
+    as_radiator "select anycast_renew('$(sed -n 's/^public_id=//p' state/key)', '$(sed -n 's/^private_id=//p' state/key)', 'xyz', '00')" \
+        | sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/; s/[0-9a-f]{12}/<PRIVATE ID>/'
+    pgtable "SELECT username, counter FROM yubikeys WHERE tokenId = 'cbdefghijklr';"
+    echo
+
+    # The running check renews a key made more than RENEW_DAYS ago (here a
+    # key file from before 1.10.0, without made=, written 400 days ago),
+    # after a good check. The database's answer is lost; while the old key
+    # works, the check waits an hour to try again, but once its logins fail
+    # it tries again 6 checks later, and finishes the renewal.
+    sed -i '/^made=/d' state/key
+    touch -d '400 days ago' state/key
+    any -c anycast.conf status
+    start_radius s3cret
+    listening "192.0.2.153:$PORT"
+    conf 'ADDRESSES=192.0.2.153' 'SECRET=s3cret' "PORT=$PORT" 'INTERVAL=1' 'TIMEOUT=1'
+    priv=$(sed -n 's/^private_id=//p' state/key)
+    printf '#!/bin/sh
+[ -e "%s/lose" ] || exec psql "$@"
+psql "$@" >/dev/null 2>&1
+echo "psql: error: server closed the connection unexpectedly" >&2
+exit 2
+' \
+        "$WORK" >psql-maybe
+    chmod +x psql-maybe
+    touch lose
+    PSQL=$WORK/psql-maybe start_run
+    for _ in $(seq 100); do grep -q 'cannot renew' run.log && break; sleep 0.1; done
+    rm lose
+    sleep 3
+    printf '# still the old key, while it works: %s\n' \
+        "$([[ $(sed -n 's/^private_id=//p' state/key) == "$priv" && -f state/key.next ]] && echo yes || echo no)"
+    echo reject >radius/mode
+    for _ in $(seq 150); do grep -q 'renewed the key' run.log && break; sleep 0.1; done
+    # At one check a second, the new key has OTPs for 97 days: it is renewed
+    # when 30 days of them are left.
+    renewal_on=$(date -u -d "@$(($(date +%s) + 8388351 - 30 * 86400))" +%F)
+    for _ in $(seq 10); do
+        [[ $(anycast_env -c anycast.conf status | sed -n 's/^key: next renewal on //p') == "$renewal_on" ]] && break
+        sleep 0.1
+    done
+    printf '# status: the next renewal when 30 days of OTPs are left: %s\n' \
+        "$([[ $(anycast_env -c anycast.conf status | sed -n 's/^key: next renewal on //p') == "$renewal_on" ]] \
+           && echo yes || echo no)"
+    echo accept >radius/mode
+    : >radius/log
+    for _ in $(seq 100); do
+        awk '/renewed the key/ { r = 1 } r && /check: ACCEPT/ { f = 1 } END { exit !f }' run.log && break
+        sleep 0.1
+    done
+    kill -TERM "$RUN_PID"
+    wait "$RUN_PID"
+    printf '# run exited with %d; its log:\n' "$?"
+    # (Without the lines about advertising, whose timing varies here.)
+    sed -E 's/vv[cbdefghijklnrtuv]{10}/vv<PUBLIC ID>/; s/[0-9]+ OTPs left \([0-9]+ days\)/<N> OTPs left (<N> days)/' run.log \
+        | grep -v -e '^advertising ' -e '^withdrawing '
+
+    printf '\n# new private ID: %s\n' "$([[ $(sed -n 's/^private_id=//p' state/key) != "$priv" ]] && echo yes || echo no)"
+    printf '# the server accepts the new key: %s\n' "$(grep -q accepted radius/log && echo yes || echo no)"
+    anycast_row
     kill "$RADIUS_PID"
     wait "$RADIUS_PID" 2>/dev/null
+}
+
+# The check's row in PostgreSQL, compared with its key file.
+anycast_row() {
+    pgtable "SELECT username LIKE 'anycast-%' AS anycast_user, tokenId = '$(sed -n 's/^public_id=//p' state/key)' AS same_public_id,
+                    userId = '$(sed -n 's/^private_id=//p' state/key)' AS key_file_private_id,
+                    secret IN ('$(sed -n 's/^aes_key=//p' state/key)',
+                               encode(decode('$(sed -n 's/^aes_key=//p' state/key)', 'hex'), 'base64')) AS key_file_aes_key,
+                    CASE WHEN secret ~ '^[0-9a-f]{32}$' THEN 'hex' ELSE 'base64' END AS stored_as,
+                    password LIKE '{crypt}%' AS pin_kept, counter, low, high
+               FROM yubikeys WHERE username LIKE 'anycast-%';"
+    echo
 }
 
 # --------------------------------------------------------------------------
@@ -2428,11 +2789,11 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
-     anycast anycast_run pg_partition groups pg_groups install)
+     anycast anycast_run pg_anycast pg_partition groups pg_groups install)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
-needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == anycast* ]]; }
+needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == *anycast* ]]; }
 needs_dpkg() { [[ $1 == install ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi

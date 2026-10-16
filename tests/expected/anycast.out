@@ -2,13 +2,19 @@ $ yubikey-anycast.sh
 Usage: yubikey-anycast.sh [-c FILE] COMMAND
 
 Commands:
-  enroll    Make a new key for the check, and print it as CSV for
-            'yubikey-db.sh import --replace -' (stop the check first)
-  check     Log in once and print the result (not while the check runs)
-  run       Run the check (yubikey-anycast.service does this)
-  status    Show whether the addresses are on lo, and the last check;
-            exits 0 only while they are
-  withdraw  Remove the addresses from lo
+  enroll         Make a new key for the check, and print it as CSV for
+                 'yubikey-db.sh import --replace -' (stop the check first)
+  enroll-tacacs  Make a new password for the TACACS+ login's service
+                 account, svc.anycast-HOSTNAME, and print it for
+                 'yubikey-db.sh service add' (stop the check first)
+  check          Log in once and print the result (not while the check
+                 runs)
+  renew          Renew the key now, as the running check does every
+                 RENEW_DAYS days (not while the check runs)
+  run            Run the check (yubikey-anycast.service does this)
+  status         Show whether the addresses are on lo, and the last check;
+                 exits 0 only while they are
+  withdraw       Remove the addresses from lo
 
 Options:
   -c FILE   The settings (default /etc/radiator/anycast.conf)
@@ -18,6 +24,7 @@ Options:
 Example:
   sudo systemctl stop yubikey-anycast
   sudo yubikey-anycast.sh enroll | ./yubikey-db.sh -b pg import --replace -
+  sudo yubikey-anycast.sh enroll-tacacs | ./yubikey-db.sh -b pg service add svc.anycast-$(hostname -s)
   sudo yubikey-anycast.sh check
   sudo systemctl start yubikey-anycast
 [exit 3]
@@ -76,7 +83,7 @@ Imported 1 row(s) into <WORK>/yubicred.db
 # state mode 700
 # state/key mode 600
 # state/counter mode 600
-# key file: user pin public_id private_id aes_key
+# key file: user pin public_id private_id aes_key made
 $ yubikey-anycast.sh enroll
 username,public_id,private_id,aes_key,password,active
 anycast-<HOST>,vv<PUBLIC ID>,<PRIVATE ID>,<AES KEY>,<PIN>,1
@@ -143,6 +150,104 @@ wrong Message-Authenticator: dropped
 anycast-<HOST>: OTP with usage counter 9, session 0: rejected: Replay attack detected
 
 $ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: anycast.conf: TACACS_PORT must be a number from 1 to 65535
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: no <WORK>/state/tacacs (TACACS_KEY is set): run 'yubikey-anycast.sh enroll-tacacs' first
+[exit 3]
+
+$ yubikey-anycast.sh enroll-tacacs
+<PASSWORD>
+yubikey-anycast.sh: a new password for svc.anycast-<HOST> is in <WORK>/state/tacacs; load it into the database with: yubikey-db.sh service add svc.anycast-<HOST> (or service password svc.anycast-<HOST>)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db service add svc.anycast-<HOST> < enroll.pw
+Added service account svc.anycast-<HOST>
+[exit 0]
+
+# state/tacacs mode 600
+# tacacs file: user password
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ PASS in <N> ms, but Radiator does not listen on 192.0.2.153 2001:db8:153::153 TCP port <PORT>
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ PASS in <N> ms
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ FAIL in <N> ms: No such user
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ authorization FAIL in <N> ms
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ NO REPLY within 1 s
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ CLOSED in <N> ms
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ BAD REPLY in <N> ms (wrong TACACS_KEY?)
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ BAD REPLY in <N> ms (wrong TACACS_KEY?)
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+REJECT in <N> ms: Yubikey secret not found in database; TACACS+ PASS in <N> ms
+[exit 1]
+
+$ yubikey-anycast.sh enroll-tacacs
+<PASSWORD>
+yubikey-anycast.sh: a new password for svc.anycast-<HOST> is in <WORK>/state/tacacs; load it into the database with: yubikey-db.sh service add svc.anycast-<HOST> (or service password svc.anycast-<HOST>)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/yubicred.db service password svc.anycast-<HOST> < enroll.pw
+Changed the password of svc.anycast-<HOST>
+[exit 0]
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ PASS in <N> ms
+[exit 0]
+
+# the TACACS+ server saw:
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: PASS
+authorization (method 6) of svc.anycast-<HOST>: service=shell cmd*: PASS_ADD priv-lvl=1
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: PASS
+authorization (method 6) of svc.anycast-<HOST>: service=shell cmd*: PASS_ADD priv-lvl=1
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: FAIL
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: PASS
+authorization (method 6) of svc.anycast-<HOST>: service=shell cmd*: FAIL
+no answer
+closed
+answers with another key
+authentication: cannot decrypt (a wrong key?)
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: PASS
+authorization (method 6) of svc.anycast-<HOST>: service=shell cmd*: PASS_ADD priv-lvl=1
+authentication: ASCII login (type 1, action 1, service 1, priv-lvl 1) of svc.anycast-<HOST> from port yubikey-anycast: PASS
+authorization (method 6) of svc.anycast-<HOST>: service=shell cmd*: PASS_ADD priv-lvl=1
+
+$ yubikey-anycast.sh -c anycast.conf check
+ACCEPT in <N> ms; TACACS+ NO REPLY: Connection refused
+[exit 1]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: <WORK>/state/tacacs is damaged: run 'yubikey-anycast.sh enroll-tacacs' again
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
+yubikey-anycast.sh: error: <WORK>/state/tacacs line 1: unknown name 'name'
+[exit 3]
+
+$ yubikey-anycast.sh -c anycast.conf check
 NO REPLY: Connection refused
 [exit 1]
 
@@ -150,6 +255,7 @@ $ yubikey-anycast.sh -c anycast.conf status
 not running
 on lo: none
 OTPs left: 8132352 (470 days at one check every 5 s)
+key: next renewal on <DATE>
 [exit 1]
 
 $ yubikey-anycast.sh -c anycast.conf check

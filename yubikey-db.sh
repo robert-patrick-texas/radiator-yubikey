@@ -1327,11 +1327,26 @@ pg_ensure_writable() {
 # Of the service-account and group tables (groups_schema), Radiator's role
 # reads only the passwords of service accounts and the view access_replies,
 # which reads the group tables with its owner's rights.
+#
+# The anycast check (yubikey-anycast.sh) renews its own key every year with
+# Radiator's login, through anycast_renew, which runs with its owner's
+# rights. It replaces the private ID and AES key of one anycast-* row, given
+# its public ID and the private ID it has now, keeping the username, PIN,
+# public ID and label, and starts its counters again (deleting and
+# inserting the row, as '--replace' does, so the trigger doesn't refuse
+# that). It answers true when the row has the new key, also when called
+# again after the answer to the first call was lost, and false when there is
+# no such row. The AES key is stored as the row's was, hex or base64.
+# Radiator's role can already read every AES key, so this lets it do little
+# more: give the anycast check's users, which log in only from the Radiator
+# servers themselves (radiator.example.conf), a key it knows.
 pg_schema() {
     cat <<EOF
 -- An older database (with a yubikeys table) that has no service_accounts
 -- table gets the service-account and group tables: say so.
 SELECT to_regclass('service_accounts') IS NOT NULL OR to_regclass('yubikeys') IS NULL AS had_groups \\gset
+SELECT to_regprocedure('anycast_renew(text, text, text, text)') IS NOT NULL OR to_regclass('yubikeys') IS NULL
+    AS had_renew \\gset
 CREATE TABLE IF NOT EXISTS yubikeys (
     username varchar(255) NOT NULL,
     password text         NOT NULL DEFAULT '',
@@ -1374,6 +1389,35 @@ END
 CREATE OR REPLACE TRIGGER yubikeys_counters_forward
     BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
     EXECUTE FUNCTION yubikeys_counters_forward();
+SELECT current_schema() AS yubikeys_schema \\gset
+CREATE OR REPLACE FUNCTION anycast_renew(p_public_id text, p_private_id text, p_new_private_id text,
+                                         p_new_aes_key text)
+    RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = :"yubikeys_schema", pg_temp AS \$\$
+DECLARE
+    r yubikeys%ROWTYPE;
+BEGIN
+    IF p_new_private_id !~ '^[0-9a-f]{12}\$' OR p_new_aes_key !~ '^[0-9a-f]{32}\$' THEN
+        RAISE EXCEPTION 'anycast_renew: the new private ID must be 12 hex digits, and the AES key 32';
+    END IF;
+    IF EXISTS (SELECT FROM yubikeys WHERE tokenId = p_public_id AND userId = p_new_private_id
+               AND username LIKE 'anycast-%') THEN
+        RETURN true;
+    END IF;
+    DELETE FROM yubikeys WHERE tokenId = p_public_id AND userId = p_private_id AND username LIKE 'anycast-%'
+        RETURNING * INTO r;
+    IF NOT FOUND THEN
+        RETURN false;
+    END IF;
+    INSERT INTO yubikeys (username, password, active, created, accessed, tokenId, userId, secret, label)
+        VALUES (r.username, r.password, r.active, now(), r.accessed, r.tokenId, p_new_private_id,
+                CASE WHEN r.secret ~ '^[0-9a-fA-F]{32}\$' THEN p_new_aes_key
+                     ELSE encode(decode(p_new_aes_key, 'hex'), 'base64') END,
+                r.label);
+    RETURN true;
+END
+\$\$;
+REVOKE ALL ON FUNCTION anycast_renew(text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION anycast_renew(text, text, text, text) TO $PG_RADIATOR_ROLE;
 $(groups_schema timestamptz smallint)
 CREATE OR REPLACE VIEW access_replies AS
 $(access_replies_sql)
@@ -1391,6 +1435,10 @@ GRANT SELECT ON access_replies TO $PG_RADIATOR_ROLE;
 \\if :had_groups
 \\else
 \\echo 'Added the service-account and group tables'
+\\endif
+\\if :had_renew
+\\else
+\\echo 'Added the function anycast_renew, with which the anycast check renews its key'
 \\endif
 EOF
 }
