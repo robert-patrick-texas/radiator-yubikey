@@ -8,8 +8,9 @@
 # same verdict as Radiator, and that the example wrapper's records work.
 # Covers SQLite (with and without Require2Factor), PostgreSQL over the local
 # socket and over TLS, a user with two YubiKeys on both, a cutover from
-# SQLite to PostgreSQL, and the same OTP sent twice at the same moment to
-# Radiator's farm (FarmSize, from radiator.example.conf).
+# SQLite to PostgreSQL, the same OTP sent twice at the same moment to
+# Radiator's farm (FarmSize, from radiator.example.conf), and a counter save
+# whose answer is lost (PostgreSQL).
 #
 # OTPs come from tests/make-otp.sh: encrypted with openssl, independently of
 # both Radiator and verify.
@@ -370,6 +371,53 @@ check "PostgreSQL with the trigger: one accepted, one not answered" "ACCEPT NO-A
 check "both requests waited to save" 2 "$WAITING"
 check "Radiator logged the refused save" 1 "$(grep -c 'counter violation: YubiKey vvccccbbcdef already used' "$LOG")"
 login "PostgreSQL, the next OTP"        ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 202 0)"
+
+echo
+echo "== A save whose answer Radiator never gets (PostgreSQL)"
+# lost COUNTER: alice logs in with the OTP for COUNTER while every commit
+# waits for a standby that doesn't exist; once Radiator's save waits, its
+# session is ended, as a primary's fast shutdown ends it in a switchover.
+# The save is committed, but Radiator only sees its connection drop, and
+# saves again. Sets ANSWERS to Radiator's answer and WAITING to the number of
+# saves that waited for the standby.
+lost() {
+    local a
+    pgsu "ALTER SYSTEM SET synchronous_standby_names = 'nobody'" "SELECT pg_reload_conf()" >/dev/null
+    one_login "s3cr3t:$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 "$1" 0)" >/tmp/lost & a=$!
+    for _ in $(seq 50); do
+        WAITING=$(pgsu "SELECT count(*) FROM pg_stat_activity WHERE usename = 'radiator' AND wait_event = 'SyncRep'")
+        [[ $WAITING == 0 ]] || break
+        sleep 0.1
+    done
+    pgsu "ALTER SYSTEM RESET synchronous_standby_names" \
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'radiator' AND wait_event = 'SyncRep'" \
+        "SELECT pg_reload_conf()" >/dev/null
+    wait "$a"
+    ANSWERS=$(cat /tmp/lost)
+}
+pgsu() {
+    su postgres -c "psql -X -q -At -v ON_ERROR_STOP=1 -d yubikey$(printf ' -c %q' "$@")"
+}
+ALICE_COUNTER="SELECT counter FROM yubikeys WHERE username = 'alice'"
+make_conf
+sed -i "s/ and set_config('yubikey.login_id', '%{RequestVar:yk_login_id}', true) is not null//" "$CONF"
+start_radiator
+lost 203
+check "with the UpdateQuery of 1.8.1: not answered" "NO-ANSWER 1" "$ANSWERS $WAITING"
+check "...though the save was committed" 203 "$(pgsu "$ALICE_COUNTER")"
+check "...Radiator saved again, and the database refused it" 1 \
+    "$(grep -c 'counter violation: YubiKey vvccccbbcdef already used' "$LOG")"
+make_conf
+start_radiator
+lost 204
+check "with the UpdateQuery from 'config': accepted" "ACCEPT 1" "$ANSWERS $WAITING"
+check "...Radiator saw the connection drop" "server closed the connection unexpectedly" \
+    "$(grep -o "do failed for 'update yubikeys .*" "$LOG" | sed "s/^.*is not null': *//" | head -1)"
+check "...and saved again, without a counter violation" "204 0" \
+    "$(pgsu "$ALICE_COUNTER") $(grep -c 'counter violation' "$LOG")"
+check "...the database no longer waits for a standby" "" "$(pgsu 'SHOW synchronous_standby_names')"
+login "the same OTP again"              "REJECT: Replay attack detected" alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 204 0)"
+login "PostgreSQL, the next OTP"        ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 205 0)"
 
 echo
 printf 'Radiator %s: %d passed, %d failed\n' \

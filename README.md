@@ -144,7 +144,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 
 ```bash
 tests/run-tests.sh                           # 40 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 125 + 62 + 191 + 49 checks with real Radiator, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 134 + 62 + 191 + 49 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

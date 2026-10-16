@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+A planned switchover no longer leaves a login unanswered now and then. After
+upgrading, run `yubikey-db.sh -b pg init` (once, against the primary), and
+write Radiator's clause again with `yubikey-db.sh -b pg config` on each
+Radiator server, then restart Radiator. Either can come first; until both
+are done, Radiator works as before.
+
+### Fixed
+
+- In a planned switchover, or a clean restart of the primary, a login whose
+  counters were waiting for the standby when the old primary stopped got no
+  answer. PostgreSQL had saved them (`canceling the wait for synchronous
+  replication ... The transaction has already committed locally`), but
+  Radiator only saw its connection drop, saved them again on the new
+  primary, and the trigger refused that as a replay (`counter violation`,
+  then `Database update failed`). On three sites, with four logins at a
+  time at each site, 6 of 24 switchovers left 1 to 3 logins unanswered (10
+  of 9,180 logins), which made `geo.sh` fail now and then since 1.7.0. The
+  same login may now save the same counters again; with this version, 26
+  more switchovers left none unanswered.
+
+### Added
+
+- PostgreSQL: a `login_id` column, the ID of the Radiator login that last
+  saved the counters, kept by the trigger. Radiator's role can neither read
+  nor write it. `init` adds it to an existing table and prints
+  `Added the login_id column to the yubikeys table`; the other commands
+  work with or without it.
+
+### Changed
+
+- `config` for PostgreSQL: `YubiKeyConnect` gives each login a random ID (16
+  bytes from `/dev/urandom`), and `UpdateQuery` names the login with
+  `set_config('yubikey.login_id', ID, true)`, a condition that is always
+  true, for that save only. It also works with a table made before this
+  version, as before.
+- The trigger `yubikeys_counters_forward` (PostgreSQL) runs on every save of
+  the counters. It still refuses counters that don't move forward, except
+  the same counters saved again by the login that the save names, and it
+  keeps that login's ID in `login_id` (empty after a save that names none,
+  from the scripts or from a clause written before this version). The same
+  OTP sent twice at the same moment is still refused the second time: the
+  two logins have different IDs.
+
+### Tests
+
+- `e2e.sh` loses the answer to a save: every commit waits for a standby that
+  doesn't exist, and Radiator's session is ended once its save waits, as a
+  primary's fast shutdown ends it. With the `UpdateQuery` of 1.8.1 the
+  login gets no answer, though the save was committed; with this version's
+  it is accepted, and the same OTP is then a replay.
+- `pg_radiator` runs the `UpdateQuery` from `config` as Radiator's role: the
+  same counters saved again by the same login pass; by another login, by a
+  save that names none, and older counters by the same login are refused;
+  Radiator's role can't read or write `login_id`; a table made by 1.8.1
+  (without the column, with the old trigger) works with the new clause, and
+  `init` adds the column.
+
 ## 1.8.1 - 2026-10-15
 
 The scripts are the same as in 1.8.0; this release adds a test with real

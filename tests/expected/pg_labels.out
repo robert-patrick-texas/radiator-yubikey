@@ -116,6 +116,7 @@ secret | character varying | 60 | NO |
 counter | integer |  | NO | 0
 low | integer |  | NO | 0
 high | integer |  | NO | 0
+login_id | character varying | 64 | NO | ''::character varying
 label | character varying | 255 | NO | ''::character varying
 # constraints (NOT NULL is shown in the columns above)
 conname | definition
@@ -129,7 +130,7 @@ yubikeys_tokenid_key
 yubikeys_username
 # triggers
 tgname | definition
-yubikeys_counters_forward | CREATE TRIGGER yubikeys_counters_forward BEFORE UPDATE OF counter, low ON public.yubikeys FOR EACH ROW WHEN ((ROW(new.counter, new.low) <= ROW(old.counter, old.low))) EXECUTE FUNCTION yubikeys_counters_forward()
+yubikeys_counters_forward | CREATE TRIGGER yubikeys_counters_forward BEFORE UPDATE OF counter, low ON public.yubikeys FOR EACH ROW EXECUTE FUNCTION yubikeys_counters_forward()
 # owners
 database_owner | table_owner
 <T>_admin | <T>_admin

@@ -648,15 +648,18 @@ it.</p>
 Patroni, etcd and FRR (and debhelper and lintian, to build and check the
 package) added, and runs four tests of real Radiator logins:</p>
 <ul>
-<li><code>e2e.sh</code>, 125 checks in a throwaway container: SQLite
+<li><code>e2e.sh</code>, 134 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
 socket and over TLS, the example wrapper, a user with two YubiKeys (each
 with its own counters, PIN and <code>active</code>; another user's
 YubiKey refused), a cutover from SQLite to PostgreSQL while Radiator
-runs, and the same OTP sent twice at the same moment to two of
-Radiator's farm processes (accepted twice without the trigger, once with
-it). For each login it checks Radiator's answer and the reason it logs,
-and that <code>verify</code> agrees.</li>
+runs, the same OTP sent twice at the same moment to two of Radiator's
+farm processes (accepted twice without the trigger, once with it), and a
+counter save on PostgreSQL whose answer is lost (its session ended while
+it waits for a standby: not answered with 1.8.1's
+<code>UpdateQuery</code>, accepted with this one's). For each login it
+checks Radiator's answer and the reason it logs, and that
+<code>verify</code> agrees.</li>
 <li><code>ha.sh</code>, 62 checks with four containers: two PostgreSQL
 servers (primary and streaming standby, over TLS) and two Radiator
 servers, through a dead primary, a hung primary, failovers, an old
@@ -712,7 +715,7 @@ removal, and gone after a purge.</li>
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
-<code>Radiator 4.30-1: 125 passed, 0 failed</code>,
+<code>Radiator 4.30-1: 134 passed, 0 failed</code>,
 <code>Two database servers: 62 passed, 0 failed</code>,
 <code>Three sites: 191 passed, 0 failed</code> and
 <code>Package: 49 passed, 0 failed</code>. Run them again with each new
@@ -1105,7 +1108,10 @@ public ID, so a user can have several YubiKeys and one user's YubiKey
 can't log in as another user.</li>
 <li><code>UpdateQuery</code> saves the counters after each login. For
 PostgreSQL it uses <code>to_timestamp(%5)</code>, because Radiator's
-default <code>current_timestamp()</code> isn't valid there.</li>
+default <code>current_timestamp()</code> isn't valid there, and it names
+the login with <code>set_config</code>, so that the same login may save
+the same counters again (see <a href="#database-layout">Database
+layout</a>).</li>
 <li><code>CheckSecretId</code> checks the private ID inside the OTP
 against the database.</li>
 <li><code>Require2Factor</code>: see below.</li>
@@ -1537,8 +1543,19 @@ layout</a>). Version 1.8.0 adds the <code>label</code> column:
 run it, the other commands stop with
 <code>... was made by an older version of yubikey-db.sh; run 'yubikey-db.sh init' to bring it up to date</code>.
 Radiator doesn't need the column, so it keeps working before and after.
-With two database servers or three sites, run it once, against the
-primary; the standbys get the change by replication.</p>
+Version 1.9.0 adds the <code>login_id</code> column to PostgreSQL's
+table, and changes the trigger to use it: <code>init</code> prints
+<code>Added the login_id column to the yubikeys table</code>. Then write
+Radiator's clause again with <code>config</code> on each Radiator server
+(as in <a href="#install-the-configuration">Install the
+configuration</a>; with partition mode, as
+<code>yubikey-cluster.conf</code>), put Radiator's password back on the
+<code>DBAuth</code> line, and restart Radiator. Either can come first:
+until both are done, Radiator works as before, and once both are, a
+login whose counters were saved just as the primary stopped is answered
+(see <a href="#database-layout">Database layout</a>). With two database
+servers or three sites, run <code>init</code> once, against the primary;
+the standbys get the change by replication.</p>
 <p>If your own tools add rows with
 <code>INSERT INTO yubikeys VALUES (...)</code>, without naming the
 columns, as the old example commands did, they fail once the table has
@@ -1705,7 +1722,9 @@ processes holds one login at a time.</td>
 <tr>
 <td>A Radiator server's connection to the old primary ended, and a
 writable server exists</td>
-<td>It reconnects and answers the same login: nothing is rejected.</td>
+<td>It reconnects and answers the same login: nothing is rejected. That
+includes a login whose counters the old primary saved just before it
+stopped: Radiator saves them again on the new one.</td>
 </tr>
 <tr>
 <td>An OTP used before the failure</td>
@@ -1875,13 +1894,19 @@ same way, then lets the login go on), then <code>YubiKeySQL</code>. And
 for 10 s after each new connection (Radiator reconnects only after a
 failure), a query may take 6 s instead of 2: a primary just promoted
 saves a change only once a standby streams from it, 1.5 to 3 s in the
-lab, and a counter update cut short by <code>Timeout</code> is saved
-anyway, so Radiator's second try would fail as a replay and the login
-would get no answer. The hooks change Radiator's
-<code>SQLRetries</code>, <code>FailureBackoffTime</code> and
-<code>Timeout</code> while it runs, as Radiator 4.30's SQL module
-allows; the tests check them, so run them again with each new Radiator
-version.</li>
+lab. The hooks change Radiator's <code>SQLRetries</code>,
+<code>FailureBackoffTime</code> and <code>Timeout</code> while it runs,
+as Radiator 4.30's SQL module allows; the tests check them, so run them
+again with each new Radiator version.</li>
+<li><code>YubiKeyConnect</code> also gives each login a random ID, which
+<code>UpdateQuery</code> passes to the database with the counters. When
+the primary stops while a login's counters wait for the standby to
+confirm them, as in a switchover, they are saved, but Radiator only sees
+its connection drop. It saves them again on the new primary, and the
+database accepts that second save as the same login's, instead of
+refusing it as a replay. Without the ID, such a login got no answer: on
+three sites, with four logins at a time at each site, 6 of 24 planned
+switchovers left 1 to 3 logins unanswered (10 of 9,180 in all).</li>
 </ul>
 <p>For the admins, put both servers in <code>PGHOST</code> in
 <code>~/.profile</code>, as above. One <code>~/.pgpass</code> line with
@@ -2047,9 +2072,9 @@ over, Radiator holds the logins for a few seconds. No OTP is lost.</td>
 </tr>
 <tr>
 <td>A planned switchover</td>
-<td>Nothing is rejected: Radiator holds the logins until East2 is
-promoted, so the slowest take 3.5 to 5.5 s (measured with four logins at
-a time at each site). No OTP is lost.</td>
+<td>Nothing is rejected or left unanswered: Radiator holds the logins
+until East2 is promoted, so the slowest take 3 to 6 s (measured with
+four logins at a time at each site). No OTP is lost.</td>
 </tr>
 <tr>
 <td>East1 loses power</td>
@@ -3111,7 +3136,13 @@ until one does; Radiator tries again every 2 s. A configuration without
 <td>The same OTP arrived twice at the same moment (a retransmission, two
 Radiator servers, or a replay attempt). The first was accepted; the
 second gets no answer. If it happens without a reason, find where the
-second request came from.</td>
+second request came from. Right after a
+<code>do failed for 'update yubikeys ...</code> line about a lost
+connection (in a switchover, for example), the database refused
+Radiator's second save of the same login: write the clause again with
+<code>config</code> and run <code>init</code> (see <a
+href="#after-upgrading-the-scripts">After upgrading the
+scripts</a>).</td>
 </tr>
 <tr>
 <td><code>journalctl -u yubikey-partition</code> shows
@@ -3808,19 +3839,40 @@ Radiator sets <code>high</code> to 0)</td>
 <td>Describes the YubiKey, for people; empty for none. Radiator doesn't
 read it. Added in 1.8.0.</td>
 </tr>
+<tr>
+<td><code>login_id</code></td>
+<td></td>
+<td><code>varchar(64)</code></td>
+<td>PostgreSQL only: the ID of the Radiator login that last saved the
+counters, kept by the trigger; empty after a save by the scripts. Added
+in 1.9.0.</td>
+</tr>
 </tbody>
 </table>
 <p>PostgreSQL roles: <code>yubikey_admin</code> owns the database and
 table; its members manage users. <code>radiator</code> can
 <code>SELECT</code> username, password, active, tokenId, userId, secret
 and the counters, and <code>UPDATE</code> only accessed and the
-counters; it can't read the labels.</p>
+counters; it can't read the labels, nor read or write
+<code>login_id</code>.</p>
 <p>In both databases, the trigger <code>yubikeys_counters_forward</code>
 refuses an <code>UPDATE</code> of <code>counter</code> or
 <code>low</code> that doesn't move them forward, with the error
 <code>counter violation: ... already used this OTP or a later one</code>.
 To reset a YubiKey's counters on purpose, replace its row
 (<code>add --replace</code>).</p>
+<p>In PostgreSQL, the trigger lets one kind of such save through: the
+same login saving the same counters again. Radiator does that when the
+answer to its first save was lost, as when the primary stops while the
+save waits for the standby (the save was made, but the connection
+dropped). Radiator's <code>UpdateQuery</code> names the login, with the
+random ID <code>YubiKeyConnect</code> gives it
+(<code>set_config('yubikey.login_id', ...)</code>, for that save only),
+and the trigger keeps the ID in <code>login_id</code>. A save that names
+no login, from the scripts or from a clause written by
+<code>config</code> before 1.9.0, empties <code>login_id</code>. Two
+logins with the same OTP have different IDs, so the second is still
+refused.</p>
 </section>
 <section id="export-format" class="level3">
 <h3>Export format</h3>
@@ -3865,8 +3917,10 @@ counter above <code>low</code>. A NULL counter skips this check.</li>
 fails, Radiator ignores the request (no answer) with
 <code>Database update failed</code>. That is what happens to the second
 of two logins with the same OTP at the same moment: both pass the check
-in step 7 before either saves, and the database refuses the second
-save.</li>
+in step 7 before either saves, and the database refuses the second save.
+When a save fails because the connection dropped, Radiator connects
+again and repeats the same save; in PostgreSQL the trigger accepts the
+repeat if the first save was made.</li>
 </ol>
 </section>
 </section>

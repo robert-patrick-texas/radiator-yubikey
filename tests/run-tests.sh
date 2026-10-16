@@ -316,6 +316,17 @@ as_radiator() {
     printf '$ radiator> %s\n%s%s[exit %d]\n\n' "$1" "$out" "${out:+$'\n'}" "$rc"
 }
 
+# Radiator's UpdateQuery from 'config', with its %-substitutions filled in
+# for test.user2's YubiKey, run as Radiator's role: radiator_save COUNTER
+# LOW TIME LOGIN_ID (the ID that YubiKeyConnect gives each login).
+radiator_save() {
+    local q
+    q=$("$SCRIPT" -b pg -d "$PGDB" config | sed -n 's/^ *UpdateQuery *//p')
+    q=${q//'%0'/$1} q=${q//'%1'/$2} q=${q//'%2'/0} q=${q//'%3'/"'test.user2'"}
+    q=${q//'%5'/$3} q=${q//'%7'/"'cbdefghijklr'"} q=${q//'%{RequestVar:yk_login_id}'/$4}
+    as_radiator "$q"
+}
+
 pg_cleanup() {
     psql -X -q -d postgres >/dev/null 2>&1 <<EOF
 DROP DATABASE IF EXISTS ${PGT}_db WITH (FORCE);
@@ -1067,19 +1078,59 @@ scenario_pg_radiator() {
     pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
 
     as_radiator "select secret, active, userId, counter, low, high, password from yubikeys where username='test.user2' and tokenId='cbdefghijklr'"
-    as_radiator "update yubikeys set accessed=to_timestamp(1791314814), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    radiator_save 5 2 1791314814 login-a
     run -b pg -d "$PGDB" list test.user2
 
     # Counters only move forward: the same OTP saved twice (two logins at
     # the same moment), or an older one, is refused.
+    radiator_save 5 2 1791314815 login-b
+    radiator_save 4 9 1791314815 login-b
+    # Except the same counters saved again by the same login, as Radiator
+    # does when the answer to its first save was lost (the primary stopped
+    # while the save waited for a standby). Older counters stay refused, and
+    # so does a save that names no login: Radiator's clause before this
+    # version, or one whose login ID is missing.
+    radiator_save 5 2 1791314815 login-a
+    radiator_save 4 9 1791314815 login-a
     as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=5, low=2, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
-    as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=4, low=9, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
-    as_radiator "update yubikeys set accessed=to_timestamp(1791314815), counter=5, low=3, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    radiator_save 5 2 1791314815 ''
+    radiator_save 5 3 1791314815 login-c
+    pgtable "SELECT counter, low, login_id FROM yubikeys WHERE username = 'test.user2';"
+    echo
+    # A save that names no login (an older clause, or the scripts) leaves no
+    # login ID behind, so no later save can match it.
+    as_radiator "update yubikeys set accessed=to_timestamp(1791314816), counter=5, low=4, high=0 where username='test.user2' and tokenId='cbdefghijklr'"
+    pgtable "SELECT counter, low, login_id FROM yubikeys WHERE username = 'test.user2';"
+    echo
+    radiator_save 5 4 1791314816 ''
+    # Radiator's role can neither read nor write the login ID.
+    as_radiator "select login_id from yubikeys"
+    as_radiator "update yubikeys set login_id = 'login-c'"
+
+    # A table made by 1.8.1 has no login_id column, and its trigger refuses
+    # every second save of the same counters. Radiator's clause saves there
+    # as before, and init adds the column.
+    pgq "$PGDB" "ALTER TABLE yubikeys DROP COLUMN login_id;
+        CREATE OR REPLACE FUNCTION yubikeys_counters_forward() RETURNS trigger LANGUAGE plpgsql AS \$\$
+        BEGIN
+            RAISE EXCEPTION 'counter violation: YubiKey % already used this OTP or a later one', OLD.tokenId
+                USING ERRCODE = 'check_violation';
+        END \$\$;
+        CREATE OR REPLACE TRIGGER yubikeys_counters_forward
+            BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
+            WHEN ((NEW.counter, NEW.low) <= (OLD.counter, OLD.low))
+            EXECUTE FUNCTION yubikeys_counters_forward();"
+    radiator_save 6 0 1791314817 login-d
+    radiator_save 6 0 1791314817 login-d
+    run -b pg -d "$PGDB" init
+    radiator_save 7 0 1791314818 login-e
+    radiator_save 7 0 1791314818 login-e
+
     # A database made before 1.2.1 has no trigger: init adds it.
     pgq "$PGDB" "DROP TRIGGER yubikeys_counters_forward ON yubikeys;"
-    as_radiator "update yubikeys set counter=5, low=3 where username='test.user2' and tokenId='cbdefghijklr'"
+    as_radiator "update yubikeys set counter=7, low=0 where username='test.user2' and tokenId='cbdefghijklr'"
     run -b pg -d "$PGDB" init
-    as_radiator "update yubikeys set counter=5, low=3 where username='test.user2' and tokenId='cbdefghijklr'"
+    as_radiator "update yubikeys set counter=7, low=0 where username='test.user2' and tokenId='cbdefghijklr'"
 
     as_radiator "update yubikeys set active=1 where username='test.user2'"
     as_radiator "insert into yubikeys (username, tokenId, userId, secret) values ('x', 'x', 'x', 'x')"

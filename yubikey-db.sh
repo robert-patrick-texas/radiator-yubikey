@@ -1079,7 +1079,8 @@ pg_ensure_writable() {
 # characters. Counters are NOT NULL because Radiator skips its replay check
 # when the counter is NULL. The label describes the YubiKey for people:
 # Radiator's role cannot read it. ADD COLUMN IF NOT EXISTS gives a table
-# made before 1.8.0 the label column (without rewriting the table).
+# made before 1.8.0 the label column, and an older table the login_id
+# column (below), without rewriting the table.
 #
 # The trigger refuses to save counters that do not move forward. Radiator
 # reads the counters, checks the OTP, then saves them, so the same OTP sent
@@ -1089,6 +1090,16 @@ pg_ensure_writable() {
 # message contains "violation" because Radiator then keeps its database
 # connection instead of reconnecting. The scripts never move counters back
 # with UPDATE ('--replace' deletes and inserts the row).
+#
+# The one save of the same counters that passes is the same login's again.
+# A primary that stops (as in a switchover) while a save waits for a
+# standby has saved it, but drops the connection, so Radiator saves again
+# on the new primary, and without this would get no answer for a login it
+# had saved. Radiator's UpdateQuery names the login with set_config
+# (yubikey.login_id, a random ID from the YubiKeyConnect clause), and the
+# trigger keeps that ID in login_id with the counters. Every other save,
+# from the scripts or from an older Radiator clause, names none and empties
+# it. Radiator's role cannot read or write login_id.
 pg_schema() {
     cat <<EOF
 CREATE TABLE IF NOT EXISTS yubikeys (
@@ -1103,29 +1114,43 @@ CREATE TABLE IF NOT EXISTS yubikeys (
     counter  integer      NOT NULL DEFAULT 0,
     low      integer      NOT NULL DEFAULT 0,
     high     integer      NOT NULL DEFAULT 0,
-    label    varchar(255) NOT NULL DEFAULT ''
+    label    varchar(255) NOT NULL DEFAULT '',
+    login_id varchar(64)  NOT NULL DEFAULT ''    -- the login that last saved the counters
 );
 SELECT EXISTS (SELECT FROM pg_attribute WHERE attrelid = 'yubikeys'::regclass AND attname = 'label'
                AND NOT attisdropped) AS had_label \\gset
+SELECT EXISTS (SELECT FROM pg_attribute WHERE attrelid = 'yubikeys'::regclass AND attname = 'login_id'
+               AND NOT attisdropped) AS had_login_id \\gset
 ALTER TABLE yubikeys ADD COLUMN IF NOT EXISTS label varchar(255) NOT NULL DEFAULT '';
+ALTER TABLE yubikeys ADD COLUMN IF NOT EXISTS login_id varchar(64) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS yubikeys_username ON yubikeys (username);
 REVOKE ALL ON yubikeys FROM PUBLIC;
 GRANT SELECT (username, password, active, tokenId, userId, secret, counter, low, high)
     ON yubikeys TO $PG_RADIATOR_ROLE;
 GRANT UPDATE (accessed, counter, low, high) ON yubikeys TO $PG_RADIATOR_ROLE;
 CREATE OR REPLACE FUNCTION yubikeys_counters_forward() RETURNS trigger LANGUAGE plpgsql AS \$\$
+DECLARE
+    id text := coalesce(current_setting('yubikey.login_id', true), '');
 BEGIN
+    IF (NEW.counter, NEW.low) > (OLD.counter, OLD.low)
+       OR ((NEW.counter, NEW.low) = (OLD.counter, OLD.low) AND id <> '' AND id = OLD.login_id) THEN
+        NEW.login_id := id;
+        RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'counter violation: YubiKey % already used this OTP or a later one', OLD.tokenId
         USING ERRCODE = 'check_violation';
 END
 \$\$;
 CREATE OR REPLACE TRIGGER yubikeys_counters_forward
     BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
-    WHEN ((NEW.counter, NEW.low) <= (OLD.counter, OLD.low))
     EXECUTE FUNCTION yubikeys_counters_forward();
 \\if :had_label
 \\else
 \\echo 'Added the label column to the yubikeys table'
+\\endif
+\\if :had_login_id
+\\else
+\\echo 'Added the login_id column to the yubikeys table'
 \\endif
 EOF
 }
@@ -1359,9 +1384,9 @@ EOF
     # doesn't answer at all (powered off, network cut), or after those 5 s,
     # back off as above. For 10 s after each new connection, which follows a
     # failure, a query may take 6 s, not Timeout: a primary just promoted
-    # commits only once a standby streams from it, and a counter update cut
-    # short by Timeout has still been saved, so Radiator's retry would fail
-    # and leave the login unanswered. The hooks change SQLRetries (default
+    # commits only once a standby streams from it, which can take 3 s, and
+    # a counter update cut short by Timeout would be saved again, after
+    # waiting for the first one. The hooks change SQLRetries (default
     # 2), FailureBackoffTime and Timeout while Radiator runs, which works
     # with Radiator 4.30's SQL module: run tests/radiator/run.sh with each
     # new version.
@@ -1393,7 +1418,13 @@ EOF
     # %0 = counter, %1 = session use, %2 = 0, %3 = quoted username,
     # %5 = Unix time, %7 = token ID in modhex. Radiator's default
     # current_timestamp() is not valid in PostgreSQL, so %5 is used.
-    UpdateQuery  update yubikeys set accessed=to_timestamp(%5), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
+    # set_config (always true) names the login, with the random ID that
+    # YubiKeyConnect below gives it, for this save only. When the answer to
+    # a save is lost, as when the primary stops while the save waits for a
+    # standby, Radiator saves again on the new primary; the database finds
+    # the counters already saved by the same login and accepts the save,
+    # instead of refusing it as a replay.
+    UpdateQuery  update yubikeys set accessed=to_timestamp(%5), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7 and set_config('yubikey.login_id', '%{RequestVar:yk_login_id}', true) is not null
 
     # Require2Factor: every login is the static password/PIN followed by the
     # OTP ("1234:OTP", or "1234OTP"), and a user with no stored password is
@@ -1409,9 +1440,13 @@ EOF
 # connects first, and holds the login as above while no server accepts
 # writes. YubiKeySQL builds its query (it quotes the username with the
 # connection) before it queries, so a query built without one would fail.
+# It also gives the login its random ID, for UpdateQuery.
 <AuthBy INTERNAL>
     Identifier   YubiKeyConnect
-    RequestHook sub { my $sql = Radius::Configurable::find('AuthBy', 'YubiKeySQL'); \
+    RequestHook sub { my $id = ''; \
+        if (open(my $r, '<', '/dev/urandom')) { read($r, $id, 16); close($r); } \
+        $_[0]->{internal_vars}{yk_login_id} = unpack('H*', $id); \
+        my $sql = Radius::Configurable::find('AuthBy', 'YubiKeySQL'); \
         for (1 .. 20) { last if $sql->reconnect(); } \
         return ($main::IGNORE, 'database connection checked'); }
 </AuthBy>
