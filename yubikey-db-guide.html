@@ -306,6 +306,8 @@ mode</a></li>
 <li><a href="#anycast" id="toc-anycast">Anycast</a></li>
 <li><a href="#groups-and-tacacs" id="toc-groups-and-tacacs">Groups and
 TACACS+</a></li>
+<li><a href="#turn-key-setup" id="toc-turn-key-setup">Turn-key
+setup</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
 id="toc-troubleshooting">Troubleshooting</a></li>
@@ -324,7 +326,8 @@ you can build in a container, a server installation, adding accounts,
 checking credentials, day-to-day maintenance, moving from SQLite to
 PostgreSQL, a second PostgreSQL server that takes over when the first
 fails, three sites with automatic failover, logins at a site that is cut
-off, and one anycast address for all of them.</p>
+off, one anycast address for all of them, and a tool that sets up all of
+that from one input file.</p>
 <p>The scripts, this guide and the releases are on GitHub, under the <a
 href="https://github.com/robert-patrick-texas/radiator-yubikey/blob/main/LICENSE">MIT
 license</a>: <a
@@ -656,7 +659,7 @@ it.</p>
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
 Patroni, etcd and FRR (and debhelper and lintian, to build and check the
-package) added, and runs five tests of real Radiator logins:</p>
+package) added, and runs six tests of real Radiator logins:</p>
 <ul>
 <li><code>e2e.sh</code>, 145 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
@@ -741,16 +744,37 @@ said before the package, replaced with <code>install.sh</code>'s
 commands; the package's units neither enabled nor started by the
 install, restarted by an upgrade only while they run, stopped by a
 removal, and gone after a purge.</li>
+<li><code>turnkey.sh</code>, 96 checks of <a href="#turn-key-setup">the
+turn-key setup</a>: <code>yubikey-turnkey</code> makes the folders from
+a <code>site.toml</code> with two routers at West's site, and
+<code>setup.sh</code> runs on three fresh Ubuntu 26.04 containers
+(systemd and <code>iproute2</code> only) at the same time, installing
+everything with <code>apt-get</code> (it needs network access). Two more
+containers are the routers (FRR), and one behind them is a device, and
+the admins' machine. It checks the tool's output, <code>--check</code>
+on a fresh server, the cluster, the anycast checks, both routers' routes
+and BFD sessions; logins at the anycast addresses over RADIUS and
+TACACS+, IPv4 and IPv6, by YubiKey and by service account, refused for a
+group without access to the device's group and from an unlisted device
+(the catch-all) until its group has access; West withdrawn from both of
+its routers when only its TACACS+ login fails, and when its check stops;
+the firewall (PostgreSQL closed to a machine outside the admin subnets,
+Patroni's REST API open to the admins); <code>setup.sh</code> run again
+(nothing installed or restarted); a reboot; a new device added in
+<code>site.toml</code>; new certificates, one server at a time (etcd,
+Patroni and PostgreSQL present them); and <code>--reset</code> on all
+three, then <code>setup.sh</code> again.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all five, about 24 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, or package)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 35 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 145 passed, 0 failed</code> (and
 <code>133 passed</code> for <code>groups.sh</code>),
 <code>Two database servers: 63 passed, 0 failed</code>,
-<code>Three sites: 196 passed, 0 failed</code> and
-<code>Package: 49 passed, 0 failed</code>. Run them again with each new
+<code>Three sites: 196 passed, 0 failed</code>,
+<code>Package: 49 passed, 0 failed</code> and
+<code>Turnkey: 96 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -2050,8 +2074,10 @@ primary to another site by itself when the primary fails. The example
 below has three sites, West, East1 and East2, with a 55 ms round trip
 between West and the East sites and 4 ms between East1 and East2.
 <code>tests/radiator/geo.sh</code> runs everything in this section on
-three servers with those delays (see <a
-href="#testing">Testing</a>).</p>
+three servers with those delays (see <a href="#testing">Testing</a>). To
+set up three sites with partition mode, anycast, groups and TACACS+ from
+one input file instead of step by step, see <a
+href="#turn-key-setup">Turn-key setup</a>.</p>
 <section id="how-three-sites-work" class="level3">
 <h3>How three sites work</h3>
 <ul>
@@ -3416,6 +3442,256 @@ older version gets their tables at the next sync, if
 (as in the package).</p>
 </section>
 </section>
+<section id="turn-key-setup" class="level2">
+<h2>Turn-key setup</h2>
+<p><code>yubikey-turnkey</code> does all of <a href="#three-sites">Three
+sites</a>, <a href="#partition-mode">Partition mode</a>, <a
+href="#anycast">Anycast</a> and <a href="#groups-and-tacacs">Groups and
+TACACS+</a> for you, from one input file: you describe the three
+servers, their routers, the anycast addresses, the devices and the
+groups in <code>site.toml</code>, and it makes a folder for each server,
+with a <code>setup.sh</code> that installs and configures everything on
+it, and the sheets to hand to whoever runs the routers and the devices.
+<code>tests/radiator/turnkey.sh</code> runs it on three fresh servers
+(see <a href="#testing">Testing</a>).</p>
+<section id="how-the-turn-key-setup-works" class="level3">
+<h3>How the turn-key setup works</h3>
+<ul>
+<li><strong>One input file, with no secrets in it.</strong>
+<code>site.toml</code> lists the three servers (the usual primary first,
+and the one far from the others as the last resort), each one's router
+or two, the anycast addresses, the admins and their subnets, the devices
+with their device groups, and the groups to start with.
+<code>site.example.toml</code>, in the package, is an example with
+everything it assumes in its comments.</li>
+<li><strong>Every secret is made once.</strong> The passwords, the
+RADIUS secrets and TACACS+ keys, the anycast checks' keys, and the
+cluster's CA and certificates are made the first time, in
+<code>secrets.toml</code> next to <code>site.toml</code> (mode
+<code>0600</code>), and taken from there on every later run: the same
+input always gives the same output. Keep <code>secrets.toml</code>, and
+back it up.</li>
+<li><strong>A folder per server, made by the tool.</strong> In
+<code>out/</code> next to <code>site.toml</code>: <code>east1/</code>,
+<code>east2/</code> and <code>west/</code>, each with
+<code>setup.sh</code>, the server's settings (<code>server.env</code>,
+<code>secrets.env</code>), every file it installs (<code>files/</code>,
+listed with their modes in <code>files.list</code>), and on the first
+server the database's first contents (<code>db/</code>). Next to them,
+<code>runbook.md</code> (the order to do things in),
+<code>routers.md</code>, <code>devices.md</code>, and
+<code>admin/</code> (the files for the admins' machines).</li>
+<li><strong><code>setup.sh</code> does the steps of the sections
+above,</strong> in order: the packages (PostgreSQL, Patroni, etcd and
+FRR from Ubuntu; Radiator and radiator-yubikey from the packages next to
+it), <code>/etc/hosts</code> and the kernel settings, the cluster's TLS
+files, etcd, Patroni, the database, Radiator
+(<code>radiator-groups.example.conf</code> with the server's addresses
+and devices), partition mode, FRR and the anycast check, and the
+firewall. It ends with a report: the cluster, the anycast check, the BGP
+sessions.</li>
+<li><strong>The three run at the same time.</strong> etcd starts only
+when two servers run it; the first server's Patroni creates the cluster,
+which the other two copy; the first server makes the database, and the
+others wait for it. Each says what it waits for.</li>
+<li><strong>It is safe to run again.</strong> Each step changes only
+what differs from the folder, and restarts a service only when its files
+changed. If <code>setup.sh</code> stops, fix the cause and run it again:
+it goes on where it stopped. It never removes an etcd cluster or a
+PostgreSQL cluster with databases that it didn't make;
+<code>--reset</code> starts a server over.</li>
+<li><strong>The database's first contents, once.</strong> The first
+server loads the three anycast checks' keys and TACACS+ service
+accounts, the group <code>anycast-check</code>, and the groups in
+<code>site.toml</code>, each only if it isn't there yet. After that,
+change the groups with <code>yubikey-db.sh</code>: a later run doesn't
+undo it, and a key the check has renewed stays.</li>
+<li><strong>The devices are in the folders.</strong> Radiator's
+<code>&lt;Client&gt;</code> clauses come from <code>site.toml</code>. To
+add a device, add it there, run <code>yubikey-turnkey</code> again, copy
+the folders and run <code>setup.sh</code> on each server, which restarts
+Radiator (and so closes the TACACS+ connections that are open).</li>
+<li><strong>The firewall</strong> (when on, as by default):
+<code>setup.sh</code> turns ufw off and loads iptables rules for the
+whole server, kept by <code>iptables-persistent</code> (with the nft
+backend). Only these come in: from the devices to the anycast addresses,
+RADIUS and TACACS+ (from anyone, with the catch-all client); between the
+three servers, etcd, PostgreSQL and Patroni; from the admin subnets,
+SSH, PostgreSQL and Patroni's REST API; from the server's routers, BGP
+and BFD; ICMP, and replies to the server's own connections. It refuses
+to load them while an SSH connection to the server comes from outside
+the admin subnets.</li>
+</ul>
+</section>
+<section id="set-up-three-sites-with-yubikey-turnkey" class="level3">
+<h3>Set up three sites with yubikey-turnkey</h3>
+<p><strong>1. On an admin's machine</strong>, with the radiator-yubikey
+package (or the release's tarball), Python 3.11 or later and
+<code>openssl</code>, make <code>site.toml</code> from the example:</p>
+<pre class="bash"><code>cp /opt/radiator-yubikey/site.example.toml site.toml
+editor site.toml</code></pre>
+<p><strong>2. Make the folders,</strong> with the packages copied into
+each (<code>-p</code>): put Radiator's packages from Radiator Software,
+and the release's <code>radiator-yubikey_VERSION_all.deb</code> and
+<code>install.sh</code> (the same version as
+<code>yubikey-turnkey</code>), in one folder first:</p>
+<pre class="bash"><code>/opt/radiator-yubikey/yubikey-turnkey -p ~/packages site.toml</code></pre>
+<pre class="text"><code>made secrets.toml, with every password, key and certificate
+out/admin/: 3 written
+wrote out/devices.md
+out/east1/: 35 written
+out/east2/: 32 written
+wrote out/routers.md
+wrote out/runbook.md
+out/west/: 32 written</code></pre>
+<p>Run it again with no change and it says <code>out: up to date</code>.
+It checks the whole input first, and lists every error it finds, for
+example
+<code>site.toml: device[3].address: '10.2.0.1/24' is not an address or a subnet (with the host bits 0)</code>;
+it writes nothing until there are none.</p>
+<p>Read <code>out/runbook.md</code>: it has the steps below with your
+servers' names.</p>
+<p><strong>3. Copy each server's folder to it,</strong> readable by root
+only, and check the server. <code>--check</code> changes nothing:</p>
+<pre class="bash"><code>scp -r out/east1/ root@east1.example.com:/root/turnkey    # and east2, west
+sudo /root/turnkey/setup.sh --check                        # on each server</code></pre>
+<pre class="text"><code>== preflight
+  ok    Ubuntu 26.04
+  ok    host name east1
+  ok    address 192.0.2.31/
+  ok    address 2001:db8:31::31/
+  ok    clock synchronized
+  ok    Radiator&#39;s packages are here
+  ok    radiator-yubikey 1.11.0&#39;s package and install.sh are here
+  ok    ports
+  ok    198.51.100.32 reachable
+  ok    203.0.113.33 reachable
+  ok    SSH connections from the admin subnets only
+
+Nothing to fix.</code></pre>
+<p>Each <code>FAIL</code> line says what to fix; a <code>WARN</code>
+line (no NTP, little disk) doesn't stop it.</p>
+<p><strong>4. Run <code>setup.sh</code> on all three,</strong> at about
+the same time (within 30 minutes):</p>
+<pre class="bash"><code>sudo /root/turnkey/setup.sh</code></pre>
+<p>On east1, which finishes first (the others are still copying the
+database):</p>
+<pre class="text"><code>== packages
+  ..    installing postgresql postgresql-client libdbd-pg-perl etcd-server etcd-client patroni python3-etcd frr sqlite3 curl openssl ca-certificates iptables iptables-persistent radiator_4.30-1_all.deb radiator-radius-utilxs_2.4-4.resolute_amd64.deb (apt-get&#39;s output is in /var/log/yubikey-turnkey.log)
+  ..    installing radiator-yubikey 1.11.0 with its install.sh (its output is in /var/log/yubikey-turnkey.log)
+  ok    packages: Radiator 4.30-1, radiator-yubikey 1.11.0, PostgreSQL 18+290ubuntu1, Patroni 4.1.0-2, etcd 3.5.16-10, FRR 10.5.1-1ubuntu4.1
+
+== system
+  ..    updated /etc/hosts
+  ..    installed /etc/sysctl.d/60-radiator-anycast.conf
+  ..    installed /etc/yubikey-turnkey/server.env
+  ..    installed /etc/yubikey-turnkey/secrets.env
+  ok    /etc/hosts, kernel settings
+
+== etcd
+  ..    installed /etc/etcd/tls/ca.crt /etc/etcd/tls/server.crt /etc/etcd/tls/server.key /etc/default/etcd
+  ok    etcd: 3 members healthy
+
+== patroni
+  ..    removed the postgresql package&#39;s empty cluster 18/main
+  ..    installed /etc/patroni/tls/ca.crt /etc/patroni/tls/server.crt /etc/patroni/tls/server.key /etc/patroni/18-main.yml /etc/systemd/system/patroni@18-main.service.d/restart.conf
+  ok    Patroni: east1=Leader/running west=Replica/stopped
+
+== database
+  ok    database yubikey; roles radiator and opsadmin, with their passwords
+  ok    the anycast checks of east1 east2 west: keys, service accounts, group anycast-check
+  ok    group netadmins
+  ok    group helpdesk
+
+== radiator
+  ..    installed /etc/radiator/dictionary.yubikey
+  ..    installed /etc/radiator/pg-ca.crt /etc/radiator/radiator.conf /etc/radiator/clients.d/core.conf /etc/radiator/clients.d/access.conf /etc/radiator/clients.d/catch-all.conf
+  ..    installed /etc/radiator/conf.d/yubikey.conf
+  ok    Radiator listens on UDP 1812 and TCP 49
+
+== partition
+  ..    installed /etc/radiator/partition.conf
+  ..    moved yubikey.conf to yubikey-cluster.conf (in /etc/radiator/conf.d)
+  ..    the copy: /var/lib/yubikey-partition/keys.db, 3 YubiKeys
+  ..    Radiator&#39;s clause: yubikey.conf -&gt; yubikey-cluster.conf; in partition mode -&gt; yubikey-partition.conf
+  ok    partition mode: yubikey-partition runs; Radiator uses yubikey-cluster.conf
+
+== anycast
+  ..    installed /etc/radiator/anycast.conf /var/lib/yubikey-anycast/key /var/lib/yubikey-anycast/counter /var/lib/yubikey-anycast/tacacs /etc/frr/frr.conf
+  ok    the anycast check: ACCEPT in 46 ms; TACACS+ PASS in 50 ms
+
+== firewall
+  ..    installed /etc/iptables/rules.v4 /etc/iptables/rules.v6
+  ok    firewall: 13 IPv4 and 10 IPv6 rules
+
+== report
+  Patroni:  east1=Leader/running east2=Replica/creating replica west=Replica/creating replica
+  anycast:  advertised since 2026-10-16 13:46:05 UTC; last check: ACCEPT in 32 ms; TACACS+ PASS in 18 ms, 0 s ago
+  BGP:      192.0.2.1 Established, 2001:db8:31::1 Established
+
+east1 is set up.</code></pre>
+<p>The other two wait for etcd, for east1's Patroni and for its
+database, and say so
+(<code>waiting for east1 to create the database (its setup.sh) (40 s)</code>),
+then do the same steps. In the test, the three took three and a half
+minutes, most of it <code>apt-get</code>. Run it again, on any server,
+and every step says <code>ok</code> without installing or restarting
+anything.</p>
+<p>It logs to <code>/var/log/yubikey-turnkey.log</code>, keeps its state
+in <code>/var/lib/yubikey-turnkey</code>, and keeps a copy of
+<code>server.env</code> and <code>secrets.env</code> in
+<code>/etc/yubikey-turnkey</code>.</p>
+<p><strong>5. The routers and the devices,</strong> as
+<code>out/routers.md</code> and <code>out/devices.md</code> say. Each
+server advertises the anycast addresses once its BGP sessions are up and
+its check passes.</p>
+<p><strong>6. The admins' machines:</strong> <code>out/admin/</code> has
+the cluster's CA certificate, PostgreSQL settings for
+<code>yubikey-db.sh</code> (<code>pg.env</code>), and a
+<code>~/.pgpass</code> line for each admin's login. Then add the
+YubiKeys and put the accounts in the groups, as in <a
+href="#set-up-groups-and-tacacs">Groups and TACACS+</a>:</p>
+<pre class="bash"><code>cp out/admin/ca.crt ~/.yubikey-ca.crt
+install -m 0600 out/admin/pgpass ~/.pgpass      # your own line only, if there are several
+. out/admin/pg.env                              # PGHOST and the rest, and DB_BACKEND=pg
+cd /opt/radiator-yubikey
+./yubikey-db.sh import users.csv
+./yubikey-db.sh member add netadmins alice</code></pre>
+</section>
+<section id="change-a-turn-key-setup" class="level3">
+<h3>Change a turn-key setup</h3>
+<ul>
+<li><strong>Devices, groups to start with, admin subnets, partition
+mode, the firewall:</strong> change <code>site.toml</code>, run
+<code>yubikey-turnkey</code> again (it prints what it wrote, and
+<code>--check</code> what it would write), copy the folders again
+(<code>scp -r out/east1/. root@east1.example.com:/root/turnkey/</code>),
+and run <code>setup.sh</code> on each server. A device that is gone from
+<code>site.toml</code> keeps its secret in <code>secrets.toml</code>, in
+case it comes back.</li>
+<li><strong>A device's existing secret or key:</strong> put it in
+<code>secrets.toml</code> (8 to 128 printable characters, without
+spaces, quotes, <code>\</code>, <code>#</code>, <code>%</code>,
+<code>`</code> or <code>|</code>), and run <code>yubikey-turnkey</code>.
+Remove a value to have a new one made.</li>
+<li><strong>New certificates for the servers</strong> (they last 825
+days; the tool warns 60 days before):
+<code>yubikey-turnkey --renew-certs site.toml</code>, then copy the
+folders and run <code>setup.sh</code> on each server, one at a
+time.</li>
+<li><strong>A server's name or address</strong> can't change this way
+once the cluster runs: etcd and Patroni keep them. That, and replacing a
+server, are not covered yet.</li>
+<li><strong>Start over:</strong>
+<code>sudo /root/turnkey/setup.sh --reset NAME</code>
+(<code>NAME</code>: the server's host name) stops the services and
+removes the server's etcd member, PostgreSQL cluster, anycast key and
+<code>setup.sh</code>'s state. Run it on all three, then
+<code>setup.sh</code> on all three again: the database is made anew,
+without the YubiKeys.</li>
+</ul>
+</section>
+</section>
 <section id="security" class="level2">
 <h2>Security</h2>
 <ul>
@@ -3506,6 +3782,18 @@ second refuses <code>Authorize-Only</code> from RADIUS clients, which
 would otherwise get an account's reply attributes without a password. A
 RADIUS client can't send <code>YubiKey-Via</code>, which marks TACACS+
 requests (its number can't be carried in a RADIUS packet).</li>
+<li><strong>Turn-key setup:</strong> <code>secrets.toml</code> holds
+every password and key of the deployment and the cluster's CA key, and
+<code>out/</code> copies of them: keep both where only you can read them
+(the tool makes them mode <code>0600</code> and <code>0700</code>), back
+up <code>secrets.toml</code>, and don't send <code>devices.md</code>
+(every device's secret and key) further than needed. Each server's
+folder holds only what that server needs; the first server's also holds
+the anycast checks' keys of all three, to load them.
+<code>setup.sh</code> keeps a copy of the server's settings and secrets
+in <code>/etc/yubikey-turnkey</code> (root only). The admins' passwords
+reach the servers only as SCRAM verifiers. Its firewall leaves outgoing
+traffic open.</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -3907,6 +4195,44 @@ restart PostgreSQL.</td>
 <td>A <code>DBAuth</code> line doesn't match the password set with
 <code>init-pg --set-password</code> (<code>config</code> writes three:
 one for each clause).</td>
+</tr>
+<tr>
+<td><code>setup.sh</code> keeps
+<code>waiting for etcd on all three servers</code></td>
+<td>Run <code>setup.sh</code> on the other servers too. If it runs
+there, the servers can't reach each other on TCP 2379 and 2380: a
+firewall on the way, or a wrong address in <code>site.toml</code>.</td>
+</tr>
+<tr>
+<td><code>setup.sh</code> keeps
+<code>waiting for east1 to create the database</code></td>
+<td><code>setup.sh</code> on the first server hasn't got that far, or
+stopped: see its output, fix the cause, and run it again there.</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: this server's PostgreSQL isn't the primary</code></td>
+<td>The first server's first run found another primary (after a
+failover): move the primary to it with
+<code>patronictl switchover --candidate NAME --force</code>, and run
+<code>setup.sh</code> again.</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: an SSH connection comes from ADDRESS, outside the admin subnets</code></td>
+<td>Loading the firewall would cut that connection: add its subnet to
+<code>[admin] subnets</code> in <code>site.toml</code> and run
+<code>yubikey-turnkey</code> again, or run
+<code>setup.sh --no-firewall</code>.</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: etcd on this server holds data that setup.sh didn't make</code>,
+or <code>PostgreSQL's cluster 18/main has databases</code></td>
+<td><code>setup.sh</code> removes only the empty ones that the packages
+make. If this server may lose them, <code>setup.sh --reset NAME</code>
+starts it over.</td>
+</tr>
+<tr>
+<td><code>yubikey-turnkey: error: ... secrets.toml is readable by others</code></td>
+<td><code>chmod 600 secrets.toml</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -4367,6 +4693,102 @@ or the addresses aren't on <code>lo</code> (<code>status</code>), and 3
 for a problem with the settings, the key, the TACACS+ account's file or
 the system, which the service then doesn't restart on.</p>
 </section>
+<section id="yubikey-turnkey" class="level3">
+<h3><code>yubikey-turnkey</code></h3>
+<pre class="text"><code>yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml</code></pre>
+<p>Checks <code>SITE.toml</code> (every error at once), makes the
+secrets it lacks, and writes the folders (see <a
+href="#turn-key-setup">Turn-key setup</a>). It removes the files it
+wrote before and no longer writes; other files in the output folder
+stay.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-o DIR</code>, <code>--out DIR</code></td>
+<td>Write to <code>DIR</code> instead of <code>out/</code> next to
+<code>SITE.toml</code></td>
+</tr>
+<tr>
+<td><code>-s FILE</code>, <code>--secrets FILE</code></td>
+<td>The secrets: <code>FILE</code> instead of <code>secrets.toml</code>
+next to <code>SITE.toml</code></td>
+</tr>
+<tr>
+<td><code>-p DIR</code>, <code>--packages DIR</code></td>
+<td>Copy Radiator's packages (<code>radiator_*_all.deb</code> or
+<code>radiator-locked_*_all.deb</code>, and
+<code>radiator-radius-utilxs_*.deb</code>), and
+<code>radiator-yubikey_VERSION_all.deb</code> with
+<code>install.sh</code>, from <code>DIR</code> into each server's
+folder</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--check</code></td>
+<td>Change nothing: check the input, and say what would be written or
+removed</td>
+</tr>
+<tr>
+<td><code>--renew-certs</code></td>
+<td>New certificates for the three servers; the CA stays</td>
+</tr>
+</tbody>
+</table>
+<p><code>SITE.toml</code>'s settings are in
+<code>site.example.toml</code>'s comments. It exits with 0 on success
+(<code>--check</code>: everything is up to date), 1 when
+<code>--check</code> finds something to write, and 2 for an error in the
+input or the options. It needs Python 3.11 or later and
+<code>openssl</code>.</p>
+</section>
+<section id="setupsh-yubikey-turnkey-setupsh" class="level3">
+<h3><code>setup.sh</code> (<code>yubikey-turnkey-setup.sh</code>)</h3>
+<pre class="text"><code>sudo ./setup.sh [--check] [--no-firewall]
+sudo ./setup.sh --reset NAME</code></pre>
+<p>In each server's folder from <code>yubikey-turnkey</code> (the
+package's <code>yubikey-turnkey-setup.sh</code>). It reads
+<code>server.env</code>, <code>secrets.env</code>,
+<code>files.list</code> and <code>files/</code> next to it.</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(none)</td>
+<td>Every step, from where it stopped; each changes only what
+differs</td>
+</tr>
+<tr>
+<td><code>-n</code>, <code>--check</code></td>
+<td>Only the preflight checks: the Ubuntu version, the host name and
+addresses, the clock, the disk, the packages next to it, the ports, the
+other servers, and SSH connections from outside the admin subnets</td>
+</tr>
+<tr>
+<td><code>--no-firewall</code></td>
+<td>Leave the firewall alone this time</td>
+</tr>
+<tr>
+<td><code>--reset NAME</code></td>
+<td>Stop the services, and remove this server's etcd member, PostgreSQL
+cluster, anycast key and state (<code>NAME</code>: its host name)</td>
+</tr>
+</tbody>
+</table>
+<p><code>TURNKEY_WAIT</code> sets how long it waits for the other
+servers (default 1800 seconds). It exits with 0 when the server is set
+up (<code>--check</code>: nothing to fix), 1 when something failed
+(<code>--check</code>: something to fix), and 2 for a usage error.</p>
+</section>
 <section id="installsh" class="level3">
 <h3><code>install.sh</code></h3>
 <pre class="text"><code>sudo ./install.sh [OPTIONS] [PACKAGE.deb]</code></pre>
@@ -4662,7 +5084,7 @@ repeat if the first save was made.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 43 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 46 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>, where the scripts' version shows as
@@ -4679,12 +5101,18 @@ and <code>pg_groups</code> also run Radiator's <code>GroupAccess</code>
 query from <code>config</code> on the database (on PostgreSQL, as
 Radiator's role). <code>install</code> runs <code>install.sh</code> with
 stand-ins for <code>apt-get</code>, <code>dpkg-query</code> and
-Radiator, installed in each of the ways it recognizes. It needs
-<code>bash</code>, <code>sqlite3</code>, <code>perl</code>, and, for the
-<code>verify</code> and <code>anycast</code> scenarios,
-<code>openssl</code> and <code>libcrypt-rijndael-perl</code> (and
-<code>dpkg-deb</code> for <code>install</code>); it runs as a normal
-user.</p>
+Radiator, installed in each of the ways it recognizes.
+<code>turnkey</code> runs <code>yubikey-turnkey</code> on
+<code>site.example.toml</code> with fixed secrets
+(<code>tests/turnkey/example-secrets.toml</code>) and shows everything
+it writes; <code>turnkey_errors</code> its checks of the input, and
+<code>turnkey_secrets</code> the secrets it makes, and changed by hand.
+It needs <code>bash</code>, <code>sqlite3</code>, <code>perl</code>,
+and, for the <code>verify</code> and <code>anycast</code> scenarios,
+<code>openssl</code> and <code>libcrypt-rijndael-perl</code>
+(<code>dpkg-deb</code> for <code>install</code>, and Python 3.11 and
+<code>openssl</code> for the <code>turnkey</code> ones); it runs as a
+normal user.</p>
 <pre class="bash"><code>tests/run-tests.sh                 # every scenario
 tests/run-tests.sh add verify      # some scenarios
 tests/run-tests.sh --update        # accept a deliberate change; then review it with git diff</code></pre>

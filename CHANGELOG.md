@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `yubikey-turnkey`: the setup of three sites (with partition mode,
+  anycast, groups and TACACS+) from one input file, `site.toml` (see
+  `site.example.toml`). It makes every password, key and certificate once,
+  in `secrets.toml` (mode `0600`), and writes a folder for each server with
+  a `setup.sh` that installs and configures everything on it: the
+  packages, `/etc/hosts`, etcd, PostgreSQL under Patroni, the database
+  with the anycast checks' keys and service accounts and the groups to
+  start with, Radiator with the devices, partition mode, FRR and the
+  anycast check, and an iptables firewall. The three servers run it at the
+  same time, and it can be run again: it changes only what differs. It
+  also writes a runbook, a sheet for the routers and one for the devices
+  (with their secrets and keys), and the admins' PostgreSQL settings. The
+  guide has a new section, [Turn-key setup](docs/guide.md#turn-key-setup).
+- The package has `yubikey-turnkey`, `yubikey-turnkey-setup.sh` (which it
+  copies as each server's `setup.sh`) and `site.example.toml`, and depends
+  on `python3`.
+
+### Tests
+
+- `tests/run-tests.sh`: scenarios `turnkey` (the example input, with fixed
+  secrets: everything it writes), `turnkey_errors` (the input checks) and
+  `turnkey_secrets` (the secrets it makes, and changed by hand); 46 scenarios
+  in all.
+- `tests/radiator/turnkey.sh` (`run.sh DIR turnkey`, 96 checks): the
+  folders that `yubikey-turnkey` makes, run on three fresh Ubuntu 26.04
+  servers at once, with two routers at one site and a device behind them:
+  logins at the anycast addresses over RADIUS and TACACS+, IPv4 and IPv6,
+  refused for a group without access; a server withdrawn from both of its
+  routers when only its TACACS+ login fails; the firewall; `setup.sh` run
+  again, a reboot, a new device, new certificates, and `--reset`.
+- `tests/radiator/tacacs.pl` connects over IPv6 without
+  `libio-socket-inet6-perl`.
+
 ## 1.10.0 - 2026-10-16
 
 TACACS+, service accounts and groups, and an anycast check that also logs

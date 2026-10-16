@@ -20,6 +20,15 @@ use strict;
 use warnings;
 use Radius::TacacsClient;
 use Radius::Tacacsplus;
+use IO::Socket::IP;
+
+# Radius::TacacsClient connects to an IPv6 server with IO::Socket::INET6
+# (libio-socket-inet6-perl), which the test image doesn't have; Perl's own
+# IO::Socket::IP takes the same arguments.
+unless (eval { require IO::Socket::INET6 }) {
+    $INC{'IO/Socket/INET6.pm'} = __FILE__;
+    @IO::Socket::INET6::ISA = ('IO::Socket::IP');
+}
 
 # Radiator's modules log through these; the tests want only the answers.
 no warnings 'redefine';

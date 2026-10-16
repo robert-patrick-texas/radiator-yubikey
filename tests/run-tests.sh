@@ -2781,6 +2781,268 @@ scenario_install() {
 }
 
 # --------------------------------------------------------------------------
+# yubikey-turnkey
+# --------------------------------------------------------------------------
+
+TURNKEY=$ROOT/yubikey-turnkey
+
+# Run yubikey-turnkey in WORK, and record the command, its output and its
+# exit code, with its version as <VERSION>: tk ARGS...
+tk() {
+    local out rc=0
+    out=$(cd "$WORK" && "$TURNKEY" "$@" </dev/null 2>&1) || rc=$?
+    printf '$ yubikey-turnkey %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc" | tk_version
+}
+
+tk_version() { sed "s/${VERSION//./\\.}/<VERSION>/g"; }
+
+# show FILE...: each file of WORK, with its mode.
+show() {
+    local f
+    for f in "$@"; do
+        printf -- '--- %s (%s)\n' "$f" "$(stat -c %a "$WORK/$f")"
+        tk_version <"$WORK/$f"
+        echo
+    done
+}
+
+# tree DIR [DEPTH]: the files under WORK/DIR (DEPTH levels down), with their
+# modes.
+tree() {
+    printf -- '--- the files in %s\n' "$1"
+    (cd "$WORK/$1" && find . -mindepth 1 -maxdepth "${2:-99}" -printf '%m %P\n' | LC_ALL=C sort -k2)
+    echo
+}
+
+# A valid site.toml, small: the base for the input checks.
+mini_site() {
+    cat <<'EOF'
+[site]
+name = "Mini"
+[[server]]
+name = "a"
+fqdn = "a.example.com"
+ipv4 = "192.0.2.1"
+ipv6 = "2001:db8::1"
+[[server.router]]
+ipv4 = "192.0.2.254"
+ipv6 = "2001:db8::fe"
+asn = 64500
+[[server]]
+name = "b"
+fqdn = "b.example.com"
+ipv4 = "192.0.2.2"
+ipv6 = "2001:db8::2"
+[[server.router]]
+ipv4 = "192.0.2.254"
+ipv6 = "2001:db8::fe"
+asn = 64500
+[[server]]
+name = "c"
+fqdn = "c.example.com"
+ipv4 = "198.51.100.3"
+ipv6 = "2001:db8:1::3"
+last_resort = true
+[[server.router]]
+ipv4 = "198.51.100.254"
+ipv6 = "2001:db8:1::fe"
+asn = 64500
+[anycast]
+ipv4 = "192.0.2.153"
+ipv6 = "2001:db8:153::153"
+asn = 65053
+[admin]
+logins = ["opsadmin"]
+subnets = ["10.9.0.0/24"]
+[[device]]
+address = "10.1.0.1"
+group = "core"
+EOF
+}
+
+# bad DESCRIPTION SED-SCRIPT [MORE-TOML]: the small site.toml changed by
+# SED-SCRIPT, with MORE-TOML at the end, and what yubikey-turnkey says.
+bad() {
+    printf '# %s\n' "$1"
+    { mini_site | sed -e "$2"; printf '%s\n' "${3-}"; } >"$WORK/site.toml"
+    tk site.toml
+}
+
+# The example input, with fixed secrets (certificates for 100 years): the
+# output, again (up to date), and changed.
+scenario_turnkey() {
+    cp "$ROOT/site.example.toml" "$WORK/site.toml"
+    install -m 0600 "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml"
+    tk -V
+    tk
+    tk site.toml
+    tree out 2
+    tree out/east1
+    cmp -s "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml" && echo "secrets.toml: unchanged"
+    cmp -s "$ROOT/yubikey-turnkey-setup.sh" "$WORK/out/east1/setup.sh" && echo "setup.sh: yubikey-turnkey-setup.sh"
+    cmp -s "$WORK/out/east1/files/etc/radiator/pg-ca.crt" "$WORK/out/admin/ca.crt" && echo "the servers' CA is admin/ca.crt"
+    openssl verify -CAfile "$WORK/out/admin/ca.crt" "$WORK"/out/*/files/etc/patroni/tls/server.crt | sed "s|$WORK/||"
+    openssl x509 -noout -subject -ext subjectAltName -in "$WORK/out/west/files/etc/etcd/tls/server.crt"
+    echo
+    tk site.toml
+    tk --check site.toml
+
+    show out/east1/server.env out/east1/secrets.env out/east1/hosts out/east1/files.list \
+         out/east1/db/anycast.csv out/east1/db/services out/east1/db/groups
+    show out/west/server.env out/west/secrets.env
+    diff "$WORK/out/east1/files.list" "$WORK/out/west/files.list"
+    echo
+    show out/east1/files/etc/default/etcd out/east1/files/etc/patroni/18-main.yml \
+         out/west/files/etc/frr/frr.conf out/west/files/etc/iptables/rules.v4 out/west/files/etc/iptables/rules.v6 \
+         out/west/files/etc/radiator/clients.d/core.conf out/west/files/etc/radiator/clients.d/access.conf \
+         out/west/files/etc/radiator/clients.d/catch-all.conf out/west/files/etc/radiator/anycast.conf \
+         out/west/files/etc/radiator/partition.conf out/west/files/var/lib/yubikey-anycast/key \
+         out/west/files/var/lib/yubikey-anycast/tacacs out/west/files/var/lib/yubikey-anycast/counter \
+         out/west/files/etc/sysctl.d/60-radiator-anycast.conf \
+         'out/west/files/etc/systemd/system/patroni@18-main.service.d/restart.conf'
+    echo "--- radiator.conf against radiator-groups.example.conf"
+    diff "$ROOT/radiator-groups.example.conf" "$WORK/out/west/files/etc/radiator/radiator.conf" | tk_version
+    echo
+    show out/admin/pg.env out/admin/pgpass out/runbook.md out/routers.md out/devices.md
+
+    # A device removed and one added (a new secret), partition mode and the
+    # firewall off, no catch-all: --check first, which changes nothing.
+    perl -0pi -e 's/\[\[device\]\]\naddress = "10\.1\.0\.2"\n[^[]*//; s/^enabled = true/enabled = false/mg' "$WORK/site.toml"
+    printf '\n[[device]]\naddress = "2001:db8:a::/48"\ngroup = "v6only"\n' >>"$WORK/site.toml"
+    tk --check site.toml
+    cmp -s "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml" && echo "secrets.toml: unchanged"
+    tk site.toml
+    grep -c '^\[device\.' "$WORK/secrets.toml"
+    tk site.toml
+    # (The new device's secret and key are new each time.)
+    show out/west/files/etc/radiator/clients.d/core.conf out/west/files/etc/radiator/clients.d/v6only.conf \
+         out/west/files/etc/iptables/rules.v4 out/west/files/etc/iptables/rules.v6 out/west/server.env \
+        | sed -E '/^<Client 2001:db8:a::\/48>$/,/^<\/Client>$/s/^( +(Secret|TACACSPLUSKey) +)[A-Za-z0-9]{32}$/\1<NEW>/' 
+    grep partition "$WORK/out/west/files.list"
+    tree out/west
+
+    # New certificates for the servers; the CA stays.
+    tk --renew-certs site.toml
+    cmp -s "$WORK/out/admin/ca.crt" "$WORK/out/west/files/etc/radiator/pg-ca.crt" && echo "the same CA"
+    openssl verify -CAfile "$WORK/out/admin/ca.crt" "$WORK/out/west/files/etc/patroni/tls/server.crt" | sed "s|$WORK/||"
+
+    # secrets.toml readable by others, or not TOML.
+    chmod 0640 "$WORK/secrets.toml"
+    tk site.toml
+    chmod 0600 "$WORK/secrets.toml"
+    echo 'x = ' >>"$WORK/secrets.toml"
+    tk site.toml
+}
+
+# The input checks: every error at once, nothing written.
+scenario_turnkey_errors() {
+    printf 'not toml [\n' >"$WORK/site.toml"
+    tk site.toml
+    tk missing.toml
+    tk --check --renew-certs site.toml
+    : >"$WORK/site.toml"
+    tk site.toml
+    printf '# two servers\n'
+    mini_site | awk '/^\[\[server\]\]$/ { n++ } /^\[anycast\]$/ { n = 0 } n != 3' >"$WORK/site.toml"
+    tk site.toml
+    bad "the same name, address and router twice; a router with two AS numbers" \
+        's/^name = "b"/name = "a"/; s/^ipv4 = "192.0.2.2"/ipv4 = "192.0.2.1"/; 0,/^asn = 64500/s//asn = 64501/'
+    bad "addresses that aren't, or can't be" \
+        's/^ipv4 = "192.0.2.1"$/ipv4 = "192.0.2.300"/; s/^ipv6 = "2001:db8::2"/ipv6 = "192.0.2.9"/; s/^ipv4 = "198.51.100.3"/ipv4 = "127.0.0.1"/'
+    bad "the anycast addresses a server's, the servers' AS a router's" \
+        's/^ipv4 = "192.0.2.153"/ipv4 = "192.0.2.1"/; s/^asn = 65053/asn = 64500/'
+    bad "the first server the last resort; two last resorts" 's/^fqdn = "a.example.com"/&\nlast_resort = true/'
+    printf '# no router for a; three for c\n'
+    mini_site | awk '/^\[\[server.router\]\]$/ && !done { done = 1; skip = 4 } skip { skip--; next } { print }' \
+        | sed '/^\[anycast\]/i [[server.router]]\nipv4 = "198.51.100.252"\nipv6 = "2001:db8:1::fc"\nasn = 64500\n[[server.router]]\nipv4 = "198.51.100.253"\nipv6 = "2001:db8:1::fd"\nasn = 64500' \
+        >"$WORK/site.toml"
+    tk site.toml
+    bad "names and settings" 's/^name = "c"/name = "C_1"/; s/^fqdn = "b.example.com"/fqdn = "b"/; s/^\[site\]/&\ncolour = "blue"/' \
+        $'[cluster]\nwal_keep = "8 GB"\n[partition]\nenabled = "yes"'
+    bad "admins" 's/^logins = .*/logins = ["postgres", "ops-admin", "a", "a"]/; s|^subnets = .*|subnets = ["10.9.0.1/24", "0.0.0.0/0", "x"]|'
+    bad "devices" 's/^group = "core"/group = "localhost"/' \
+        $'[[device]]\naddress = "10.1.0.1"\ngroup = "core"\n[[device]]\naddress = "10.2.0.1/24"\ngroup = "unlisted"\n[[device]]\naddress = "127.0.0.1"\ngroup = "x"\n[[device]]\naddress = "::/0"\ngroup = "x"\n[[device]]\naddress = "10.3.0.0/16"\ngroup = "bad group"'
+    # shellcheck disable=SC2016  # a sed address
+    bad "no devices and no catch-all" '/^\[\[device\]\]/,$d' $'[catch_all]\nenabled = false'
+    bad "groups" '' $'[[group]]\nname = "anycast-check"\n[[group]]\nname = "ops"\naccess = [ { devices = "core", level = 16 }, { devices = "nowhere", level = 1 }, { devices = "core", level = 1, rules = ["allow everything", "permit cmd=\\"x\\""] } ]\n[[group]]\nname = "ops"'
+    ls "$WORK"
+}
+
+# Secrets made from nothing: their forms, the certificates, and changes by
+# hand.
+scenario_turnkey_secrets() {
+    mini_site >"$WORK/site.toml"
+    tk --check site.toml
+    tk site.toml | sed -E 's/(secrets\.toml: [0-9]+ new): .*/\1: .../'
+    stat -c '%a %n' "$WORK/secrets.toml"
+    python3 - "$WORK/secrets.toml" <<'EOF'
+import base64, hashlib, hmac, re, sys, tomllib
+s = tomllib.load(open(sys.argv[1], "rb"))
+def ok(what, cond):
+    print(("ok  " if cond else "BAD ") + what)
+pw = re.compile(r"^[A-Za-z0-9]{32}$")
+ok("cluster passwords: 32 letters and digits", all(pw.match(s["cluster"][k]) for k in ("radiator", "patroni_api", "replication", "rewind")))
+ok("all different", len({s["cluster"][k] for k in ("radiator", "patroni_api", "replication", "rewind")}) == 4)
+def scram(v, p):
+    m = re.match(r"^SCRAM-SHA-256\$4096:([^$]+)\$([^:]+):(.+)$", v)
+    salted = hashlib.pbkdf2_hmac("sha256", p.encode(), base64.b64decode(m[1]), 4096)
+    ck = hmac.new(salted, b"Client Key", "sha256").digest()
+    return base64.b64decode(m[2]) == hashlib.sha256(ck).digest() and \
+        base64.b64decode(m[3]) == hmac.new(salted, b"Server Key", "sha256").digest()
+ok("radiator's SCRAM verifier matches its password", scram(s["cluster"]["radiator_scram"], s["cluster"]["radiator"]))
+ok("opsadmin's too", scram(s["admin"]["opsadmin"]["scram"], s["admin"]["opsadmin"]["password"]))
+for n in ("a", "b", "c"):
+    k = s["anycast"][n]
+    ok(f"anycast key of {n}", re.match(r"^vv[cbdefghijklnrtuv]{10}$", k["public_id"]) and re.match(r"^[0-9a-f]{12}$", k["private_id"])
+       and re.match(r"^[0-9a-f]{32}$", k["aes_key"]) and re.match(r"^[A-Za-z0-9]{20}$", k["pin"]) and pw.match(k["tacacs_password"])
+       and isinstance(k["made"], int))
+ok("device, localhost and catch-all secrets", all(pw.match(v) for d in (s["device"]["10.1.0.1"], s["localhost"], s["catch_all"]) for v in d.values()))
+ok("certificates: the SAN of each", [s["pki"][n]["san"] for n in ("a", "b", "c")] ==
+   ["DNS:a.example.com,IP:192.0.2.1", "DNS:b.example.com,IP:192.0.2.2", "DNS:c.example.com,IP:198.51.100.3"])
+EOF
+    for n in a b c; do
+        openssl verify -CAfile "$WORK/out/admin/ca.crt" "$WORK/out/$n/files/etc/etcd/tls/server.crt" | sed "s|$WORK/||"
+    done
+    openssl x509 -noout -subject -ext subjectAltName,keyUsage,extendedKeyUsage -in "$WORK/out/c/files/etc/patroni/tls/server.crt"
+    openssl x509 -noout -subject -ext basicConstraints,keyUsage -in "$WORK/out/admin/ca.crt"
+    echo "server certificate: $(( ($(date -d "$(openssl x509 -noout -enddate -in "$WORK/out/a/files/etc/etcd/tls/server.crt" | cut -d= -f2)" +%s) - $(date +%s) + 43200) / 86400 )) days"
+    echo "CA certificate: $(( ($(date -d "$(openssl x509 -noout -enddate -in "$WORK/out/admin/ca.crt" | cut -d= -f2)" +%s) - $(date +%s) + 43200) / 86400 )) days"
+    openssl pkey -in "$WORK/out/a/files/etc/etcd/tls/server.key" -noout -text | head -1
+
+    # By hand: a device's existing secret; a bad one; an admin's password (a
+    # new verifier follows); a server's new address (a new certificate).
+    sed -i '/^\[device\."10\.1\.0\.1"\]/,/^$/s/^secret = .*/secret = "Old-Device-Secret!"/' "$WORK/secrets.toml"
+    tk site.toml
+    grep -h 'Secret ' "$WORK/out/a/files/etc/radiator/clients.d/core.conf"
+    grep -c 'Old-Device-Secret!' "$WORK/out/devices.md"
+    sed -i 's/^secret = "Old-Device-Secret!"/secret = "has space"/' "$WORK/secrets.toml"
+    tk site.toml
+    sed -i 's/^secret = "has space"/secret = "Old-Device-Secret!"/' "$WORK/secrets.toml"
+    old=$(sed -n '/^\[admin\.opsadmin\]/,/^$/s/^scram = //p' "$WORK/secrets.toml")
+    sed -i '/^\[admin\.opsadmin\]/,/^$/s/^password = .*/password = "MyOwnAdminPassword2026"/' "$WORK/secrets.toml"
+    tk site.toml
+    new=$(sed -n '/^\[admin\.opsadmin\]/,/^$/s/^scram = //p' "$WORK/secrets.toml")
+    [[ $old != "$new" ]] && echo "a new SCRAM verifier"
+    grep -c MyOwnAdminPassword2026 "$WORK/out/admin/pgpass"
+    sed -i 's/^ipv4 = "198.51.100.3"/ipv4 = "198.51.100.4"/' "$WORK/site.toml"
+    tk site.toml
+    openssl x509 -noout -ext subjectAltName -in "$WORK/out/c/files/etc/etcd/tls/server.crt"
+
+    # --packages: Radiator's, and radiator-yubikey's with install.sh.
+    mkdir "$WORK/pkgs"
+    : >"$WORK/pkgs/radiator_4.30-1_all.deb"
+    : >"$WORK/pkgs/radiator-radius-utilxs_2.4-4.resolute_amd64.deb"
+    tk -p pkgs site.toml
+    : >"$WORK/pkgs/radiator-yubikey_${VERSION}_all.deb"
+    printf '#!/bin/bash\n' >"$WORK/pkgs/install.sh"
+    tk -p pkgs site.toml
+    (cd "$WORK/out/b" && find . -maxdepth 1 -type f -printf '%m %P\n' | LC_ALL=C sort -k2) | tk_version
+    # Without them again: the copies go (they were the generator's).
+    tk site.toml
+    ls "$WORK/out/b"
+}
+
+# --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
@@ -2789,12 +3051,14 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
-     anycast anycast_run pg_anycast pg_partition groups pg_groups install)
+     anycast anycast_run pg_anycast pg_partition groups pg_groups install
+     turnkey turnkey_errors turnkey_secrets)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
 needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == *anycast* ]]; }
 needs_dpkg() { [[ $1 == install ]]; }
+needs_turnkey() { [[ $1 == turnkey* ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi
@@ -2822,6 +3086,8 @@ if command -v psql >/dev/null; then
 fi
 
 if command -v openssl >/dev/null && perl -MCrypt::Rijndael -e 1 2>/dev/null; then OTP_OK=1; fi
+TURNKEY_OK=0
+if command -v openssl >/dev/null && python3 -c 'import tomllib' 2>/dev/null; then TURNKEY_OK=1; fi
 
 for name in "${SELECTED[@]}"; do
     declare -F "scenario_$name" >/dev/null || { echo "unknown scenario: $name" >&2; exit 2; }
@@ -2830,6 +3096,9 @@ for name in "${SELECTED[@]}"; do
     fi
     if needs_dpkg "$name" && ! command -v dpkg-deb >/dev/null; then
         echo "SKIP     $name (needs dpkg-deb)"; skip=$((skip + 1)); continue
+    fi
+    if needs_turnkey "$name" && [[ $TURNKEY_OK == 0 ]]; then
+        echo "SKIP     $name (needs Python 3.11 or later and openssl)"; skip=$((skip + 1)); continue
     fi
     if needs_pg "$name" && [[ $PG_OK == 0 ]]; then
         echo "SKIP     $name ($PG_SKIP_REASON)"; skip=$((skip + 1)); continue

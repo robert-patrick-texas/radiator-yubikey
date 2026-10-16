@@ -1,0 +1,116 @@
+$ yubikey-turnkey site.toml
+yubikey-turnkey: error: site.toml: Expected '=' after a key in a key/value pair (at line 1, column 5)
+[exit 2]
+
+$ yubikey-turnkey missing.toml
+yubikey-turnkey: error: cannot read missing.toml: No such file or directory
+[exit 2]
+
+$ yubikey-turnkey --check --renew-certs site.toml
+yubikey-turnkey: error: --check changes nothing: not with --renew-certs
+[exit 2]
+
+$ yubikey-turnkey site.toml
+site.toml: [site]: missing
+site.toml: [[server]]: there must be exactly three servers
+site.toml: [anycast]: missing
+site.toml: [admin]: missing
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# two servers
+$ yubikey-turnkey site.toml
+site.toml: [[server]]: there must be exactly three servers
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# the same name, address and router twice; a router with two AS numbers
+$ yubikey-turnkey site.toml
+site.toml: [[server]]: name 'a' is used twice
+site.toml: [[server]]: ipv4 '192.0.2.1' is used twice
+site.toml: server[2].router: router '192.0.2.254' has two AS numbers
+site.toml: server[2].router: router '2001:db8::fe' has two AS numbers
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# addresses that aren't, or can't be
+$ yubikey-turnkey site.toml
+site.toml: server[1].ipv4: '192.0.2.300' is not an IPv4 address
+site.toml: server[2].ipv6: '192.0.2.9' is not an IPv6 address
+site.toml: server[3].ipv4: '127.0.0.1' can't be used here
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# the anycast addresses a server's, the servers' AS a router's
+$ yubikey-turnkey site.toml
+site.toml: anycast.asn: 64500 is a router's AS too: the servers need an AS of their own
+site.toml: [anycast]: '192.0.2.1' is a server's own address
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# the first server the last resort; two last resorts
+$ yubikey-turnkey site.toml
+site.toml: server[1].last_resort: the first server is the usual primary: it can't be the last resort
+site.toml: [[server]]: only one server can be the last resort
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# no router for a; three for c
+$ yubikey-turnkey site.toml
+site.toml: server[1].router: each server needs one or two [[server.router]]
+site.toml: server[3].router: each server needs one or two [[server.router]]
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# names and settings
+$ yubikey-turnkey site.toml
+site.toml: site.colour: unknown setting
+site.toml: server[2].fqdn: 'b' is not a fully qualified DNS name
+site.toml: server[3].name: 'C_1' is not a host name (lower-case letters, digits and '-', up to 31)
+site.toml: cluster.wal_keep: '8 GB' is not a size such as 8GB
+site.toml: partition.enabled: must be true or false
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# admins
+$ yubikey-turnkey site.toml
+site.toml: admin.logins: 'postgres' can't be an admin's login (lower-case letters, digits and '_'; not postgres, radiator, replicator, rewinder or yubikey_admin)
+site.toml: admin.logins: 'ops-admin' can't be an admin's login (lower-case letters, digits and '_'; not postgres, radiator, replicator, rewinder or yubikey_admin)
+site.toml: admin.logins: 'a' is listed twice
+site.toml: admin.subnets: '10.9.0.1/24' is not a subnet (with the host bits 0) or an address
+site.toml: admin.subnets: '0.0.0.0/0' is everything
+site.toml: admin.subnets: 'x' is not a subnet (with the host bits 0) or an address
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# devices
+$ yubikey-turnkey site.toml
+site.toml: device[1].group: 'localhost' is reserved
+site.toml: device[2].address: '10.1.0.1' is listed twice (device 1)
+site.toml: device[3].address: '10.2.0.1/24' is not an address or a subnet (with the host bits 0)
+site.toml: device[3].group: 'unlisted' is the catch-all's device group
+site.toml: device[4].address: '127.0.0.1' can't be a device (the catch-all takes every device that isn't listed)
+site.toml: device[5].address: '::/0' can't be a device (the catch-all takes every device that isn't listed)
+site.toml: device[6].group: 'bad group' is not a device group name (letters, digits and . _ -)
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# no devices and no catch-all
+$ yubikey-turnkey site.toml
+site.toml: [[device]]: list the devices, or enable the catch-all client
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# groups
+$ yubikey-turnkey site.toml
+site.toml: group[1].name: 'anycast-check' is the anycast check's own group
+site.toml: group[2].access[1].level: must be a whole number from 0 to 15
+site.toml: group[2].access[2].devices: 'nowhere' is not a device group (one of: *, core, localhost, unlisted)
+site.toml: group[2].access[3].devices: 'core' is listed twice
+site.toml: group[2].access[3].rules: 'allow everything' is not a rule (permit, permitreplace or deny, then patterns; no double quotes or octal escapes)
+site.toml: group[2].access[3].rules: 'permit cmd="x"' is not a rule (permit, permitreplace or deny, then patterns; no double quotes or octal escapes)
+site.toml: group[3].name: 'ops' is listed twice
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+site.toml

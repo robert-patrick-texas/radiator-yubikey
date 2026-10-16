@@ -1,0 +1,187 @@
+# site.example.toml - The input of yubikey-turnkey: one file for the three
+# servers of a deployment on three sites, each running Radiator (RADIUS over
+# UDP and TACACS+), PostgreSQL 18 under Patroni with etcd, and FRR for one
+# anycast address pair. Copy it to site.toml and change it:
+#
+#   cp /opt/radiator-yubikey/site.example.toml site.toml
+#   /opt/radiator-yubikey/yubikey-turnkey site.toml
+#
+# yubikey-turnkey writes out/ next to site.toml: one folder per server, with
+# its setup.sh, and the hand-off sheets for the routers and the devices. It
+# makes every password, key and certificate once, in secrets.toml next to
+# site.toml (mode 0600): this file holds none. See the guide's section
+# "Turn-key setup".
+#
+# What it assumes:
+#   - Three servers with Ubuntu 26.04 LTS, one per site, each with one IPv4
+#     and one IPv6 address of its own, reachable from the other two over
+#     IPv4. The first server is the usual primary of the database; the one
+#     with last_resort = true becomes the primary only when the other two
+#     can't (it is the one far from the others).
+#   - Each server's host name (hostname -s) is its name below.
+#   - Radiator 4.30 from Radiator Software: its packages next to setup.sh
+#     (radiator_4.30-1_all.deb and radiator-radius-utilxs_*.deb), or
+#     installed already. The radiator-yubikey package and install.sh of the
+#     same version as this yubikey-turnkey, next to setup.sh too.
+#   - apt-get works on the servers (Ubuntu's archive): setup.sh installs
+#     PostgreSQL, Patroni, etcd, FRR and the rest from it.
+#   - The servers' clocks are synchronized (NTP).
+#   - Each site has one or two routers that peer with its server over BGP,
+#     with BFD, over IPv4 and IPv6: out/routers.md says what they need.
+#   - The devices (switches, routers, firewalls) send RADIUS to UDP port
+#     1812 (accounting 1813) and TACACS+ to TCP port 49 of the anycast
+#     addresses, from the address listed for them below: out/devices.md
+#     has their settings.
+#   - The firewall (when enabled below): setup.sh turns ufw off, and loads
+#     iptables rules for the whole server (iptables-persistent, with the
+#     nft backend). INPUT and FORWARD drop everything except:
+#       - from the devices (or anyone, with the catch-all client) to the
+#         anycast addresses: UDP 1812 and 1813, TCP 49;
+#       - between the three servers: TCP 2379 and 2380 (etcd), 5432
+#         (PostgreSQL) and 8008 (Patroni);
+#       - from the admin subnets: TCP 22 (SSH), 5432 and 8008;
+#       - from the server's routers: TCP 179 (BGP), UDP 3784 (BFD);
+#       - ICMP and ICMPv6 (neighbor discovery, "too big", ping), loopback,
+#         and replies to the server's own connections. Outgoing traffic is
+#         not filtered.
+#     setup.sh refuses to load them while an SSH connection comes from
+#     outside the admin subnets, so that it can't lock you out.
+
+# A title for the hand-off sheets and the runbook.
+[site]
+name = "Example network"
+# A DNS name for the anycast addresses, if you give them one, for the device
+# sheet. Optional.
+#service_name = "aaa.example.com"
+
+# The three servers, the usual primary first. name: the host name (letters,
+# digits and '-'); fqdn: the name the servers use for each other, which
+# setup.sh puts in each server's /etc/hosts with the IPv4 address only (the
+# cluster runs over IPv4); ipv4 and ipv6: the server's own addresses.
+[[server]]
+name = "east1"
+fqdn = "east1.example.com"
+ipv4 = "192.0.2.31"
+ipv6 = "2001:db8:31::31"
+
+# The server's router (or two): its addresses on the server's network, for
+# one BGP session over IPv4 and one over IPv6, and its AS number.
+[[server.router]]
+name = "east1-rtr"          # optional, for the router sheet
+ipv4 = "192.0.2.1"
+ipv6 = "2001:db8:31::1"
+asn = 64500
+
+[[server]]
+name = "east2"
+fqdn = "east2.example.com"
+ipv4 = "198.51.100.32"
+ipv6 = "2001:db8:32::32"
+
+[[server.router]]
+name = "east2-rtr"
+ipv4 = "198.51.100.1"
+ipv6 = "2001:db8:32::1"
+asn = 64500
+
+[[server]]
+name = "west"
+fqdn = "west.example.com"
+ipv4 = "203.0.113.33"
+ipv6 = "2001:db8:33::33"
+last_resort = true          # the primary only when neither East site can be
+
+[[server.router]]
+name = "west-rtr1"
+ipv4 = "203.0.113.1"
+ipv6 = "2001:db8:33::1"
+asn = 64500
+
+[[server.router]]
+name = "west-rtr2"
+ipv4 = "203.0.113.2"
+ipv6 = "2001:db8:33::2"
+asn = 64500
+
+# The anycast address pair: the same on every server, in none of your
+# networks. Each server advertises it to its routers while its Radiator
+# logs users in, over RADIUS and over TACACS+ (yubikey-anycast.sh).
+[anycast]
+ipv4 = "192.0.2.153"
+ipv6 = "2001:db8:153::153"
+asn = 65053                 # the servers' AS: private, the same on all three
+#interval = 5               # seconds between checks
+#renew_days = 365           # the check renews its key after this many days
+
+# PostgreSQL: how much WAL the primary keeps for a standby that is down
+# (max_slot_wal_keep_size). Make sure /var/lib/postgresql has room for it.
+[cluster]
+#wal_keep = "8GB"
+
+# The admins: their database logins (members of yubikey_admin, which may
+# manage the YubiKeys, accounts and groups; passwords in secrets.toml), and
+# the subnets they work from, for the firewall and PostgreSQL's pg_hba.
+[admin]
+logins = ["opsadmin"]
+subnets = ["10.9.0.0/24", "2001:db8:9::/64"]
+
+# Partition mode (yubikey-partition.sh): a server that can reach neither of
+# the others logs users in from its own copy of the keys, and copies the
+# counters back when the network returns. The risks: while a site is cut
+# off, an OTP used at another site can be used once more there, and the
+# other way round until the network is back; a user disabled elsewhere still
+# works there; and every server keeps all the AES keys in a second place.
+[partition]
+enabled = true
+
+# The firewall described at the top. With enabled = false, setup.sh leaves
+# the firewall alone, and out/<server>/files/etc/iptables has the rules
+# anyway.
+[firewall]
+enabled = true
+
+# The catch-all client: a device that isn't listed below may log in too,
+# with the catch-all's own secret and key, in this device group. Without
+# it (enabled = false), Radiator ignores devices that aren't listed, and the
+# firewall lets only the listed ones reach the anycast addresses.
+[catch_all]
+enabled = true
+group = "unlisted"
+
+# The devices: an address or a subnet each, with the device group it is in
+# (the Identifier of its <Client> clause in Radiator). Each entry gets its
+# own RADIUS secret and TACACS+ key, in secrets.toml.
+[[device]]
+address = "10.1.0.1"
+group = "core"
+name = "core1"              # optional, for the device sheet
+
+[[device]]
+address = "10.1.0.2"
+group = "core"
+name = "core2"
+
+[[device]]
+address = "10.2.0.0/22"
+group = "access"
+name = "access switches"
+
+# The groups that setup.sh creates in the database, with their access to
+# device groups (a device group above, the catch-all's, or "*" for every
+# device): a TACACS+ privilege level (0-15), RADIUS reply attributes, and
+# TACACS+ command rules (see the guide's "Groups and TACACS+"). setup.sh
+# creates each group once, the first time; after that, change groups with
+# yubikey-db.sh. Put accounts in them with 'yubikey-db.sh member add'.
+[[group]]
+name = "netadmins"
+label = "network team"
+access = [
+    { devices = "core", level = 15, reply = 'cisco-avpair="shell:priv-lvl=15"' },
+    { devices = "access", level = 15 },
+]
+
+[[group]]
+name = "helpdesk"
+access = [
+    { devices = "access", level = 1, rules = ["permit service=shell cmd=show"] },
+]

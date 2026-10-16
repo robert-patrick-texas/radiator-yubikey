@@ -34,6 +34,10 @@ These scripts:
   which accounts may log in to which devices, at which TACACS+ privilege
   level, with which commands and RADIUS reply attributes
   (`radiator-groups.example.conf`)
+- set up all of that on three sites from one input file: `yubikey-turnkey`
+  makes, from `site.toml`, a folder for each server with a `setup.sh` that
+  installs and configures everything on it, and the settings for the
+  routers and the devices
 
 The scripts come as a Debian package, `radiator-yubikey`, which puts them in
 `/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it
@@ -52,8 +56,8 @@ PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, two database servers with replication and failover,
 three sites with automatic failover, partition mode for a site that is cut
-off, one anycast address for all sites, groups and TACACS+, security,
-troubleshooting, and a reference.
+off, one anycast address for all sites, groups and TACACS+, the turn-key
+setup of all of it, security, troubleshooting, and a reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.

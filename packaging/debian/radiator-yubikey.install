@@ -2,6 +2,8 @@ yubikey-db.sh                   opt/radiator-yubikey
 yubikey-db-migrate.sh           opt/radiator-yubikey
 yubikey-partition.sh            opt/radiator-yubikey
 yubikey-anycast.sh              opt/radiator-yubikey
+yubikey-turnkey                 opt/radiator-yubikey
+yubikey-turnkey-setup.sh        opt/radiator-yubikey
 install.sh                      opt/radiator-yubikey
 yubikey-db-user.example.sh      opt/radiator-yubikey
 radiator.example.conf           opt/radiator-yubikey
@@ -10,6 +12,7 @@ dictionary.yubikey              opt/radiator-yubikey
 users.example.csv               opt/radiator-yubikey
 yubikey-partition.example.conf  opt/radiator-yubikey
 yubikey-anycast.example.conf    opt/radiator-yubikey
+site.example.toml               opt/radiator-yubikey
 yubikey-db-guide.html           opt/radiator-yubikey
 README.md                       opt/radiator-yubikey
 CHANGELOG.md                    opt/radiator-yubikey

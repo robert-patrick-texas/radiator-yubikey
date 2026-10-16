@@ -1,0 +1,1127 @@
+$ yubikey-turnkey -V
+yubikey-turnkey <VERSION>
+[exit 0]
+
+$ yubikey-turnkey 
+usage: yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml
+yubikey-turnkey: error: name the input file, such as site.toml
+[exit 2]
+
+$ yubikey-turnkey site.toml
+out/admin/: 3 written
+wrote out/devices.md
+out/east1/: 31 written
+out/east2/: 28 written
+wrote out/routers.md
+wrote out/runbook.md
+out/west/: 28 written
+[exit 0]
+
+--- the files in out
+600 .turnkey-files
+700 admin
+644 admin/ca.crt
+644 admin/pg.env
+600 admin/pgpass
+600 devices.md
+700 east1
+700 east1/db
+700 east1/files
+600 east1/files.list
+600 east1/hosts
+600 east1/secrets.env
+600 east1/server.env
+700 east1/setup.sh
+700 east2
+700 east2/files
+600 east2/files.list
+600 east2/hosts
+600 east2/secrets.env
+600 east2/server.env
+700 east2/setup.sh
+600 routers.md
+600 runbook.md
+700 west
+700 west/files
+600 west/files.list
+600 west/hosts
+600 west/secrets.env
+600 west/server.env
+700 west/setup.sh
+
+--- the files in out/east1
+700 db
+600 db/anycast.csv
+600 db/groups
+600 db/services
+700 files
+600 files.list
+700 files/etc
+700 files/etc/default
+600 files/etc/default/etcd
+700 files/etc/etcd
+700 files/etc/etcd/tls
+600 files/etc/etcd/tls/ca.crt
+600 files/etc/etcd/tls/server.crt
+600 files/etc/etcd/tls/server.key
+700 files/etc/frr
+600 files/etc/frr/frr.conf
+700 files/etc/iptables
+600 files/etc/iptables/rules.v4
+600 files/etc/iptables/rules.v6
+700 files/etc/patroni
+600 files/etc/patroni/18-main.yml
+700 files/etc/patroni/tls
+600 files/etc/patroni/tls/ca.crt
+600 files/etc/patroni/tls/server.crt
+600 files/etc/patroni/tls/server.key
+700 files/etc/radiator
+600 files/etc/radiator/anycast.conf
+700 files/etc/radiator/clients.d
+600 files/etc/radiator/clients.d/access.conf
+600 files/etc/radiator/clients.d/catch-all.conf
+600 files/etc/radiator/clients.d/core.conf
+600 files/etc/radiator/partition.conf
+600 files/etc/radiator/pg-ca.crt
+600 files/etc/radiator/radiator.conf
+700 files/etc/sysctl.d
+600 files/etc/sysctl.d/60-radiator-anycast.conf
+700 files/etc/systemd
+700 files/etc/systemd/system
+700 files/etc/systemd/system/patroni@18-main.service.d
+600 files/etc/systemd/system/patroni@18-main.service.d/restart.conf
+700 files/var
+700 files/var/lib
+700 files/var/lib/yubikey-anycast
+600 files/var/lib/yubikey-anycast/counter
+600 files/var/lib/yubikey-anycast/key
+600 files/var/lib/yubikey-anycast/tacacs
+600 hosts
+600 secrets.env
+600 server.env
+700 setup.sh
+
+secrets.toml: unchanged
+setup.sh: yubikey-turnkey-setup.sh
+the servers' CA is admin/ca.crt
+out/east1/files/etc/patroni/tls/server.crt: OK
+out/east2/files/etc/patroni/tls/server.crt: OK
+out/west/files/etc/patroni/tls/server.crt: OK
+subject=CN=west.example.com
+X509v3 Subject Alternative Name: 
+    DNS:west.example.com, IP Address:203.0.113.33
+
+$ yubikey-turnkey site.toml
+out: up to date
+[exit 0]
+
+$ yubikey-turnkey --check site.toml
+out: up to date
+[exit 0]
+
+--- out/east1/server.env (600)
+# server.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
+# lines, which setup.sh reads (never runs as shell code).
+VERSION="<VERSION>"
+SITE_NAME="Example network"
+NAME="east1"
+FQDN="east1.example.com"
+IPV4="192.0.2.31"
+IPV6="2001:db8:31::31"
+FIRST="east1"
+SERVERS="east1 east2 west"
+FQDNS="east1.example.com east2.example.com west.example.com"
+IPV4S="192.0.2.31 198.51.100.32 203.0.113.33"
+ANYCAST4="192.0.2.153"
+ANYCAST6="2001:db8:153::153"
+ADMINS="opsadmin"
+ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
+PARTITION="1"
+FIREWALL="1"
+
+--- out/east1/secrets.env (600)
+# secrets.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
+# lines, which setup.sh reads (never runs as shell code).
+RADIATOR_PASSWORD="SZtegVTbbrD5zVRr9BzjnPoUVvPfjmgB"
+RADIATOR_SCRAM="SCRAM-SHA-256$4096:Ra1vW2aXtRKWDqjPxho9jw==$Tt0HuMqueE5yYykn2CwGyeFG0VoV92Fum8mlWVd/GCI=:rwaq1hdNIthIGVrvP0E33T37cKY+PZh8KKy2gwE9K2w="
+ADMIN_SCRAM_opsadmin="SCRAM-SHA-256$4096:h5MfWw9BuaqGfcStpD8Kow==$7Dc7BIx4dSrwEPJTGlTXlIqRX8MAsYsJjTttnH3pAE0=:iSVfGDe6b9korbyJ4xMqZU1PFqDTGR5zLIcVxRjY9mQ="
+
+--- out/east1/hosts (600)
+192.0.2.31	east1.example.com east1
+198.51.100.32	east2.example.com east2
+203.0.113.33	west.example.com west
+
+--- out/east1/files.list (600)
+# files.list - Made by yubikey-turnkey <VERSION> from site.toml: the files setup.sh
+# installs from files/, as STEP KIND MODE OWNER:GROUP POLICY PATH. POLICY
+# replace: whenever they differ; keep: only when the file is missing (the
+# anycast check changes its own).
+system file 0644 root:root replace etc/sysctl.d/60-radiator-anycast.conf
+etcd dir 0750 root:etcd - etc/etcd/tls
+etcd file 0644 root:root replace etc/etcd/tls/ca.crt
+etcd file 0644 root:root replace etc/etcd/tls/server.crt
+etcd file 0640 root:etcd replace etc/etcd/tls/server.key
+etcd file 0644 root:root replace etc/default/etcd
+patroni dir 0750 root:postgres - etc/patroni/tls
+patroni file 0644 root:root replace etc/patroni/tls/ca.crt
+patroni file 0644 root:root replace etc/patroni/tls/server.crt
+patroni file 0640 root:postgres replace etc/patroni/tls/server.key
+patroni file 0640 root:postgres replace etc/patroni/18-main.yml
+patroni file 0644 root:root replace etc/systemd/system/patroni@18-main.service.d/restart.conf
+radiator file 0644 root:root replace etc/radiator/pg-ca.crt
+radiator file 0640 root:radiator replace etc/radiator/radiator.conf
+radiator dir 0750 root:radiator - etc/radiator/clients.d
+radiator file 0640 root:radiator replace etc/radiator/clients.d/core.conf
+radiator file 0640 root:radiator replace etc/radiator/clients.d/access.conf
+radiator file 0640 root:radiator replace etc/radiator/clients.d/catch-all.conf
+partition file 0644 root:root replace etc/radiator/partition.conf
+anycast file 0600 root:root replace etc/radiator/anycast.conf
+anycast dir 0700 root:root - var/lib/yubikey-anycast
+anycast file 0600 root:root keep var/lib/yubikey-anycast/key
+anycast file 0600 root:root keep var/lib/yubikey-anycast/counter
+anycast file 0600 root:root keep var/lib/yubikey-anycast/tacacs
+anycast file 0640 frr:frr replace etc/frr/frr.conf
+firewall file 0644 root:root replace etc/iptables/rules.v4
+firewall file 0644 root:root replace etc/iptables/rules.v6
+
+--- out/east1/db/anycast.csv (600)
+username,public_id,private_id,aes_key,password,active
+anycast-east1,vvffeikrrhil,673180aacdf2,8823f00a2a65a0994fbb50b08fbda58d,u9pcyu7DF4A1ERvMEgju,1
+anycast-east2,vvilgklvcrdu,6413e3e19997,8694686817a46cf2314b2dfcba25fb6a,HaxrVzyzBf5O7lX4Zlsc,1
+anycast-west,vvlvutrhdcln,10943b9a59f9,61c4a2c66c9c4377abc8fa0869c5ef5d,pwaRZmyN8eWnA3zwhn57,1
+
+--- out/east1/db/services (600)
+svc.anycast-east1	kVwjcwyJnoMJ5fZ8InSI9wwHwaFlEzKS
+svc.anycast-east2	N7cLt3ZyHL4M5kq6LdopSRbmtTW4R1m0
+svc.anycast-west	7asp2aedi5E26lZjGXChsh3tOxapucGK
+
+--- out/east1/db/groups (600)
+# Made by yubikey-turnkey <VERSION> from site.toml: the groups setup.sh creates
+# (each once), as tab-separated lines: group NAME LABEL, access NAME
+# DEVICE_GROUP LEVEL REPLY, rule NAME DEVICE_GROUP RULE.
+group	netadmins	network team
+access	netadmins	core	15	cisco-avpair="shell:priv-lvl=15"
+access	netadmins	access	15	
+group	helpdesk	
+access	helpdesk	access	1	
+rule	helpdesk	access	permit service=shell cmd=show
+
+--- out/west/server.env (600)
+# server.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
+# lines, which setup.sh reads (never runs as shell code).
+VERSION="<VERSION>"
+SITE_NAME="Example network"
+NAME="west"
+FQDN="west.example.com"
+IPV4="203.0.113.33"
+IPV6="2001:db8:33::33"
+FIRST="east1"
+SERVERS="east1 east2 west"
+FQDNS="east1.example.com east2.example.com west.example.com"
+IPV4S="192.0.2.31 198.51.100.32 203.0.113.33"
+ANYCAST4="192.0.2.153"
+ANYCAST6="2001:db8:153::153"
+ADMINS="opsadmin"
+ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
+PARTITION="1"
+FIREWALL="1"
+
+--- out/west/secrets.env (600)
+# secrets.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
+# lines, which setup.sh reads (never runs as shell code).
+RADIATOR_PASSWORD="SZtegVTbbrD5zVRr9BzjnPoUVvPfjmgB"
+
+
+--- out/east1/files/etc/default/etcd (600)
+# etcd - Made by yubikey-turnkey <VERSION> from site.toml.
+# This server's member of the cluster's etcd. The ETCD_INITIAL_* settings
+# count only when the cluster is first made.
+ETCD_NAME=east1
+ETCD_DATA_DIR=/var/lib/etcd/default
+ETCD_LISTEN_PEER_URLS=https://192.0.2.31:2380
+ETCD_LISTEN_CLIENT_URLS=https://192.0.2.31:2379
+ETCD_INITIAL_ADVERTISE_PEER_URLS=https://192.0.2.31:2380
+ETCD_ADVERTISE_CLIENT_URLS=https://192.0.2.31:2379
+ETCD_INITIAL_CLUSTER=east1=https://192.0.2.31:2380,east2=https://198.51.100.32:2380,west=https://203.0.113.33:2380
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_INITIAL_CLUSTER_TOKEN=yubikey-db
+ETCD_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_CLIENT_CERT_AUTH=true
+ETCD_PEER_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_PEER_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_PEER_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_PEER_CLIENT_CERT_AUTH=true
+
+--- out/east1/files/etc/patroni/18-main.yml (600)
+# 18-main.yml - Made by yubikey-turnkey <VERSION> from site.toml.
+# The Debian helper scripts below take the version and cluster from the scope.
+scope: 18-main
+namespace: /postgresql-common/
+name: east1
+
+restapi:
+  listen: 192.0.2.31:8008
+  connect_address: east1.example.com:8008
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+  cafile: /etc/patroni/tls/ca.crt
+  authentication:
+    username: patroni
+    password: 'LlukyXZKzDJQSDRA0Rv0ChJfxgSRVBw6'
+
+ctl:
+  cacert: /etc/patroni/tls/ca.crt
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+
+etcd3:
+  hosts: 192.0.2.31:2379,198.51.100.32:2379,203.0.113.33:2379
+  protocol: https
+  cacert: /etc/patroni/tls/ca.crt
+  cert: /etc/patroni/tls/server.crt
+  key: /etc/patroni/tls/server.key
+
+bootstrap:
+  method: pg_createcluster
+  pg_createcluster:
+    command: /usr/share/patroni/pg_createcluster_patroni
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    synchronous_mode: quorum
+    synchronous_node_count: 1
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        ssl: 'on'
+        ssl_cert_file: /etc/patroni/tls/server.crt
+        ssl_key_file: /etc/patroni/tls/server.key
+        max_slot_wal_keep_size: 8GB
+
+postgresql:
+  create_replica_method:
+    - pg_clonecluster
+  pg_clonecluster:
+    command: /usr/share/patroni/pg_clonecluster_patroni
+  listen: '*:5432'
+  connect_address: east1.example.com:5432
+  # Patroni's own connections to this server use its socket: TLS with
+  # verify-full fails for "localhost".
+  use_unix_socket: true
+  use_unix_socket_repl: true
+  data_dir: /var/lib/postgresql/18/main
+  bin_dir: /usr/lib/postgresql/18/bin
+  config_dir: /etc/postgresql/18/main
+  pgpass: /var/lib/postgresql/18-main.pgpass
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator
+      password: 'RqR5nOeiflu8tsV04HG386wSRB7hMZe0'
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+    rewind:
+      username: rewinder
+      password: '69w02QHE5uJIJ1JMmeB5TJ6kaMU5lSrx'
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    logging_collector: 'on'
+    log_directory: /var/log/postgresql
+    log_filename: postgresql-18-main.log
+  pg_hba:
+    - local   all         all                     peer
+    - local   replication replicator              scram-sha-256
+    - hostssl replication replicator 192.0.2.31/32 scram-sha-256
+    - hostssl postgres    rewinder   192.0.2.31/32 scram-sha-256
+    - hostssl yubikey     radiator   192.0.2.31/32 scram-sha-256
+    - hostssl yubikey     opsadmin 192.0.2.31/32 scram-sha-256
+    - hostssl replication replicator 198.51.100.32/32 scram-sha-256
+    - hostssl postgres    rewinder   198.51.100.32/32 scram-sha-256
+    - hostssl yubikey     radiator   198.51.100.32/32 scram-sha-256
+    - hostssl yubikey     opsadmin 198.51.100.32/32 scram-sha-256
+    - hostssl replication replicator 203.0.113.33/32 scram-sha-256
+    - hostssl postgres    rewinder   203.0.113.33/32 scram-sha-256
+    - hostssl yubikey     radiator   203.0.113.33/32 scram-sha-256
+    - hostssl yubikey     opsadmin 203.0.113.33/32 scram-sha-256
+    - hostssl yubikey     opsadmin 10.9.0.0/24 scram-sha-256
+    - hostssl yubikey     opsadmin 2001:db8:9::/64 scram-sha-256
+
+watchdog:
+  mode: off
+
+tags:
+  failover_priority: 2
+
+--- out/west/files/etc/frr/frr.conf (600)
+! frr.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+frr defaults traditional
+hostname west
+log syslog informational
+!
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+route-map RADIUS-ANYCAST permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map RADIUS-ANYCAST permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 65053
+ bgp router-id 203.0.113.33
+ no bgp default ipv4-unicast
+ neighbor 203.0.113.1 remote-as 64500
+ neighbor 203.0.113.1 description west-rtr1
+ neighbor 203.0.113.1 bfd
+ neighbor 2001:db8:33::1 remote-as 64500
+ neighbor 2001:db8:33::1 description west-rtr1
+ neighbor 2001:db8:33::1 bfd
+ neighbor 203.0.113.2 remote-as 64500
+ neighbor 203.0.113.2 description west-rtr2
+ neighbor 203.0.113.2 bfd
+ neighbor 2001:db8:33::2 remote-as 64500
+ neighbor 2001:db8:33::2 description west-rtr2
+ neighbor 2001:db8:33::2 bfd
+ !
+ address-family ipv4 unicast
+  network 192.0.2.153/32
+  neighbor 203.0.113.1 activate
+  neighbor 203.0.113.1 route-map NOTHING in
+  neighbor 203.0.113.1 route-map RADIUS-ANYCAST out
+  neighbor 203.0.113.2 activate
+  neighbor 203.0.113.2 route-map NOTHING in
+  neighbor 203.0.113.2 route-map RADIUS-ANYCAST out
+ exit-address-family
+ !
+ address-family ipv6 unicast
+  network 2001:db8:153::153/128
+  neighbor 2001:db8:33::1 activate
+  neighbor 2001:db8:33::1 route-map NOTHING in
+  neighbor 2001:db8:33::1 route-map RADIUS-ANYCAST out
+  neighbor 2001:db8:33::2 activate
+  neighbor 2001:db8:33::2 route-map NOTHING in
+  neighbor 2001:db8:33::2 route-map RADIUS-ANYCAST out
+ exit-address-family
+exit
+
+--- out/west/files/etc/iptables/rules.v4 (600)
+# rules.v4 - Made by yubikey-turnkey <VERSION> from site.toml.
+# The firewall of west (IPv4), loaded by netfilter-persistent at boot.
+# setup.sh installs it again whenever it differs: change site.toml instead.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+# This server's own connections, and their replies
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p icmp -j ACCEPT
+-A INPUT -p udp --sport 67 --dport 68 -j ACCEPT
+# The devices: RADIUS and TACACS+ to the anycast addresses
+-A INPUT -d 192.0.2.153/32 -p udp -m multiport --dports 1812,1813 -j ACCEPT
+-A INPUT -d 192.0.2.153/32 -p tcp --dport 49 -j ACCEPT
+# The three servers: etcd, PostgreSQL, Patroni
+-A INPUT -s 192.0.2.31/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+-A INPUT -s 198.51.100.32/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+-A INPUT -s 203.0.113.33/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+# The admins: SSH, PostgreSQL, Patroni's REST API
+-A INPUT -s 10.9.0.0/24 -p tcp -m multiport --dports 22,5432,8008 -j ACCEPT
+# This server's routers: BGP, BFD
+-A INPUT -s 203.0.113.1/32 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 203.0.113.1/32 -p udp --dport 3784 -j ACCEPT
+-A INPUT -s 203.0.113.2/32 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 203.0.113.2/32 -p udp --dport 3784 -j ACCEPT
+COMMIT
+
+--- out/west/files/etc/iptables/rules.v6 (600)
+# rules.v6 - Made by yubikey-turnkey <VERSION> from site.toml.
+# The firewall of west (IPv6), loaded by netfilter-persistent at boot.
+# setup.sh installs it again whenever it differs: change site.toml instead.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+# This server's own connections, and their replies
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p ipv6-icmp -j ACCEPT
+-A INPUT -s fe80::/10 -p udp --sport 547 --dport 546 -j ACCEPT
+# The devices: RADIUS and TACACS+ to the anycast addresses
+-A INPUT -d 2001:db8:153::153/128 -p udp -m multiport --dports 1812,1813 -j ACCEPT
+-A INPUT -d 2001:db8:153::153/128 -p tcp --dport 49 -j ACCEPT
+# The admins: SSH, PostgreSQL, Patroni's REST API
+-A INPUT -s 2001:db8:9::/64 -p tcp -m multiport --dports 22,5432,8008 -j ACCEPT
+# This server's routers: BGP, BFD
+-A INPUT -s 2001:db8:33::1/128 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 2001:db8:33::1/128 -p udp --dport 3784 -j ACCEPT
+-A INPUT -s 2001:db8:33::2/128 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 2001:db8:33::2/128 -p udp --dport 3784 -j ACCEPT
+COMMIT
+
+--- out/west/files/etc/radiator/clients.d/core.conf (600)
+# core.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# The devices in device group core.
+
+# core1
+<Client 10.1.0.1>
+    Identifier     core
+    Secret         DX2ZEinYf27szXsp9rXZqJvqBX6DfiXd
+    TACACSPLUSKey  4n2N03CSEgtnSZ3rO04wb0jBSXcojgEF
+</Client>
+
+# core2
+<Client 10.1.0.2>
+    Identifier     core
+    Secret         lspm6lixq79uZZX8GpoO0nFv6bFzaToA
+    TACACSPLUSKey  iEwZR9arCVMoDcOzWg3bioEoz3eSnjWf
+</Client>
+
+--- out/west/files/etc/radiator/clients.d/access.conf (600)
+# access.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# The devices in device group access.
+
+# access switches
+<Client 10.2.0.0/22>
+    Identifier     access
+    Secret         xlP5XcWuhOgS6pV3IhAuYVM2w5yvqNkH
+    TACACSPLUSKey  VCmTfUYhiQZShUcJsFuHpv6PP0aNmy7o
+</Client>
+
+--- out/west/files/etc/radiator/clients.d/catch-all.conf (600)
+# catch-all.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Every device that isn't listed, in device group unlisted.
+<Client DEFAULT>
+    Identifier     unlisted
+    Secret         gVMxnDbbj39unVopEJ7ezw7juBOQpibz
+    TACACSPLUSKey  MpfBymIrofyhs6zrdgpXp3rbmj1bsG8f
+</Client>
+
+--- out/west/files/etc/radiator/anycast.conf (600)
+# anycast.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Settings for yubikey-anycast.sh (see yubikey-anycast.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The anycast addresses.
+ADDRESSES="192.0.2.153 2001:db8:153::153"
+
+# The secret and the TACACS+ key of Radiator's <Client 127.0.0.1>.
+SECRET="NVufCyxCs631zAXwhPrYkBOYpFYe4hfA"
+TACACS_KEY="VNmTH66pw3jOsl7Zri6HXjpziQjgpJYn"
+
+--- out/west/files/etc/radiator/partition.conf (600)
+# partition.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Settings for yubikey-partition.sh (see yubikey-partition.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The other two sites' servers. While none of them answers, this server is
+# cut off, and Radiator uses its copy of the keys.
+PEERS="east1.example.com east2.example.com"
+
+--- out/west/files/var/lib/yubikey-anycast/key (600)
+user=anycast-west
+pin=pwaRZmyN8eWnA3zwhn57
+public_id=vvlvutrhdcln
+private_id=10943b9a59f9
+aes_key=61c4a2c66c9c4377abc8fa0869c5ef5d
+made=1792157329
+
+--- out/west/files/var/lib/yubikey-anycast/tacacs (600)
+user=svc.anycast-west
+password=7asp2aedi5E26lZjGXChsh3tOxapucGK
+
+--- out/west/files/var/lib/yubikey-anycast/counter (600)
+0
+
+--- out/west/files/etc/sysctl.d/60-radiator-anycast.conf (600)
+# 60-radiator-anycast.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Radiator listens on the anycast addresses while they aren't on lo.
+net.ipv4.ip_nonlocal_bind = 1
+net.ipv6.ip_nonlocal_bind = 1
+
+--- out/west/files/etc/systemd/system/patroni@18-main.service.d/restart.conf (600)
+# restart.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Debian's unit leaves Patroni stopped if it crashes, with PostgreSQL
+# running unattended: restart it instead.
+[Service]
+Restart=on-failure
+
+--- radiator.conf against radiator-groups.example.conf
+0a1,5
+> # radiator.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+> # Radiator on west: radiator-groups.example.conf, with this server's
+> # addresses and the secret and key of <Client 127.0.0.1>. setup.sh installs it
+> # again whenever it differs: change site.toml instead.
+> #
+33c38
+< #BindAddress     127.0.0.1, 203.0.113.33, ipv6:2001:db8:33::33, 192.0.2.153, ipv6:2001:db8:153::153
+---
+> BindAddress     127.0.0.1, 203.0.113.33, ipv6:2001:db8:33::33, 192.0.2.153, ipv6:2001:db8:153::153
+65,66c70
+< # This server itself, for tests with radpwtst and the anycast check. Change
+< # the secret and the key.
+---
+> # This server itself, for tests with radpwtst and the anycast check.
+69,70c73,74
+<     Secret         local-test-secret
+<     TACACSPLUSKey  local-test-key
+---
+>     Secret         NVufCyxCs631zAXwhPrYkBOYpFYe4hfA
+>     TACACSPLUSKey  VNmTH66pw3jOsl7Zri6HXjpziQjgpJYn
+
+--- out/admin/pg.env (644)
+# pg.env - Made by yubikey-turnkey <VERSION> from site.toml.
+# PostgreSQL settings for yubikey-db.sh on an admin's machine, as in the
+# guide's three-site section: copy ca.crt to ~/.yubikey-ca.crt, the line of
+# your login from pgpass to ~/.pgpass (mode 0600), and then: . ./pg.env
+export PGHOST=east1.example.com,east2.example.com,west.example.com
+export PGUSER=opsadmin
+export PGSSLMODE=verify-full
+export PGSSLROOTCERT=$HOME/.yubikey-ca.crt
+export DB_BACKEND=pg
+
+--- out/admin/pgpass (600)
+*:5432:yubikey:opsadmin:cjLtmsM3FsUBiIN7lRwKAHKXTvq1Rncx
+
+--- out/runbook.md (600)
+# Example network: runbook
+
+Made by yubikey-turnkey <VERSION> from `site.toml`. Three servers: east1, east2, west.
+east1 is the usual primary of the database; west becomes the primary only when the other two can't.
+
+## 1. Before you start
+
+- Each server: Ubuntu 26.04 LTS, its host name (`hostname -s`) as in
+  `site.toml`, its own IPv4 and IPv6 addresses on an interface, the clock
+  synchronized, and `apt-get` working.
+- In each server's folder, next to `setup.sh`: Radiator's packages from
+  Radiator Software (`radiator_4.30-1_all.deb` and
+  `radiator-radius-utilxs_*.deb`), and `radiator-yubikey_<VERSION>_all.deb`
+  with its `install.sh`; or run yubikey-turnkey again with `--packages DIR`.
+- Between the servers, and from the admin subnets, SSH and the ports in
+  `site.toml`'s comments must not be blocked by firewalls on the way.
+
+## 2. Copy each folder to its server
+
+Each folder holds secrets: copy it as root, readable by root only, for
+example:
+
+```bash
+scp -r east1/ root@east1.example.com:/root/turnkey
+scp -r east2/ root@east2.example.com:/root/turnkey
+scp -r west/ root@west.example.com:/root/turnkey
+```
+
+## 3. Check each server
+
+On each server, change nothing, and fix what it reports:
+
+```bash
+sudo /root/turnkey/setup.sh --check
+```
+
+## 4. Set up all three
+
+Run setup.sh on all three, at about the same time (within 30 minutes of
+each other): etcd starts only when two servers run it, the other servers
+wait for east1's database, and each tells you what it waits for.
+
+```bash
+sudo /root/turnkey/setup.sh
+```
+
+east1 creates the database, with the anycast check's keys and
+service accounts and the groups in `site.toml`. Each server ends with a
+report: the cluster, the anycast check, and the BGP sessions, which come up
+once the routers are configured (step 5). If setup.sh stops, fix the cause
+and run it again: it goes on where it stopped. Run it again whenever
+yubikey-turnkey changed the folder: it changes only what differs.
+
+## 5. The routers
+
+As in `routers.md`. Each server advertises the anycast addresses once its
+BGP sessions are up and its check passes.
+
+## 6. The admins' machines
+
+The admins manage the YubiKeys, accounts and groups with `yubikey-db.sh`
+(from the radiator-yubikey release, with `psql` from postgresql-client).
+From `admin/`: `ca.crt` as `~/.yubikey-ca.crt`, your line of `pgpass` in
+`~/.pgpass` (mode 0600), and `. ./pg.env`. The servers' names must resolve
+there, to their IPv4 addresses. Then add the YubiKeys and put the accounts
+in groups, as in the guide:
+
+```bash
+cd /opt/radiator-yubikey        # or the release's folder
+./yubikey-db.sh import users.csv
+./yubikey-db.sh member add netadmins alice
+```
+
+## 7. The devices
+
+As in `devices.md`: the anycast addresses as their RADIUS and TACACS+
+servers, with their secret and key.
+
+## 8. Check
+
+On each server:
+
+```bash
+sudo patronictl -c /etc/patroni/18-main.yml list
+sudo /opt/radiator-yubikey/yubikey-anycast.sh status
+sudo /opt/radiator-yubikey/yubikey-partition.sh status
+sudo vtysh -c 'show bgp summary'
+```
+
+## Keep
+
+`secrets.toml` and this folder hold every password and key: keep them, and
+nothing else, where only you can read them. Each server keeps a copy of
+its own in `/etc/yubikey-turnkey`.
+
+--- out/routers.md (600)
+# Example network: routers
+
+Made by yubikey-turnkey <VERSION> from `site.toml`.
+
+Each site's router (or both, where a site has two) has a BGP session with
+its server over IPv4 and one over IPv6, with BFD. The server advertises
+the anycast addresses while its Radiator logs users in, and withdraws
+them when it can't:
+
+- IPv4: `192.0.2.153/32`
+- IPv6: `2001:db8:153::153/128`
+
+Each router:
+
+- accepts only these two routes from its server, at most one per session,
+  and sends it nothing (the server ignores anything it sends);
+- runs BFD on both sessions, so that it drops a server that stops
+  within a second;
+- passes the routes on to the other sites' routers, like your other
+  routes, so that devices reach another site when theirs withdraws. A
+  route from a router's own server (eBGP) already wins over the same
+  route learned from another router (iBGP); don't give another site's
+  route a higher local preference;
+- doesn't send the anycast addresses elsewhere (a default route) while
+  no server advertises them: a static route with a high distance can
+  reject them.
+
+The servers' AS: 65053. The firewall on each server lets its
+routers in on TCP 179 (BGP) and UDP 3784 (BFD).
+
+## east1-rtr (east1's site)
+
+| Session | Router | Server | Server AS | Accept |
+|---|---|---|---|---|
+| IPv4 | 192.0.2.1 (AS 64500) | 192.0.2.31 | 65053 | 192.0.2.153/32 |
+| IPv6 | 2001:db8:31::1 (AS 64500) | 2001:db8:31::31 | 65053 | 2001:db8:153::153/128 |
+
+As FRR configuration, for example:
+
+```text
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+ip route 192.0.2.153/32 reject 250
+ipv6 route 2001:db8:153::153/128 reject 250
+!
+route-map FROM-YUBIKEY permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map FROM-YUBIKEY permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 64500
+ neighbor 192.0.2.31 remote-as 65053
+ neighbor 192.0.2.31 bfd
+ neighbor 2001:db8:31::31 remote-as 65053
+ neighbor 2001:db8:31::31 bfd
+ address-family ipv4 unicast
+  neighbor 192.0.2.31 activate
+  neighbor 192.0.2.31 route-map FROM-YUBIKEY in
+  neighbor 192.0.2.31 route-map NOTHING out
+  neighbor 192.0.2.31 maximum-prefix 1
+ exit-address-family
+ address-family ipv6 unicast
+  neighbor 2001:db8:31::31 activate
+  neighbor 2001:db8:31::31 route-map FROM-YUBIKEY in
+  neighbor 2001:db8:31::31 route-map NOTHING out
+  neighbor 2001:db8:31::31 maximum-prefix 1
+ exit-address-family
+exit
+```
+
+## east2-rtr (east2's site)
+
+| Session | Router | Server | Server AS | Accept |
+|---|---|---|---|---|
+| IPv4 | 198.51.100.1 (AS 64500) | 198.51.100.32 | 65053 | 192.0.2.153/32 |
+| IPv6 | 2001:db8:32::1 (AS 64500) | 2001:db8:32::32 | 65053 | 2001:db8:153::153/128 |
+
+As FRR configuration, for example:
+
+```text
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+ip route 192.0.2.153/32 reject 250
+ipv6 route 2001:db8:153::153/128 reject 250
+!
+route-map FROM-YUBIKEY permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map FROM-YUBIKEY permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 64500
+ neighbor 198.51.100.32 remote-as 65053
+ neighbor 198.51.100.32 bfd
+ neighbor 2001:db8:32::32 remote-as 65053
+ neighbor 2001:db8:32::32 bfd
+ address-family ipv4 unicast
+  neighbor 198.51.100.32 activate
+  neighbor 198.51.100.32 route-map FROM-YUBIKEY in
+  neighbor 198.51.100.32 route-map NOTHING out
+  neighbor 198.51.100.32 maximum-prefix 1
+ exit-address-family
+ address-family ipv6 unicast
+  neighbor 2001:db8:32::32 activate
+  neighbor 2001:db8:32::32 route-map FROM-YUBIKEY in
+  neighbor 2001:db8:32::32 route-map NOTHING out
+  neighbor 2001:db8:32::32 maximum-prefix 1
+ exit-address-family
+exit
+```
+
+## west-rtr1 (west's site)
+
+| Session | Router | Server | Server AS | Accept |
+|---|---|---|---|---|
+| IPv4 | 203.0.113.1 (AS 64500) | 203.0.113.33 | 65053 | 192.0.2.153/32 |
+| IPv6 | 2001:db8:33::1 (AS 64500) | 2001:db8:33::33 | 65053 | 2001:db8:153::153/128 |
+
+As FRR configuration, for example:
+
+```text
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+ip route 192.0.2.153/32 reject 250
+ipv6 route 2001:db8:153::153/128 reject 250
+!
+route-map FROM-YUBIKEY permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map FROM-YUBIKEY permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 64500
+ neighbor 203.0.113.33 remote-as 65053
+ neighbor 203.0.113.33 bfd
+ neighbor 2001:db8:33::33 remote-as 65053
+ neighbor 2001:db8:33::33 bfd
+ address-family ipv4 unicast
+  neighbor 203.0.113.33 activate
+  neighbor 203.0.113.33 route-map FROM-YUBIKEY in
+  neighbor 203.0.113.33 route-map NOTHING out
+  neighbor 203.0.113.33 maximum-prefix 1
+ exit-address-family
+ address-family ipv6 unicast
+  neighbor 2001:db8:33::33 activate
+  neighbor 2001:db8:33::33 route-map FROM-YUBIKEY in
+  neighbor 2001:db8:33::33 route-map NOTHING out
+  neighbor 2001:db8:33::33 maximum-prefix 1
+ exit-address-family
+exit
+```
+
+## west-rtr2 (west's site)
+
+| Session | Router | Server | Server AS | Accept |
+|---|---|---|---|---|
+| IPv4 | 203.0.113.2 (AS 64500) | 203.0.113.33 | 65053 | 192.0.2.153/32 |
+| IPv6 | 2001:db8:33::2 (AS 64500) | 2001:db8:33::33 | 65053 | 2001:db8:153::153/128 |
+
+As FRR configuration, for example:
+
+```text
+ip prefix-list RADIUS-ANYCAST seq 10 permit 192.0.2.153/32
+ipv6 prefix-list RADIUS-ANYCAST seq 10 permit 2001:db8:153::153/128
+!
+ip route 192.0.2.153/32 reject 250
+ipv6 route 2001:db8:153::153/128 reject 250
+!
+route-map FROM-YUBIKEY permit 10
+ match ip address prefix-list RADIUS-ANYCAST
+exit
+route-map FROM-YUBIKEY permit 20
+ match ipv6 address prefix-list RADIUS-ANYCAST
+exit
+route-map NOTHING deny 10
+exit
+!
+router bgp 64500
+ neighbor 203.0.113.33 remote-as 65053
+ neighbor 203.0.113.33 bfd
+ neighbor 2001:db8:33::33 remote-as 65053
+ neighbor 2001:db8:33::33 bfd
+ address-family ipv4 unicast
+  neighbor 203.0.113.33 activate
+  neighbor 203.0.113.33 route-map FROM-YUBIKEY in
+  neighbor 203.0.113.33 route-map NOTHING out
+  neighbor 203.0.113.33 maximum-prefix 1
+ exit-address-family
+ address-family ipv6 unicast
+  neighbor 2001:db8:33::33 activate
+  neighbor 2001:db8:33::33 route-map FROM-YUBIKEY in
+  neighbor 2001:db8:33::33 route-map NOTHING out
+  neighbor 2001:db8:33::33 maximum-prefix 1
+ exit-address-family
+exit
+```
+
+--- out/devices.md (600)
+# Example network: devices
+
+Made by yubikey-turnkey <VERSION> from `site.toml`. It holds every device's
+secret and key: keep it where only you can read it.
+
+Every device uses the anycast addresses, `192.0.2.153` and `2001:db8:153::153`,
+as its only RADIUS server and its only TACACS+ server. They reach the
+nearest site that logs users in.
+
+- RADIUS: authentication on UDP port 1812, accounting on 1813. While the
+  database's primary moves (a planned switchover), Radiator holds logins
+  for up to about 6 s: keep the device's timeout and retries above that.
+- TACACS+: TCP port 49, single connection or not.
+- The device must send from the address listed for it here: Radiator
+  knows a device, its secret and key, and its device group, by that
+  address, and takes any other address as the catch-all.
+- `enable` is a second login with a new OTP. A group's privilege level
+  applies at login, so users don't need it.
+
+## Device group core
+
+| Device | Address | RADIUS secret | TACACS+ key |
+|---|---|---|---|
+| core1 | 10.1.0.1 | `DX2ZEinYf27szXsp9rXZqJvqBX6DfiXd` | `4n2N03CSEgtnSZ3rO04wb0jBSXcojgEF` |
+| core2 | 10.1.0.2 | `lspm6lixq79uZZX8GpoO0nFv6bFzaToA` | `iEwZR9arCVMoDcOzWg3bioEoz3eSnjWf` |
+
+## Device group access
+
+| Device | Address | RADIUS secret | TACACS+ key |
+|---|---|---|---|
+| access switches | 10.2.0.0/22 | `xlP5XcWuhOgS6pV3IhAuYVM2w5yvqNkH` | `VCmTfUYhiQZShUcJsFuHpv6PP0aNmy7o` |
+
+## The catch-all (device group unlisted)
+
+Any device that isn't listed above:
+
+| RADIUS secret | TACACS+ key |
+|---|---|
+| `gVMxnDbbj39unVopEJ7ezw7juBOQpibz` | `MpfBymIrofyhs6zrdgpXp3rbmj1bsG8f` |
+
+$ yubikey-turnkey --check site.toml
+secrets.toml: would get new secrets: device secrets
+[exit 1]
+
+secrets.toml: unchanged
+$ yubikey-turnkey site.toml
+secrets.toml: new device secrets
+wrote out/devices.md
+out/east1/: 6 written, 2 removed
+out/east2/: 6 written, 2 removed
+out/west/: 6 written, 2 removed
+yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
+[exit 0]
+
+4
+$ yubikey-turnkey site.toml
+out: up to date
+[exit 0]
+
+--- out/west/files/etc/radiator/clients.d/core.conf (600)
+# core.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# The devices in device group core.
+
+# core1
+<Client 10.1.0.1>
+    Identifier     core
+    Secret         DX2ZEinYf27szXsp9rXZqJvqBX6DfiXd
+    TACACSPLUSKey  4n2N03CSEgtnSZ3rO04wb0jBSXcojgEF
+</Client>
+
+--- out/west/files/etc/radiator/clients.d/v6only.conf (600)
+# v6only.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# The devices in device group v6only.
+
+<Client 2001:db8:a::/48>
+    Identifier     v6only
+    Secret         <NEW>
+    TACACSPLUSKey  <NEW>
+</Client>
+
+--- out/west/files/etc/iptables/rules.v4 (600)
+# rules.v4 - Made by yubikey-turnkey <VERSION> from site.toml.
+# The firewall of west (IPv4), loaded by netfilter-persistent at boot.
+# setup.sh installs it again whenever it differs: change site.toml instead.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+# This server's own connections, and their replies
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p icmp -j ACCEPT
+-A INPUT -p udp --sport 67 --dport 68 -j ACCEPT
+# The devices: RADIUS and TACACS+ to the anycast addresses
+-A INPUT -s 10.1.0.1/32 -d 192.0.2.153/32 -p udp -m multiport --dports 1812,1813 -j ACCEPT
+-A INPUT -s 10.1.0.1/32 -d 192.0.2.153/32 -p tcp --dport 49 -j ACCEPT
+-A INPUT -s 10.2.0.0/22 -d 192.0.2.153/32 -p udp -m multiport --dports 1812,1813 -j ACCEPT
+-A INPUT -s 10.2.0.0/22 -d 192.0.2.153/32 -p tcp --dport 49 -j ACCEPT
+# The three servers: etcd, PostgreSQL, Patroni
+-A INPUT -s 192.0.2.31/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+-A INPUT -s 198.51.100.32/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+-A INPUT -s 203.0.113.33/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT
+# The admins: SSH, PostgreSQL, Patroni's REST API
+-A INPUT -s 10.9.0.0/24 -p tcp -m multiport --dports 22,5432,8008 -j ACCEPT
+# This server's routers: BGP, BFD
+-A INPUT -s 203.0.113.1/32 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 203.0.113.1/32 -p udp --dport 3784 -j ACCEPT
+-A INPUT -s 203.0.113.2/32 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 203.0.113.2/32 -p udp --dport 3784 -j ACCEPT
+COMMIT
+
+--- out/west/files/etc/iptables/rules.v6 (600)
+# rules.v6 - Made by yubikey-turnkey <VERSION> from site.toml.
+# The firewall of west (IPv6), loaded by netfilter-persistent at boot.
+# setup.sh installs it again whenever it differs: change site.toml instead.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+# This server's own connections, and their replies
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p ipv6-icmp -j ACCEPT
+-A INPUT -s fe80::/10 -p udp --sport 547 --dport 546 -j ACCEPT
+# The devices: RADIUS and TACACS+ to the anycast addresses
+-A INPUT -s 2001:db8:a::/48 -d 2001:db8:153::153/128 -p udp -m multiport --dports 1812,1813 -j ACCEPT
+-A INPUT -s 2001:db8:a::/48 -d 2001:db8:153::153/128 -p tcp --dport 49 -j ACCEPT
+# The admins: SSH, PostgreSQL, Patroni's REST API
+-A INPUT -s 2001:db8:9::/64 -p tcp -m multiport --dports 22,5432,8008 -j ACCEPT
+# This server's routers: BGP, BFD
+-A INPUT -s 2001:db8:33::1/128 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 2001:db8:33::1/128 -p udp --dport 3784 -j ACCEPT
+-A INPUT -s 2001:db8:33::2/128 -p tcp --dport 179 -j ACCEPT
+-A INPUT -s 2001:db8:33::2/128 -p udp --dport 3784 -j ACCEPT
+COMMIT
+
+--- out/west/server.env (600)
+# server.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
+# lines, which setup.sh reads (never runs as shell code).
+VERSION="<VERSION>"
+SITE_NAME="Example network"
+NAME="west"
+FQDN="west.example.com"
+IPV4="203.0.113.33"
+IPV6="2001:db8:33::33"
+FIRST="east1"
+SERVERS="east1 east2 west"
+FQDNS="east1.example.com east2.example.com west.example.com"
+IPV4S="192.0.2.31 198.51.100.32 203.0.113.33"
+ANYCAST4="192.0.2.153"
+ANYCAST6="2001:db8:153::153"
+ADMINS="opsadmin"
+ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
+PARTITION="0"
+FIREWALL="0"
+
+--- the files in out/west
+700 files
+600 files.list
+700 files/etc
+700 files/etc/default
+600 files/etc/default/etcd
+700 files/etc/etcd
+700 files/etc/etcd/tls
+600 files/etc/etcd/tls/ca.crt
+600 files/etc/etcd/tls/server.crt
+600 files/etc/etcd/tls/server.key
+700 files/etc/frr
+600 files/etc/frr/frr.conf
+700 files/etc/iptables
+600 files/etc/iptables/rules.v4
+600 files/etc/iptables/rules.v6
+700 files/etc/patroni
+600 files/etc/patroni/18-main.yml
+700 files/etc/patroni/tls
+600 files/etc/patroni/tls/ca.crt
+600 files/etc/patroni/tls/server.crt
+600 files/etc/patroni/tls/server.key
+700 files/etc/radiator
+600 files/etc/radiator/anycast.conf
+700 files/etc/radiator/clients.d
+600 files/etc/radiator/clients.d/access.conf
+600 files/etc/radiator/clients.d/core.conf
+600 files/etc/radiator/clients.d/v6only.conf
+600 files/etc/radiator/pg-ca.crt
+600 files/etc/radiator/radiator.conf
+700 files/etc/sysctl.d
+600 files/etc/sysctl.d/60-radiator-anycast.conf
+700 files/etc/systemd
+700 files/etc/systemd/system
+700 files/etc/systemd/system/patroni@18-main.service.d
+600 files/etc/systemd/system/patroni@18-main.service.d/restart.conf
+700 files/var
+700 files/var/lib
+700 files/var/lib/yubikey-anycast
+600 files/var/lib/yubikey-anycast/counter
+600 files/var/lib/yubikey-anycast/key
+600 files/var/lib/yubikey-anycast/tacacs
+600 hosts
+600 secrets.env
+600 server.env
+700 setup.sh
+
+$ yubikey-turnkey --renew-certs site.toml
+secrets.toml: new east1's certificate, east2's certificate, west's certificate
+out/east1/: 4 written
+out/east2/: 4 written
+out/west/: 4 written
+yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
+[exit 0]
+
+the same CA
+out/west/files/etc/patroni/tls/server.crt: OK
+$ yubikey-turnkey site.toml
+yubikey-turnkey: error: <WORK>/secrets.toml is readable by others (mode 0640): chmod 600 <WORK>/secrets.toml
+[exit 2]
+
+$ yubikey-turnkey site.toml
+yubikey-turnkey: error: <WORK>/secrets.toml: Invalid value (at line 353, column 5)
+[exit 2]
+

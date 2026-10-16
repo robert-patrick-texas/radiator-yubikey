@@ -1,0 +1,1581 @@
+#!/usr/bin/env python3
+#
+# yubikey-turnkey - Make everything that sets up a three-site deployment of
+#                   Radiator with the YubiKey database, from one input file.
+#
+# VERSION
+#   In the file VERSION, next to this script; -V shows it.
+#
+# WHAT IT DOES
+#   Reads site.toml (see site.example.toml): the three servers, their
+#   routers, the anycast address pair, the devices and their device groups,
+#   the groups, and the admins. It holds no secrets: every password, key and
+#   certificate is made once, in secrets.toml next to site.toml (mode 0600),
+#   and taken from there on every later run, so the same input always gives
+#   the same output. Then it writes, in out/ next to site.toml:
+#     SERVER/          one folder per server, to copy to it and run there:
+#                      setup.sh, its settings (server.env), the files it
+#                      installs (files/), and on the first server the
+#                      database's first contents (db/)
+#     admin/           for the admins' machines: the cluster's CA
+#                      certificate, PostgreSQL settings, ~/.pgpass lines
+#     runbook.md       the order to do things in
+#     routers.md       what each site's router needs
+#     devices.md       what each device needs: the anycast addresses, its
+#                      RADIUS secret and TACACS+ key (mode 0600)
+#   It removes the files it wrote before and no longer writes; other files
+#   in out/ (such as the packages copied next to setup.sh) stay.
+#
+# USAGE
+#   yubikey-turnkey [OPTIONS] SITE.toml
+#
+# OPTIONS
+#   -o, --out DIR        Write to DIR (default: out/ next to SITE.toml)
+#   -s, --secrets FILE   The secrets (default: secrets.toml next to SITE.toml)
+#   -p, --packages DIR   Copy Radiator's packages (radiator_*_all.deb or
+#                        radiator-locked_*_all.deb, radiator-radius-utilxs_*.deb),
+#                        and radiator-yubikey_VERSION_all.deb with install.sh,
+#                        from DIR into each server's folder
+#   -n, --check          Change nothing: check the input, and whether out/ and
+#                        secrets.toml are up to date
+#   --renew-certs        New certificates for the three servers (the CA stays)
+#   -h, --help, -V, --version
+#
+# EXIT STATUS
+#   0 done (--check: up to date); 1 --check: something would change; 2 an
+#   error in the input or the options.
+#
+# PREREQUISITES
+#   Python 3.11 or later (tomllib), and openssl (for the certificates).
+
+import argparse
+import base64
+import hashlib
+import hmac
+import ipaddress
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+
+PROG = os.path.basename(sys.argv[0]) or "yubikey-turnkey"
+HERE = os.path.dirname(os.path.realpath(__file__))
+try:
+    with open(os.path.join(HERE, "VERSION")) as f:
+        VERSION = f.read().strip()
+except OSError:
+    VERSION = "unknown"
+
+SETUP_SCRIPT = os.path.join(HERE, "yubikey-turnkey-setup.sh")
+GROUPS_CONF = os.path.join(HERE, "radiator-groups.example.conf")
+
+PG = "18"                       # Ubuntu 26.04's PostgreSQL
+PATRONI_CONF = "etc/patroni/18-main.yml"
+ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+MODHEX = "cbdefghijklnrtuv"
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")          # a server's host name
+GROUP_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")          # yubikey-db.sh's group names
+LOGIN_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")         # a PostgreSQL role
+FQDN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$")
+# Secrets that may be typed into secrets.toml by hand (a device's existing
+# RADIUS secret): printable, without spaces, quotes, backslashes, '#' or '%'
+# (which Radiator's configuration would read as a comment or a special
+# character), or '`' and '|' (which the device sheet's tables use).
+SECRET_RE = re.compile(r"^[A-Za-z0-9!$&()*+,./:;<=>?@\[\]^_{}~-]{8,128}$")
+PASSWORD_RE = re.compile(r"^[A-Za-z0-9]{16,128}$")
+RESERVED_GROUPS = {"localhost", "*", "anycast-check"}
+RULE_RE = re.compile(r"^(permit|permitreplace|deny) \S")
+HEADER = "Made by yubikey-turnkey"
+
+
+class InputError(Exception):
+    pass
+
+
+def die(msg, code=2):
+    print(f"{PROG}: error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def note(msg):
+    sys.stdout.flush()
+    print(f"{PROG}: {msg}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# The input
+# ---------------------------------------------------------------------------
+
+class Site:
+    """site.toml, checked."""
+
+
+class Missing(dict):
+    """A table that site.toml lacks: its settings aren't reported missing too."""
+
+
+def check_site(path):
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except OSError as e:
+        die(f"cannot read {path}: {e.strerror}")
+    except tomllib.TOMLDecodeError as e:
+        die(f"{path}: {e}")
+
+    errors = []
+    src = os.path.basename(path)
+
+    def err(where, msg):
+        errors.append(f"{src}: {where}: {msg}")
+
+    def table(d, key, where, required=True):
+        v = d.get(key)
+        if v is None:
+            if required:
+                err(where or key, "missing")
+            return Missing()
+        if not isinstance(v, dict):
+            err(f"{where}{key}", "must be a table")
+            return Missing()
+        return v
+
+    def known(d, keys, where):
+        for k in d:
+            if k not in keys:
+                err(f"{where}{k}", "unknown setting")
+
+    def text(d, key, where, required=True, pattern=None, what=None, default=None):
+        v = d.get(key)
+        if v is None:
+            if required and not isinstance(d, Missing):
+                err(f"{where}{key}", "missing")
+            return default
+        if not isinstance(v, str):
+            err(f"{where}{key}", "must be a string")
+            return default
+        if pattern and not pattern.match(v):
+            err(f"{where}{key}", f"'{v}' is not {what}")
+            return default
+        return v
+
+    def integer(d, key, where, lo, hi, default=None, required=False):
+        v = d.get(key)
+        if v is None:
+            if required and not isinstance(d, Missing):
+                err(f"{where}{key}", "missing")
+            return default
+        if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+            err(f"{where}{key}", f"must be a whole number from {lo} to {hi}")
+            return default
+        return v
+
+    def boolean(d, key, where, default):
+        v = d.get(key, default)
+        if not isinstance(v, bool):
+            err(f"{where}{key}", "must be true or false")
+            return default
+        return v
+
+    def address(d, key, where, version, required=True):
+        v = text(d, key, where, required)
+        if v is None:
+            return None
+        try:
+            a = ipaddress.ip_address(v)
+        except ValueError:
+            err(f"{where}{key}", f"'{v}' is not an IPv{version} address")
+            return None
+        if a.version != version:
+            err(f"{where}{key}", f"'{v}' is not an IPv{version} address")
+            return None
+        if a.is_loopback or a.is_unspecified or a.is_multicast or a.is_link_local:
+            err(f"{where}{key}", f"'{v}' can't be used here")
+            return None
+        return str(a)
+
+    s = Site()
+    known(data, {"site", "server", "anycast", "cluster", "admin", "partition", "firewall",
+                 "catch_all", "device", "group"}, "")
+
+    t = table(data, "site", "[site]")
+    known(t, {"name", "service_name"}, "site.")
+    s.name = text(t, "name", "site.", pattern=re.compile(r'^[^"\\\n\r\t`$]{1,80}$'),
+                  what="a title of 1 to 80 characters without quotes, '$' or '`'", default="")
+    s.service_name = text(t, "service_name", "site.", required=False, pattern=FQDN_RE,
+                          what="a DNS name")
+
+    s.servers = []
+    servers = data.get("server")
+    if not isinstance(servers, list) or len(servers) != 3:
+        err("[[server]]", "there must be exactly three servers")
+        servers = servers if isinstance(servers, list) else []
+    asns = set()
+    for i, sv in enumerate(servers):
+        w = f"server[{i + 1}]."
+        if not isinstance(sv, dict):
+            err(w, "must be a table")
+            continue
+        known(sv, {"name", "fqdn", "ipv4", "ipv6", "last_resort", "router"}, w)
+        srv = {
+            "name": text(sv, "name", w, pattern=NAME_RE,
+                         what="a host name (lower-case letters, digits and '-', up to 31)"),
+            "fqdn": text(sv, "fqdn", w, pattern=FQDN_RE, what="a fully qualified DNS name"),
+            "ipv4": address(sv, "ipv4", w, 4),
+            "ipv6": address(sv, "ipv6", w, 6),
+            "last_resort": boolean(sv, "last_resort", w, False),
+            "routers": [],
+        }
+        routers = sv.get("router")
+        if not isinstance(routers, list) or not 1 <= len(routers) <= 2:
+            err(f"{w}router", "each server needs one or two [[server.router]]")
+            routers = routers if isinstance(routers, list) else []
+        for j, r in enumerate(routers):
+            rw = f"{w}router[{j + 1}]."
+            if not isinstance(r, dict):
+                err(rw, "must be a table")
+                continue
+            known(r, {"name", "ipv4", "ipv6", "asn"}, rw)
+            rt = {
+                "name": text(r, "name", rw, required=False, pattern=re.compile(r"^[A-Za-z0-9._-]{1,63}$"),
+                             what="a name (letters, digits and . _ -)"),
+                "ipv4": address(r, "ipv4", rw, 4),
+                "ipv6": address(r, "ipv6", rw, 6),
+                "asn": integer(r, "asn", rw, 1, 4294967295, required=True),
+            }
+            if rt["name"] is None:
+                rt["name"] = f"{srv['name'] or 'server'}-router{j + 1}"
+            asns.add(rt["asn"])
+            srv["routers"].append(rt)
+        s.servers.append(srv)
+    if len(s.servers) == 3:
+        for key in ("name", "fqdn", "ipv4", "ipv6"):
+            vals = [sv[key] for sv in s.servers if sv[key]]
+            for v in set(vals):
+                if vals.count(v) > 1:
+                    err("[[server]]", f"{key} '{v}' is used twice")
+        if s.servers[0]["last_resort"]:
+            err("server[1].last_resort", "the first server is the usual primary: it can't be the last resort")
+        if sum(sv["last_resort"] for sv in s.servers) > 1:
+            err("[[server]]", "only one server can be the last resort")
+        # A router may serve two sites' servers, with the same AS.
+        rasn = {}
+        for i, sv in enumerate(s.servers):
+            mine = [a for r in sv["routers"] for a in (r["ipv4"], r["ipv6"]) if a]
+            for v in set(mine):
+                if mine.count(v) > 1:
+                    err(f"server[{i + 1}].router", f"address '{v}' is used twice")
+            for r in sv["routers"]:
+                for a in (r["ipv4"], r["ipv6"]):
+                    if a and rasn.setdefault(a, r["asn"]) != r["asn"]:
+                        err(f"server[{i + 1}].router", f"router '{a}' has two AS numbers")
+        raddrs = set(rasn)
+        saddrs = {sv[k] for sv in s.servers for k in ("ipv4", "ipv6")}
+        for v in raddrs & saddrs:
+            err("[[server.router]]", f"address '{v}' is a server's")
+
+    t = table(data, "anycast", "[anycast]")
+    known(t, {"ipv4", "ipv6", "asn", "interval", "renew_days"}, "anycast.")
+    s.any4 = address(t, "ipv4", "anycast.", 4)
+    s.any6 = address(t, "ipv6", "anycast.", 6)
+    s.asn = integer(t, "asn", "anycast.", 1, 4294967295, required=True)
+    s.interval = integer(t, "interval", "anycast.", 1, 60)
+    s.renew_days = integer(t, "renew_days", "anycast.", 0, 3650)
+    if s.asn is not None and s.asn in asns:
+        err("anycast.asn", f"{s.asn} is a router's AS too: the servers need an AS of their own")
+    for a in (s.any4, s.any6):
+        if a and any(a in (sv["ipv4"], sv["ipv6"]) for sv in s.servers):
+            err("[anycast]", f"'{a}' is a server's own address")
+
+    t = table(data, "cluster", "[cluster]", required=False)
+    known(t, {"wal_keep"}, "cluster.")
+    s.wal_keep = text(t, "wal_keep", "cluster.", required=False, pattern=re.compile(r"^[1-9][0-9]{0,5}(MB|GB|TB)$"),
+                      what="a size such as 8GB", default="8GB")
+
+    t = table(data, "admin", "[admin]")
+    known(t, {"logins", "subnets"}, "admin.")
+    s.admins = []
+    logins = t.get("logins")
+    if isinstance(t, Missing):
+        pass
+    elif not isinstance(logins, list) or not logins or not all(isinstance(x, str) for x in logins):
+        err("admin.logins", "must be a list of one or more PostgreSQL role names")
+    else:
+        for x in logins:
+            if not LOGIN_RE.match(x) or x in ("postgres", "radiator", "replicator", "rewinder", "yubikey_admin"):
+                err("admin.logins", f"'{x}' can't be an admin's login (lower-case letters, digits and '_'; "
+                    "not postgres, radiator, replicator, rewinder or yubikey_admin)")
+            elif x in s.admins:
+                err("admin.logins", f"'{x}' is listed twice")
+            else:
+                s.admins.append(x)
+    s.admin_nets = subnets(t.get("subnets"), "admin.subnets", err, required=not isinstance(t, Missing))
+
+    t = table(data, "partition", "[partition]", required=False)
+    known(t, {"enabled"}, "partition.")
+    s.partition = boolean(t, "enabled", "partition.", True)
+    t = table(data, "firewall", "[firewall]", required=False)
+    known(t, {"enabled"}, "firewall.")
+    s.firewall = boolean(t, "enabled", "firewall.", True)
+
+    t = table(data, "catch_all", "[catch_all]", required=False)
+    known(t, {"enabled", "group"}, "catch_all.")
+    s.catch_all = boolean(t, "enabled", "catch_all.", True)
+    s.catch_all_group = text(t, "group", "catch_all.", required=False, pattern=GROUP_RE,
+                             what="a device group name (letters, digits and . _ -)", default="unlisted")
+
+    s.devices = []
+    devices = data.get("device", [])
+    if not isinstance(devices, list):
+        err("[[device]]", "must be a list of tables")
+        devices = []
+    seen = {}
+    for i, d in enumerate(devices):
+        w = f"device[{i + 1}]."
+        if not isinstance(d, dict):
+            err(w, "must be a table")
+            continue
+        known(d, {"address", "group", "name"}, w)
+        a = text(d, "address", w)
+        net = None
+        if a is not None:
+            try:
+                net = ipaddress.ip_network(a, strict=True)
+            except ValueError:
+                err(f"{w}address", f"'{a}' is not an address or a subnet (with the host bits 0)")
+        if net is not None and (net.network_address.is_loopback or net.network_address.is_unspecified
+                                or net.prefixlen == 0):
+            err(f"{w}address", f"'{a}' can't be a device (the catch-all takes every device that isn't listed)")
+            net = None
+        g = text(d, "group", w, pattern=GROUP_RE, what="a device group name (letters, digits and . _ -)")
+        if g in RESERVED_GROUPS:
+            err(f"{w}group", f"'{g}' is reserved")
+        if g is not None and s.catch_all and g == s.catch_all_group:
+            err(f"{w}group", f"'{g}' is the catch-all's device group")
+        name = text(d, "name", w, required=False, pattern=re.compile(r"^[^\n\r\t|`]{1,64}$"),
+                    what="a name of 1 to 64 characters")
+        if net is None:
+            continue
+        key = net.with_prefixlen if net.prefixlen != net.max_prefixlen else str(net.network_address)
+        if key in seen:
+            err(f"{w}address", f"'{a}' is listed twice (device {seen[key]})")
+            continue
+        seen[key] = i + 1
+        s.devices.append({"address": key, "net": net, "group": g, "name": name or ""})
+    s.device_groups = []
+    for d in s.devices:
+        if d["group"] and d["group"] not in s.device_groups:
+            s.device_groups.append(d["group"])
+    if not s.devices and not s.catch_all:
+        err("[[device]]", "list the devices, or enable the catch-all client")
+
+    s.groups = []
+    groups = data.get("group", [])
+    if not isinstance(groups, list):
+        err("[[group]]", "must be a list of tables")
+        groups = []
+    names = set()
+    targets = set(s.device_groups) | {"*", "localhost"} | ({s.catch_all_group} if s.catch_all else set())
+    for i, g in enumerate(groups):
+        w = f"group[{i + 1}]."
+        if not isinstance(g, dict):
+            err(w, "must be a table")
+            continue
+        known(g, {"name", "label", "access"}, w)
+        name = text(g, "name", w, pattern=GROUP_RE, what="a group name (letters, digits and . _ -)")
+        if name == "anycast-check":
+            err(f"{w}name", "'anycast-check' is the anycast check's own group")
+        elif name in names:
+            err(f"{w}name", f"'{name}' is listed twice")
+        names.add(name)
+        label = text(g, "label", w, required=False, pattern=re.compile(r"^[^\n\r\t]{1,255}$"),
+                     what="a label of up to 255 characters", default="")
+        access = g.get("access", [])
+        if not isinstance(access, list):
+            err(f"{w}access", "must be a list")
+            access = []
+        acc = []
+        devs = set()
+        for j, a in enumerate(access):
+            aw = f"{w}access[{j + 1}]."
+            if not isinstance(a, dict):
+                err(aw, "must be a table")
+                continue
+            known(a, {"devices", "level", "reply", "rules"}, aw)
+            dg = text(a, "devices", aw)
+            if dg is not None and dg not in targets:
+                err(f"{aw}devices", f"'{dg}' is not a device group (one of: {', '.join(sorted(targets))})")
+            if dg in devs:
+                err(f"{aw}devices", f"'{dg}' is listed twice")
+            devs.add(dg)
+            level = integer(a, "level", aw, 0, 15, required=True)
+            reply = text(a, "reply", aw, required=False, pattern=re.compile(r"^[^\n\r\t]{1,1000}$"),
+                         what="RADIUS reply attributes", default="")
+            rules = a.get("rules", [])
+            if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+                err(f"{aw}rules", "must be a list of strings")
+                rules = []
+            for r in rules:
+                if not RULE_RE.match(r) or '"' in r or re.search(r"\\[0-7]{3}", r) or re.search(r"[\n\r\t]", r):
+                    err(f"{aw}rules", f"'{r}' is not a rule (permit, permitreplace or deny, then patterns; "
+                        "no double quotes or octal escapes)")
+            acc.append({"devices": dg, "level": level, "reply": reply, "rules": rules})
+        s.groups.append({"name": name, "label": label, "access": acc})
+
+    if errors:
+        raise InputError("\n".join(errors))
+    s.first = s.servers[0]
+    s.path = os.path.realpath(path)
+    s.src = src
+    return s
+
+
+def subnets(v, where, err, required=False):
+    if v is None and not required:
+        return []
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v) or (required and not v):
+        err(where, "must be a list of subnets (or addresses), such as \"10.9.0.0/24\"")
+        return []
+    out = []
+    for x in v:
+        try:
+            n = ipaddress.ip_network(x, strict=True)
+        except ValueError:
+            err(where, f"'{x}' is not a subnet (with the host bits 0) or an address")
+            continue
+        if n.prefixlen == 0:
+            err(where, f"'{x}' is everything")
+            continue
+        out.append(n)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The secrets
+# ---------------------------------------------------------------------------
+
+def alnum(n):
+    return "".join(secrets.choice(ALNUM) for _ in range(n))
+
+
+def scram(password):
+    """A PostgreSQL SCRAM-SHA-256 verifier, which ALTER ROLE ... PASSWORD
+    takes instead of the password."""
+    salt = secrets.token_bytes(16)
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 4096)
+    client_key = hmac.new(salted, b"Client Key", "sha256").digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", "sha256").digest()
+    b64 = lambda b: base64.b64encode(b).decode()
+    return f"SCRAM-SHA-256$4096:{b64(salt)}${b64(stored_key)}:{b64(server_key)}"
+
+
+def scram_matches(verifier, password):
+    m = re.match(r"^SCRAM-SHA-256\$(\d+):([A-Za-z0-9+/=]+)\$([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$", verifier or "")
+    if not m:
+        return False
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.b64decode(m[2]), int(m[1]))
+    stored = hashlib.sha256(hmac.new(salted, b"Client Key", "sha256").digest()).digest()
+    return hmac.compare_digest(base64.b64encode(stored).decode(), m[3])
+
+
+def openssl(*args, cwd):
+    try:
+        r = subprocess.run(["openssl", *args], cwd=cwd, capture_output=True, text=True)
+    except FileNotFoundError:
+        die("openssl not found (it makes the cluster's certificates): sudo apt install openssl")
+    if r.returncode != 0:
+        die(f"openssl {args[0]} failed: {r.stderr.strip()}")
+    return r.stdout
+
+
+def make_ca():
+    with tempfile.TemporaryDirectory() as tmp:
+        openssl("req", "-x509", "-newkey", "rsa:3072", "-nodes", "-days", "3650",
+                "-subj", "/CN=YubiKey DB cluster CA",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                "-keyout", "ca.key", "-out", "ca.crt", cwd=tmp)
+        return read(tmp, "ca.key"), read(tmp, "ca.crt")
+
+
+def make_cert(ca_key, ca_crt, fqdn, ip):
+    """A certificate for a server, as the guide's three-site section makes
+    them: the server's name and address, for TLS servers and clients."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write(tmp, "ca.key", ca_key)
+        write(tmp, "ca.crt", ca_crt)
+        openssl("req", "-newkey", "rsa:3072", "-nodes", "-subj", f"/CN={fqdn}",
+                "-addext", f"subjectAltName=DNS:{fqdn},IP:{ip}",
+                "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+                "-addext", "extendedKeyUsage=serverAuth,clientAuth",
+                "-keyout", "server.key", "-out", "server.csr", cwd=tmp)
+        openssl("x509", "-req", "-in", "server.csr", "-CA", "ca.crt", "-CAkey", "ca.key",
+                "-CAcreateserial", "-days", "825", "-copy_extensions", "copy", "-out", "server.crt", cwd=tmp)
+        return read(tmp, "server.key"), read(tmp, "server.crt")
+
+
+def expires_within(crt, days):
+    with tempfile.TemporaryDirectory() as tmp:
+        write(tmp, "c.crt", crt)
+        r = subprocess.run(["openssl", "x509", "-noout", "-in", "c.crt", "-checkend", str(days * 86400)],
+                           cwd=tmp, capture_output=True)
+        return r.returncode != 0
+
+
+def read(d, name):
+    with open(os.path.join(d, name)) as f:
+        return f.read()
+
+
+def write(d, name, text):
+    with open(os.path.join(d, name), "w") as f:
+        f.write(text)
+
+
+def fill_secrets(site, old, renew_certs):
+    """The secrets for SITE: those in OLD (secrets.toml), and new ones for
+    anything that has none yet. Returns (secrets, what is new)."""
+    new = []
+    sec = {}
+
+    def get(path, make, check=None, derived=False):
+        # A value that isn't valid is an error, unless it is DERIVED from
+        # another (a password's SCRAM verifier): then it is made again.
+        d, o = sec, old
+        for k in path[:-1]:
+            d = d.setdefault(k, {})
+            o = o.get(k, {}) if isinstance(o, dict) else {}
+        k = path[-1]
+        v = o.get(k) if isinstance(o, dict) else None
+        if v is None or (check is not None and not check(v)):
+            if v is not None and not derived:
+                raise InputError(f"secrets.toml: {'.'.join(path)}: not valid")
+            v = make()
+            new.append(".".join(path))
+        d[k] = v
+        return v
+
+    pw = lambda: alnum(32)
+    is_pw = lambda v: isinstance(v, str) and PASSWORD_RE.match(v) is not None
+    is_secret = lambda v: isinstance(v, str) and SECRET_RE.match(v) is not None
+    for k in ("radiator", "patroni_api", "replication", "rewind"):
+        get(["cluster", k], pw, is_pw)
+    r = sec["cluster"]["radiator"]
+    get(["cluster", "radiator_scram"], lambda: scram(r), lambda v: scram_matches(v, r), derived=True)
+    for login in site.admins:
+        p = get(["admin", login, "password"], pw, is_pw)
+        get(["admin", login, "scram"], lambda: scram(p), lambda v: scram_matches(v, p), derived=True)
+    get(["localhost", "secret"], pw, is_secret)
+    get(["localhost", "tacacs_key"], pw, is_secret)
+    if site.catch_all:
+        get(["catch_all", "secret"], pw, is_secret)
+        get(["catch_all", "tacacs_key"], pw, is_secret)
+    for d in site.devices:
+        get(["device", d["address"], "secret"], pw, is_secret)
+        get(["device", d["address"], "tacacs_key"], pw, is_secret)
+    for sv in site.servers:
+        n = sv["name"]
+        get(["anycast", n, "public_id"], lambda: "vv" + "".join(secrets.choice(MODHEX) for _ in range(10)),
+            lambda v: isinstance(v, str) and re.match(r"^[cbdefghijklnrtuv]{12}$", v) is not None)
+        get(["anycast", n, "private_id"], lambda: secrets.token_hex(6),
+            lambda v: isinstance(v, str) and re.match(r"^[0-9a-f]{12}$", v) is not None)
+        get(["anycast", n, "aes_key"], lambda: secrets.token_hex(16),
+            lambda v: isinstance(v, str) and re.match(r"^[0-9a-f]{32}$", v) is not None)
+        get(["anycast", n, "pin"], lambda: alnum(20),
+            lambda v: isinstance(v, str) and re.match(r"^[A-Za-z0-9]{8,}$", v) is not None)
+        get(["anycast", n, "made"], lambda: int(time.time()),
+            lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0)
+        get(["anycast", n, "tacacs_password"], pw, is_pw)
+    ids = [sec["anycast"][sv["name"]][k] for sv in site.servers for k in ("public_id",)]
+    if len(set(ids)) != len(ids):
+        raise InputError("secrets.toml: two anycast keys have the same public_id")
+
+    pem = lambda kind: (lambda v: isinstance(v, str) and f"-----BEGIN {kind}" in v)
+    ca_key = get(["pki", "ca_key"], lambda: None, pem("PRIVATE KEY"))
+    if ca_key is None:          # make the CA (and so every certificate) anew
+        ca_key, ca_crt = make_ca()
+        sec["pki"]["ca_key"] = ca_key
+        sec["pki"]["ca_crt"] = ca_crt
+        new.append("pki.ca_crt")
+    else:
+        ca_crt = get(["pki", "ca_crt"], lambda: None, pem("CERTIFICATE"))
+        if ca_crt is None:
+            raise InputError("secrets.toml: pki.ca_crt is missing (with pki.ca_key there)")
+    for sv in site.servers:
+        n = sv["name"]
+        san = f"DNS:{sv['fqdn']},IP:{sv['ipv4']}"
+        o = old.get("pki", {}).get(n, {}) if isinstance(old.get("pki"), dict) else {}
+        same_ca = old.get("pki", {}).get("ca_crt") == ca_crt if isinstance(old.get("pki"), dict) else False
+        if (not renew_certs and same_ca and isinstance(o, dict) and o.get("san") == san
+                and pem("PRIVATE KEY")(o.get("key")) and pem("CERTIFICATE")(o.get("crt"))):
+            sec.setdefault("pki", {})[n] = {"san": san, "key": o["key"], "crt": o["crt"]}
+        else:
+            key, crt = make_cert(ca_key, ca_crt, sv["fqdn"], sv["ipv4"])
+            sec.setdefault("pki", {})[n] = {"san": san, "key": key, "crt": crt}
+            new.append(f"pki.{n}")
+
+    # Secrets for devices that are no longer listed are kept, in case they
+    # come back.
+    for addr, v in (old.get("device") or {}).items():
+        if isinstance(v, dict) and addr not in sec.get("device", {}):
+            sec.setdefault("device", {})[addr] = v
+    return sec, new
+
+
+def toml_key(k):
+    return k if re.match(r"^[A-Za-z0-9_-]+$", k) else '"' + k.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if "\n" in v:
+        assert "'''" not in v
+        return "'''\n" + v + "'''"
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def dump_secrets(sec, site):
+    out = [
+        f"# secrets.toml - {HEADER} for {site.src}: every password, key and",
+        "# certificate of the deployment. yubikey-turnkey makes what is missing",
+        "# and keeps the rest, so keep this file: back it up, readable by you only",
+        "# (mode 0600). A device's RADIUS secret or TACACS+ key may be changed by hand",
+        "# (8 to 128 printable characters, without spaces, quotes, '\\', '#' or '%');",
+        "# remove a value to have a new one made. The anycast keys and the passwords",
+        "# are loaded into the database once, when setup.sh first runs.",
+    ]
+
+    def emit(d, path):
+        scalars = [(k, v) for k, v in d.items() if not isinstance(v, dict)]
+        tables = [(k, v) for k, v in d.items() if isinstance(v, dict)]
+        if scalars:
+            out.append("")
+            out.append("[" + ".".join(toml_key(p) for p in path) + "]")
+            for k, v in scalars:
+                out.append(f"{toml_key(k)} = {toml_value(v)}")
+        for k, v in tables:
+            emit(v, path + [k])
+
+    for k in ("cluster", "admin", "localhost", "catch_all", "device", "anycast", "pki"):
+        if k in sec:
+            emit(sec[k], [k])
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# The output
+# ---------------------------------------------------------------------------
+
+class Out:
+    """The files to write: path -> (mode, bytes)."""
+
+    def __init__(self):
+        self.files = {}
+
+    def add(self, path, text, mode=0o600):
+        data = text.encode() if isinstance(text, str) else text
+        assert path not in self.files, path
+        self.files[path] = (mode, data)
+
+
+def header(site, what, comment="#"):
+    return f"{comment} {what} - {HEADER} {VERSION} from {site.src}.\n"
+
+
+def env_file(site, title, pairs):
+    lines = [f"# {title} - {HEADER} {VERSION} from {site.src}: NAME=value",
+             "# lines, which setup.sh reads (never runs as shell code)."]
+    for k, v in pairs:
+        if isinstance(v, (list, tuple)):
+            v = " ".join(str(x) for x in v)
+        v = str(v)
+        assert '"' not in v and "\n" not in v and "\\" not in v, (k, v)
+        lines.append(f'{k}="{v}"')
+    return "\n".join(lines) + "\n"
+
+
+def gen_server(site, sec, out, sv):
+    n = sv["name"]
+    d = f"{n}/"
+    first = sv is site.first
+    servers = site.servers
+    others = [o for o in servers if o is not sv]
+    a = sec["anycast"][n]
+    files = []      # the manifest: step kind mode owner policy path
+
+    def f(step, path, text, mode="0644", owner="root:root", policy="replace"):
+        out.add(d + "files/" + path, text)
+        files.append(f"{step} file {mode} {owner} {policy} {path}")
+
+    def dirent(step, path, mode, owner):
+        files.append(f"{step} dir {mode} {owner} - {path}")
+
+    # server.env: what setup.sh needs to know, no secrets.
+    out.add(d + "server.env", env_file(site, "server.env", [
+        ("VERSION", VERSION),
+        ("SITE_NAME", site.name),
+        ("NAME", n),
+        ("FQDN", sv["fqdn"]),
+        ("IPV4", sv["ipv4"]),
+        ("IPV6", sv["ipv6"]),
+        ("FIRST", site.first["name"]),
+        ("SERVERS", [o["name"] for o in servers]),
+        ("FQDNS", [o["fqdn"] for o in servers]),
+        ("IPV4S", [o["ipv4"] for o in servers]),
+        ("ANYCAST4", site.any4),
+        ("ANYCAST6", site.any6),
+        ("ADMINS", site.admins),
+        ("ADMIN_SUBNETS", [str(x) for x in site.admin_nets]),
+        ("PARTITION", int(site.partition)),
+        ("FIREWALL", int(site.firewall)),
+    ]))
+    # secrets.env: what setup.sh needs itself (the rest is in files/).
+    pairs = [("RADIATOR_PASSWORD", sec["cluster"]["radiator"])]
+    if first:
+        pairs.append(("RADIATOR_SCRAM", sec["cluster"]["radiator_scram"]))
+        for login in site.admins:
+            pairs.append((f"ADMIN_SCRAM_{login}", sec["admin"][login]["scram"]))
+    out.add(d + "secrets.env", env_file(site, "secrets.env", pairs))
+    with open(SETUP_SCRIPT) as fh:
+        out.add(d + "setup.sh", fh.read(), 0o700)
+
+    # /etc/hosts: the three servers, IPv4 only.
+    out.add(d + "hosts", "".join(f"{o['ipv4']}\t{o['fqdn']} {o['name']}\n" for o in servers))
+
+    # Kernel settings: Radiator listens on the anycast addresses while they
+    # aren't on lo.
+    f("system", "etc/sysctl.d/60-radiator-anycast.conf",
+      header(site, "60-radiator-anycast.conf")
+      + "# Radiator listens on the anycast addresses while they aren't on lo.\n"
+      + "net.ipv4.ip_nonlocal_bind = 1\nnet.ipv6.ip_nonlocal_bind = 1\n")
+
+    # The cluster's TLS files, as the guide installs them.
+    pki = sec["pki"]
+    dirent("etcd", "etc/etcd/tls", "0750", "root:etcd")
+    f("etcd", "etc/etcd/tls/ca.crt", pki["ca_crt"])
+    f("etcd", "etc/etcd/tls/server.crt", pki[n]["crt"])
+    f("etcd", "etc/etcd/tls/server.key", pki[n]["key"], "0640", "root:etcd")
+    cluster = ",".join(f"{o['name']}=https://{o['ipv4']}:2380" for o in servers)
+    f("etcd", "etc/default/etcd", header(site, "etcd") + f"""\
+# This server's member of the cluster's etcd. The ETCD_INITIAL_* settings
+# count only when the cluster is first made.
+ETCD_NAME={n}
+ETCD_DATA_DIR=/var/lib/etcd/default
+ETCD_LISTEN_PEER_URLS=https://{sv['ipv4']}:2380
+ETCD_LISTEN_CLIENT_URLS=https://{sv['ipv4']}:2379
+ETCD_INITIAL_ADVERTISE_PEER_URLS=https://{sv['ipv4']}:2380
+ETCD_ADVERTISE_CLIENT_URLS=https://{sv['ipv4']}:2379
+ETCD_INITIAL_CLUSTER={cluster}
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_INITIAL_CLUSTER_TOKEN=yubikey-db
+ETCD_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_CLIENT_CERT_AUTH=true
+ETCD_PEER_CERT_FILE=/etc/etcd/tls/server.crt
+ETCD_PEER_KEY_FILE=/etc/etcd/tls/server.key
+ETCD_PEER_TRUSTED_CA_FILE=/etc/etcd/tls/ca.crt
+ETCD_PEER_CLIENT_CERT_AUTH=true
+""")
+
+    dirent("patroni", "etc/patroni/tls", "0750", "root:postgres")
+    f("patroni", "etc/patroni/tls/ca.crt", pki["ca_crt"])
+    f("patroni", "etc/patroni/tls/server.crt", pki[n]["crt"])
+    f("patroni", "etc/patroni/tls/server.key", pki[n]["key"], "0640", "root:postgres")
+    hba = []
+    for o in servers:
+        hba += [f"    - hostssl replication replicator {o['ipv4']}/32 scram-sha-256",
+                f"    - hostssl postgres    rewinder   {o['ipv4']}/32 scram-sha-256",
+                f"    - hostssl yubikey     radiator   {o['ipv4']}/32 scram-sha-256"]
+        hba += [f"    - hostssl yubikey     {login} {o['ipv4']}/32 scram-sha-256" for login in site.admins]
+    for net in site.admin_nets:
+        hba += [f"    - hostssl yubikey     {login} {net} scram-sha-256" for login in site.admins]
+    yq = lambda v: "'" + v.replace("'", "''") + "'"
+    c = sec["cluster"]
+    f("patroni", PATRONI_CONF, header(site, "18-main.yml") + f"""\
+# The Debian helper scripts below take the version and cluster from the scope.
+scope: 18-main
+namespace: /postgresql-common/
+name: {n}
+
+restapi:
+  listen: {sv['ipv4']}:8008
+  connect_address: {sv['fqdn']}:8008
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+  cafile: /etc/patroni/tls/ca.crt
+  authentication:
+    username: patroni
+    password: {yq(c['patroni_api'])}
+
+ctl:
+  cacert: /etc/patroni/tls/ca.crt
+  certfile: /etc/patroni/tls/server.crt
+  keyfile: /etc/patroni/tls/server.key
+
+etcd3:
+  hosts: {','.join(o['ipv4'] + ':2379' for o in servers)}
+  protocol: https
+  cacert: /etc/patroni/tls/ca.crt
+  cert: /etc/patroni/tls/server.crt
+  key: /etc/patroni/tls/server.key
+
+bootstrap:
+  method: pg_createcluster
+  pg_createcluster:
+    command: /usr/share/patroni/pg_createcluster_patroni
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    synchronous_mode: quorum
+    synchronous_node_count: 1
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        ssl: 'on'
+        ssl_cert_file: /etc/patroni/tls/server.crt
+        ssl_key_file: /etc/patroni/tls/server.key
+        max_slot_wal_keep_size: {site.wal_keep}
+
+postgresql:
+  create_replica_method:
+    - pg_clonecluster
+  pg_clonecluster:
+    command: /usr/share/patroni/pg_clonecluster_patroni
+  listen: '*:5432'
+  connect_address: {sv['fqdn']}:5432
+  # Patroni's own connections to this server use its socket: TLS with
+  # verify-full fails for "localhost".
+  use_unix_socket: true
+  use_unix_socket_repl: true
+  data_dir: /var/lib/postgresql/18/main
+  bin_dir: /usr/lib/postgresql/18/bin
+  config_dir: /etc/postgresql/18/main
+  pgpass: /var/lib/postgresql/18-main.pgpass
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator
+      password: {yq(c['replication'])}
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+    rewind:
+      username: rewinder
+      password: {yq(c['rewind'])}
+      sslmode: verify-full
+      sslrootcert: /etc/patroni/tls/ca.crt
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    logging_collector: 'on'
+    log_directory: /var/log/postgresql
+    log_filename: postgresql-18-main.log
+  pg_hba:
+    - local   all         all                     peer
+    - local   replication replicator              scram-sha-256
+{chr(10).join(hba)}
+
+watchdog:
+  mode: off
+
+tags:
+  failover_priority: {1 if sv['last_resort'] else 2}
+""", "0640", "root:postgres")
+    f("patroni", "etc/systemd/system/patroni@18-main.service.d/restart.conf",
+      header(site, "restart.conf")
+      + "# Debian's unit leaves Patroni stopped if it crashes, with PostgreSQL\n"
+      + "# running unattended: restart it instead.\n[Service]\nRestart=on-failure\n")
+
+    # Radiator: radiator-groups.example.conf, with this server's addresses
+    # and the secret and key of <Client 127.0.0.1>.
+    f("radiator", "etc/radiator/pg-ca.crt", pki["ca_crt"])
+    conf = radiator_conf(site, sec, sv)
+    f("radiator", "etc/radiator/radiator.conf", conf, "0640", "root:radiator")
+    dirent("radiator", "etc/radiator/clients.d", "0750", "root:radiator")
+    for g in site.device_groups:
+        body = header(site, f"{g}.conf") + f"# The devices in device group {g}.\n"
+        for dv in site.devices:
+            if dv["group"] != g:
+                continue
+            ds = sec["device"][dv["address"]]
+            body += "\n" + (f"# {dv['name']}\n" if dv["name"] else "") + f"""\
+<Client {dv['address']}>
+    Identifier     {g}
+    Secret         {ds['secret']}
+    TACACSPLUSKey  {ds['tacacs_key']}
+</Client>
+"""
+        f("radiator", f"etc/radiator/clients.d/{g}.conf", body, "0640", "root:radiator")
+    if site.catch_all:
+        f("radiator", "etc/radiator/clients.d/catch-all.conf",
+          header(site, "catch-all.conf") + f"""\
+# Every device that isn't listed, in device group {site.catch_all_group}.
+<Client DEFAULT>
+    Identifier     {site.catch_all_group}
+    Secret         {sec['catch_all']['secret']}
+    TACACSPLUSKey  {sec['catch_all']['tacacs_key']}
+</Client>
+""", "0640", "root:radiator")
+
+    # Partition mode.
+    if site.partition:
+        f("partition", "etc/radiator/partition.conf", header(site, "partition.conf") + f"""\
+# Settings for yubikey-partition.sh (see yubikey-partition.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The other two sites' servers. While none of them answers, this server is
+# cut off, and Radiator uses its copy of the keys.
+PEERS="{' '.join(o['fqdn'] for o in others)}"
+""")
+
+    # The anycast check: its settings, key, and TACACS+ service account.
+    extra = ""
+    if site.interval is not None:
+        extra += f"INTERVAL={site.interval}\n"
+    if site.renew_days is not None:
+        extra += f"RENEW_DAYS={site.renew_days}\n"
+    f("anycast", "etc/radiator/anycast.conf", header(site, "anycast.conf") + f"""\
+# Settings for yubikey-anycast.sh (see yubikey-anycast.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The anycast addresses.
+ADDRESSES="{site.any4} {site.any6}"
+
+# The secret and the TACACS+ key of Radiator's <Client 127.0.0.1>.
+SECRET="{sec['localhost']['secret']}"
+TACACS_KEY="{sec['localhost']['tacacs_key']}"
+""" + extra, "0600")
+    dirent("anycast", "var/lib/yubikey-anycast", "0700", "root:root")
+    f("anycast", "var/lib/yubikey-anycast/key",
+      f"user=anycast-{n}\npin={a['pin']}\npublic_id={a['public_id']}\nprivate_id={a['private_id']}\n"
+      f"aes_key={a['aes_key']}\nmade={a['made']}\n", "0600", "root:root", "keep")
+    f("anycast", "var/lib/yubikey-anycast/counter", "0\n", "0600", "root:root", "keep")
+    f("anycast", "var/lib/yubikey-anycast/tacacs",
+      f"user=svc.anycast-{n}\npassword={a['tacacs_password']}\n", "0600", "root:root", "keep")
+    f("anycast", "etc/frr/frr.conf", frr_conf(site, sv), "0640", "frr:frr")
+
+    # The firewall.
+    v4, v6 = firewall(site, sv)
+    f("firewall", "etc/iptables/rules.v4", v4)
+    f("firewall", "etc/iptables/rules.v6", v6)
+
+    # The database's first contents, loaded by the first server.
+    if first:
+        rows = ["username,public_id,private_id,aes_key,password,active"]
+        svc = []
+        for o in servers:
+            k = sec["anycast"][o["name"]]
+            rows.append(f"anycast-{o['name']},{k['public_id']},{k['private_id']},{k['aes_key']},{k['pin']},1")
+            svc.append(f"svc.anycast-{o['name']}\t{k['tacacs_password']}")
+        out.add(d + "db/anycast.csv", "\n".join(rows) + "\n")
+        out.add(d + "db/services", "\n".join(svc) + "\n")
+        lines = [f"# {HEADER} {VERSION} from {site.src}: the groups setup.sh creates",
+                 "# (each once), as tab-separated lines: group NAME LABEL, access NAME",
+                 "# DEVICE_GROUP LEVEL REPLY, rule NAME DEVICE_GROUP RULE."]
+        for g in site.groups:
+            lines.append(f"group\t{g['name']}\t{g['label']}")
+            for ac in g["access"]:
+                lines.append(f"access\t{g['name']}\t{ac['devices']}\t{ac['level']}\t{ac['reply']}")
+                for r in ac["rules"]:
+                    lines.append(f"rule\t{g['name']}\t{ac['devices']}\t{r}")
+        out.add(d + "db/groups", "\n".join(lines) + "\n")
+
+    out.add(d + "files.list", "\n".join([
+        f"# files.list - {HEADER} {VERSION} from {site.src}: the files setup.sh",
+        "# installs from files/, as STEP KIND MODE OWNER:GROUP POLICY PATH. POLICY",
+        "# replace: whenever they differ; keep: only when the file is missing (the",
+        "# anycast check changes its own)."] + files) + "\n")
+
+
+def radiator_conf(site, sec, sv):
+    try:
+        with open(GROUPS_CONF) as fh:
+            conf = fh.read()
+    except OSError as e:
+        die(f"cannot read {GROUPS_CONF}: {e.strerror}")
+
+    def sub(old, new):
+        nonlocal conf
+        if conf.count(old) != 1:
+            die(f"{GROUPS_CONF} doesn't have the line '{old.strip()}' once")
+        conf = conf.replace(old, new)
+
+    sub("#BindAddress     127.0.0.1, 203.0.113.33, ipv6:2001:db8:33::33, 192.0.2.153, ipv6:2001:db8:153::153\n",
+        f"BindAddress     127.0.0.1, {sv['ipv4']}, ipv6:{sv['ipv6']}, {site.any4}, ipv6:{site.any6}\n")
+    sub("    Secret         local-test-secret\n", f"    Secret         {sec['localhost']['secret']}\n")
+    sub("    TACACSPLUSKey  local-test-key\n", f"    TACACSPLUSKey  {sec['localhost']['tacacs_key']}\n")
+    sub("# This server itself, for tests with radpwtst and the anycast check. Change\n# the secret and the key.\n",
+        "# This server itself, for tests with radpwtst and the anycast check.\n")
+    return (header(site, "radiator.conf")
+            + f"# Radiator on {sv['name']}: radiator-groups.example.conf, with this server's\n"
+            + "# addresses and the secret and key of <Client 127.0.0.1>. setup.sh installs it\n"
+            + "# again whenever it differs: change site.toml instead.\n#\n" + conf)
+
+
+def frr_conf(site, sv):
+    lines = [header(site, "frr.conf", "!").rstrip("\n"),
+             "frr defaults traditional",
+             f"hostname {sv['name']}",
+             "log syslog informational",
+             "!",
+             f"ip prefix-list RADIUS-ANYCAST seq 10 permit {site.any4}/32",
+             f"ipv6 prefix-list RADIUS-ANYCAST seq 10 permit {site.any6}/128",
+             "!",
+             "route-map RADIUS-ANYCAST permit 10",
+             " match ip address prefix-list RADIUS-ANYCAST",
+             "exit",
+             "route-map RADIUS-ANYCAST permit 20",
+             " match ipv6 address prefix-list RADIUS-ANYCAST",
+             "exit",
+             "route-map NOTHING deny 10",
+             "exit",
+             "!",
+             f"router bgp {site.asn}",
+             f" bgp router-id {sv['ipv4']}",
+             " no bgp default ipv4-unicast"]
+    for r in sv["routers"]:
+        for a in (r["ipv4"], r["ipv6"]):
+            lines += [f" neighbor {a} remote-as {r['asn']}", f" neighbor {a} description {r['name']}",
+                      f" neighbor {a} bfd"]
+    for af, key, net in (("ipv4", "ipv4", f"{site.any4}/32"), ("ipv6", "ipv6", f"{site.any6}/128")):
+        lines += [" !", f" address-family {af} unicast", f"  network {net}"]
+        for r in sv["routers"]:
+            a = r[key]
+            lines += [f"  neighbor {a} activate", f"  neighbor {a} route-map NOTHING in",
+                      f"  neighbor {a} route-map RADIUS-ANYCAST out"]
+        lines.append(" exit-address-family")
+    lines.append("exit")
+    return "\n".join(lines) + "\n"
+
+
+def firewall(site, sv):
+    rules = {4: [], 6: []}
+    any_ = {4: site.any4, 6: site.any6}
+    host = {4: 32, 6: 128}
+
+    def add(v, rule):
+        rules[v].append(rule)
+
+    for v in (4, 6):
+        add(v, "# This server's own connections, and their replies")
+        add(v, "-A INPUT -i lo -j ACCEPT")
+        add(v, "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT")
+        add(v, "-A INPUT -m conntrack --ctstate INVALID -j DROP")
+    add(4, "-A INPUT -p icmp -j ACCEPT")
+    add(4, "-A INPUT -p udp --sport 67 --dport 68 -j ACCEPT")
+    add(6, "-A INPUT -p ipv6-icmp -j ACCEPT")
+    add(6, "-A INPUT -s fe80::/10 -p udp --sport 547 --dport 546 -j ACCEPT")
+    for v in (4, 6):
+        add(v, "# The devices: RADIUS and TACACS+ to the anycast addresses")
+    if site.catch_all:
+        for v in (4, 6):
+            add(v, f"-A INPUT -d {any_[v]}/{host[v]} -p udp -m multiport --dports 1812,1813 -j ACCEPT")
+            add(v, f"-A INPUT -d {any_[v]}/{host[v]} -p tcp --dport 49 -j ACCEPT")
+    else:
+        for dv in site.devices:
+            v = dv["net"].version
+            src = dv["net"].with_prefixlen
+            add(v, f"-A INPUT -s {src} -d {any_[v]}/{host[v]} -p udp -m multiport --dports 1812,1813 -j ACCEPT")
+            add(v, f"-A INPUT -s {src} -d {any_[v]}/{host[v]} -p tcp --dport 49 -j ACCEPT")
+    add(4, "# The three servers: etcd, PostgreSQL, Patroni")
+    for o in site.servers:
+        add(4, f"-A INPUT -s {o['ipv4']}/32 -p tcp -m multiport --dports 2379,2380,5432,8008 -j ACCEPT")
+    for v in (4, 6):
+        add(v, "# The admins: SSH, PostgreSQL, Patroni's REST API")
+    for net in site.admin_nets:
+        add(net.version, f"-A INPUT -s {net.with_prefixlen} -p tcp -m multiport --dports 22,5432,8008 -j ACCEPT")
+    for v in (4, 6):
+        add(v, "# This server's routers: BGP, BFD")
+    for r in sv["routers"]:
+        for v, a in ((4, r["ipv4"]), (6, r["ipv6"])):
+            add(v, f"-A INPUT -s {a}/{host[v]} -p tcp --dport 179 -j ACCEPT")
+            add(v, f"-A INPUT -s {a}/{host[v]} -p udp --dport 3784 -j ACCEPT")
+    out = {}
+    for v in (4, 6):
+        out[v] = (header(site, f"rules.v{v}") + f"""\
+# The firewall of {sv['name']} (IPv{v}), loaded by netfilter-persistent at boot.
+# setup.sh installs it again whenever it differs: change site.toml instead.
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+""" + "\n".join(rules[v]) + "\nCOMMIT\n")
+    return out[4], out[6]
+
+
+def gen_admin(site, sec, out):
+    out.add("admin/ca.crt", sec["pki"]["ca_crt"], 0o644)
+    hosts = ",".join(o["fqdn"] for o in site.servers)
+    out.add("admin/pg.env", header(site, "pg.env") + f"""\
+# PostgreSQL settings for yubikey-db.sh on an admin's machine, as in the
+# guide's three-site section: copy ca.crt to ~/.yubikey-ca.crt, the line of
+# your login from pgpass to ~/.pgpass (mode 0600), and then: . ./pg.env
+export PGHOST={hosts}
+export PGUSER={site.admins[0]}
+export PGSSLMODE=verify-full
+export PGSSLROOTCERT=$HOME/.yubikey-ca.crt
+export DB_BACKEND=pg
+""", 0o644)
+    out.add("admin/pgpass", "".join(f"*:5432:yubikey:{login}:{sec['admin'][login]['password']}\n"
+                                    for login in site.admins))
+
+
+def gen_sheets(site, sec, out, packages):
+    first = site.first
+    last = next((o for o in site.servers if o["last_resort"]), None)
+    names = ", ".join(o["name"] for o in site.servers)
+    out.add("runbook.md", f"""\
+# {site.name}: runbook
+
+{HEADER} {VERSION} from `{site.src}`. Three servers: {names}.
+{first['name']} is the usual primary of the database{f"; {last['name']} becomes the primary only when the other two can't" if last else ""}.
+
+## 1. Before you start
+
+- Each server: Ubuntu 26.04 LTS, its host name (`hostname -s`) as in
+  `{site.src}`, its own IPv4 and IPv6 addresses on an interface, the clock
+  synchronized, and `apt-get` working.
+- {"Each server's folder has the packages already (`--packages`)." if packages else
+   "In each server's folder, next to `setup.sh`: Radiator's packages from" + chr(10)
+   + "  Radiator Software (`radiator_4.30-1_all.deb` and" + chr(10)
+   + "  `radiator-radius-utilxs_*.deb`), and `radiator-yubikey_" + VERSION + "_all.deb`" + chr(10)
+   + "  with its `install.sh`; or run yubikey-turnkey again with `--packages DIR`."}
+- Between the servers, and from the admin subnets, SSH and the ports in
+  `{site.src}`'s comments must not be blocked by firewalls on the way.
+
+## 2. Copy each folder to its server
+
+Each folder holds secrets: copy it as root, readable by root only, for
+example:
+
+```bash
+{chr(10).join(f"scp -r {o['name']}/ root@{o['fqdn']}:/root/turnkey" for o in site.servers)}
+```
+
+## 3. Check each server
+
+On each server, change nothing, and fix what it reports:
+
+```bash
+sudo /root/turnkey/setup.sh --check
+```
+
+## 4. Set up all three
+
+Run setup.sh on all three, at about the same time (within 30 minutes of
+each other): etcd starts only when two servers run it, the other servers
+wait for {first['name']}'s database, and each tells you what it waits for.
+
+```bash
+sudo /root/turnkey/setup.sh
+```
+
+{first['name']} creates the database, with the anycast check's keys and
+service accounts and the groups in `{site.src}`. Each server ends with a
+report: the cluster, the anycast check, and the BGP sessions, which come up
+once the routers are configured (step 5). If setup.sh stops, fix the cause
+and run it again: it goes on where it stopped. Run it again whenever
+yubikey-turnkey changed the folder: it changes only what differs.
+
+## 5. The routers
+
+As in `routers.md`. Each server advertises the anycast addresses once its
+BGP sessions are up and its check passes.
+
+## 6. The admins' machines
+
+The admins manage the YubiKeys, accounts and groups with `yubikey-db.sh`
+(from the radiator-yubikey release, with `psql` from postgresql-client).
+From `admin/`: `ca.crt` as `~/.yubikey-ca.crt`, your line of `pgpass` in
+`~/.pgpass` (mode 0600), and `. ./pg.env`. The servers' names must resolve
+there, to their IPv4 addresses. Then add the YubiKeys and put the accounts
+in groups, as in the guide:
+
+```bash
+cd /opt/radiator-yubikey        # or the release's folder
+./yubikey-db.sh import users.csv
+./yubikey-db.sh member add netadmins alice
+```
+
+## 7. The devices
+
+As in `devices.md`: the anycast addresses as their RADIUS and TACACS+
+servers, with their secret and key.
+
+## 8. Check
+
+On each server:
+
+```bash
+sudo patronictl -c /etc/patroni/18-main.yml list
+sudo /opt/radiator-yubikey/yubikey-anycast.sh status
+sudo /opt/radiator-yubikey/yubikey-partition.sh status
+sudo vtysh -c 'show bgp summary'
+```
+
+## Keep
+
+`secrets.toml` and this folder hold every password and key: keep them, and
+nothing else, where only you can read them. Each server keeps a copy of
+its own in `/etc/yubikey-turnkey`.
+""")
+
+    r = [f"# {site.name}: routers", "",
+         f"{HEADER} {VERSION} from `{site.src}`.", "",
+         "Each site's router (or both, where a site has two) has a BGP session with",
+         "its server over IPv4 and one over IPv6, with BFD. The server advertises",
+         "the anycast addresses while its Radiator logs users in, and withdraws",
+         "them when it can't:", "",
+         f"- IPv4: `{site.any4}/32`",
+         f"- IPv6: `{site.any6}/128`", "",
+         "Each router:", "",
+         "- accepts only these two routes from its server, at most one per session,",
+         "  and sends it nothing (the server ignores anything it sends);",
+         "- runs BFD on both sessions, so that it drops a server that stops",
+         "  within a second;",
+         "- passes the routes on to the other sites' routers, like your other",
+         "  routes, so that devices reach another site when theirs withdraws. A",
+         "  route from a router's own server (eBGP) already wins over the same",
+         "  route learned from another router (iBGP); don't give another site's",
+         "  route a higher local preference;",
+         "- doesn't send the anycast addresses elsewhere (a default route) while",
+         "  no server advertises them: a static route with a high distance can",
+         "  reject them.", "",
+         f"The servers' AS: {site.asn}. The firewall on each server lets its",
+         "routers in on TCP 179 (BGP) and UDP 3784 (BFD).", ""]
+    for o in site.servers:
+        for rt in o["routers"]:
+            r += [f"## {rt['name']} ({o['name']}'s site)", "",
+                  "| Session | Router | Server | Server AS | Accept |", "|---|---|---|---|---|",
+                  f"| IPv4 | {rt['ipv4']} (AS {rt['asn']}) | {o['ipv4']} | {site.asn} | {site.any4}/32 |",
+                  f"| IPv6 | {rt['ipv6']} (AS {rt['asn']}) | {o['ipv6']} | {site.asn} | {site.any6}/128 |", "",
+                  "As FRR configuration, for example:", "", "```text",
+                  f"ip prefix-list RADIUS-ANYCAST seq 10 permit {site.any4}/32",
+                  f"ipv6 prefix-list RADIUS-ANYCAST seq 10 permit {site.any6}/128",
+                  "!",
+                  f"ip route {site.any4}/32 reject 250",
+                  f"ipv6 route {site.any6}/128 reject 250",
+                  "!",
+                  "route-map FROM-YUBIKEY permit 10",
+                  " match ip address prefix-list RADIUS-ANYCAST",
+                  "exit",
+                  "route-map FROM-YUBIKEY permit 20",
+                  " match ipv6 address prefix-list RADIUS-ANYCAST",
+                  "exit",
+                  "route-map NOTHING deny 10",
+                  "exit",
+                  "!",
+                  f"router bgp {rt['asn']}",
+                  f" neighbor {o['ipv4']} remote-as {site.asn}",
+                  f" neighbor {o['ipv4']} bfd",
+                  f" neighbor {o['ipv6']} remote-as {site.asn}",
+                  f" neighbor {o['ipv6']} bfd",
+                  " address-family ipv4 unicast",
+                  f"  neighbor {o['ipv4']} activate",
+                  f"  neighbor {o['ipv4']} route-map FROM-YUBIKEY in",
+                  f"  neighbor {o['ipv4']} route-map NOTHING out",
+                  f"  neighbor {o['ipv4']} maximum-prefix 1",
+                  " exit-address-family",
+                  " address-family ipv6 unicast",
+                  f"  neighbor {o['ipv6']} activate",
+                  f"  neighbor {o['ipv6']} route-map FROM-YUBIKEY in",
+                  f"  neighbor {o['ipv6']} route-map NOTHING out",
+                  f"  neighbor {o['ipv6']} maximum-prefix 1",
+                  " exit-address-family",
+                  "exit", "```", ""]
+    out.add("routers.md", "\n".join(r))
+
+    servers = f"`{site.any4}` and `{site.any6}`"
+    if site.service_name:
+        servers += f" (`{site.service_name}`)"
+    dv = [f"# {site.name}: devices", "",
+          f"{HEADER} {VERSION} from `{site.src}`. It holds every device's",
+          "secret and key: keep it where only you can read it.", "",
+          f"Every device uses the anycast addresses, {servers},",
+          "as its only RADIUS server and its only TACACS+ server. They reach the",
+          "nearest site that logs users in.", "",
+          "- RADIUS: authentication on UDP port 1812, accounting on 1813. While the",
+          "  database's primary moves (a planned switchover), Radiator holds logins",
+          "  for up to about 6 s: keep the device's timeout and retries above that.",
+          "- TACACS+: TCP port 49, single connection or not.",
+          "- The device must send from the address listed for it here: Radiator",
+          "  knows a device, its secret and key, and its device group, by that",
+          "  address" + (", and takes any other address as the catch-all."
+                         if site.catch_all else "; it ignores a device it doesn't know."),
+          "- `enable` is a second login with a new OTP. A group's privilege level",
+          "  applies at login, so users don't need it.", ""]
+    for g in site.device_groups:
+        dv += [f"## Device group {g}", "", "| Device | Address | RADIUS secret | TACACS+ key |", "|---|---|---|---|"]
+        for d in site.devices:
+            if d["group"] == g:
+                ds = sec["device"][d["address"]]
+                dv.append(f"| {d['name'] or '-'} | {d['address']} | `{ds['secret']}` | `{ds['tacacs_key']}` |")
+        dv.append("")
+    if site.catch_all:
+        dv += [f"## The catch-all (device group {site.catch_all_group})", "",
+               "Any device that isn't listed above:", "",
+               "| RADIUS secret | TACACS+ key |", "|---|---|",
+               f"| `{sec['catch_all']['secret']}` | `{sec['catch_all']['tacacs_key']}` |", ""]
+    out.add("devices.md", "\n".join(dv))
+
+
+def copy_packages(site, out, pkgdir):
+    import glob
+    want = []
+    rad = sorted(glob.glob(os.path.join(pkgdir, "radiator_*_all.deb"))
+                 + glob.glob(os.path.join(pkgdir, "radiator-locked_*_all.deb")))
+    utilxs = sorted(glob.glob(os.path.join(pkgdir, "radiator-radius-utilxs_*.deb")))
+    yk = os.path.join(pkgdir, f"radiator-yubikey_{VERSION}_all.deb")
+    inst = os.path.join(pkgdir, "install.sh")
+    if len(rad) != 1:
+        die(f"{pkgdir} must hold one radiator_*_all.deb (or radiator-locked_*_all.deb), not {len(rad)}")
+    if len(utilxs) != 1:
+        die(f"{pkgdir} must hold one radiator-radius-utilxs_*.deb, not {len(utilxs)}")
+    for p in (yk, inst):
+        if not os.path.isfile(p):
+            die(f"{pkgdir} has no {os.path.basename(p)} (radiator-yubikey's package and install.sh, version {VERSION})")
+    want = rad + utilxs + [yk, inst]
+    for o in site.servers:
+        for p in want:
+            with open(p, "rb") as fh:
+                out.add(f"{o['name']}/{os.path.basename(p)}", fh.read(), 0o700 if p == inst else 0o600)
+
+
+# ---------------------------------------------------------------------------
+# Writing
+# ---------------------------------------------------------------------------
+
+MANIFEST = ".turnkey-files"
+
+
+def compare(outdir, files):
+    """What would change in OUTDIR: (paths to write, paths to remove)."""
+    write_, remove = [], []
+    for path, (mode, data) in sorted(files.items()):
+        p = os.path.join(outdir, path)
+        try:
+            with open(p, "rb") as fh:
+                same = fh.read() == data
+            same = same and (os.stat(p).st_mode & 0o777) == mode
+        except OSError:
+            same = False
+        if not same:
+            write_.append(path)
+    try:
+        with open(os.path.join(outdir, MANIFEST)) as fh:
+            old = [x for x in fh.read().split("\n") if x]
+    except OSError:
+        old = []
+    for path in old:
+        if path not in files and os.path.lexists(os.path.join(outdir, path)):
+            remove.append(path)
+    return write_, remove
+
+
+def write_out(outdir, files, write_, remove):
+    os.makedirs(outdir, mode=0o700, exist_ok=True)
+    os.chmod(outdir, 0o700)
+    for path in write_:
+        mode, data = files[path]
+        p = os.path.join(outdir, path)
+        os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+        tmp = p + ".new"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    for path in remove:
+        os.remove(os.path.join(outdir, path))
+        d = os.path.dirname(os.path.join(outdir, path))
+        while d != outdir and os.path.isdir(d) and not os.listdir(d):
+            os.rmdir(d)
+            d = os.path.dirname(d)
+    with open(os.path.join(outdir, MANIFEST + ".new"), "w") as fh:
+        fh.write("".join(p + "\n" for p in sorted(files)))
+    os.replace(os.path.join(outdir, MANIFEST + ".new"), os.path.join(outdir, MANIFEST))
+
+
+def show(*parts):
+    """A path to print: relative to the current folder when it is in it."""
+    p = os.path.join(*parts)
+    r = os.path.relpath(p)
+    return p if r.startswith("..") else r
+
+
+def summary(paths):
+    """What the new secrets (secrets.toml's paths) are, in words."""
+    seen = []
+    for p in paths:
+        part = p.split(".")
+        if part[0] == "device":
+            k = "device secrets"
+        elif part[0] == "pki":
+            k = "the CA" if part[1] in ("ca_key", "ca_crt") else f"{part[1]}'s certificate"
+        elif part[0] == "admin":
+            k = f"{part[1]}'s " + ("SCRAM verifier" if part[-1] == "scram" else "password")
+        elif part[0] == "anycast":
+            k = f"{part[1]}'s anycast key"
+        elif p == "cluster.radiator_scram":
+            k = "radiator's SCRAM verifier"
+        else:
+            k = p
+        if k not in seen:
+            seen.append(k)
+    return ", ".join(seen)
+
+
+def save_secrets(path, text):
+    tmp = path + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog=PROG, add_help=False,
+        usage=f"{PROG} [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml",
+        description="Make everything that sets up a three-site deployment of Radiator with the YubiKey "
+                    "database: one folder per server with its setup.sh, and the hand-off sheets for the "
+                    "routers and the devices, from SITE.toml (see site.example.toml).")
+    ap.add_argument("site", metavar="SITE.toml", nargs="?")
+    ap.add_argument("-o", "--out", metavar="DIR", help="write to DIR (default: out/ next to SITE.toml)")
+    ap.add_argument("-s", "--secrets", metavar="FILE",
+                    help="the secrets (default: secrets.toml next to SITE.toml)")
+    ap.add_argument("-p", "--packages", metavar="DIR",
+                    help="copy Radiator's packages, and radiator-yubikey's with install.sh, from DIR "
+                         "into each server's folder")
+    ap.add_argument("-n", "--check", action="store_true",
+                    help="change nothing: check the input, and whether the output is up to date")
+    ap.add_argument("--renew-certs", action="store_true", help="new certificates for the three servers")
+    ap.add_argument("-h", "--help", action="help", help="show this help")
+    ap.add_argument("-V", "--version", action="version", version=f"{PROG} {VERSION}")
+    args = ap.parse_args()
+    os.umask(0o077)     # everything it writes holds secrets, or sits with them
+    if not args.site:
+        ap.print_usage(sys.stderr)
+        die("name the input file, such as site.toml")
+    if args.check and args.renew_certs:
+        die("--check changes nothing: not with --renew-certs")
+
+    base = os.path.dirname(os.path.abspath(args.site))
+    outdir = os.path.abspath(args.out or os.path.join(base, "out"))
+    if not os.path.isfile(SETUP_SCRIPT):
+        die(f"{SETUP_SCRIPT} is missing (it comes with {PROG})")
+    secpath = args.secrets or os.path.join(base, "secrets.toml")
+
+    try:
+        site = check_site(args.site)
+    except InputError as e:
+        print(e, file=sys.stderr)
+        die("nothing written: fix the input first")
+
+    old = {}
+    if os.path.exists(secpath):
+        st = os.stat(secpath)
+        if st.st_mode & 0o077:
+            die(f"{secpath} is readable by others (mode {st.st_mode & 0o777:04o}): chmod 600 {secpath}")
+        try:
+            with open(secpath, "rb") as fh:
+                old = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as e:
+            die(f"{secpath}: {e}")
+    try:
+        if args.check:
+            # What is missing is made, here only, to report it.
+            sec, new = fill_secrets(site, old, False) if old else ({}, ["everything"])
+        else:
+            sec, new = fill_secrets(site, old, args.renew_certs)
+    except InputError as e:
+        die(str(e))
+
+    if args.check and new:
+        print(f"{show(secpath)}: would get new secrets: {summary(new)}")
+        return 1
+
+    out = Out()
+    for sv in site.servers:
+        gen_server(site, sec, out, sv)
+    gen_admin(site, sec, out)
+    gen_sheets(site, sec, out, args.packages)
+    if args.packages:
+        copy_packages(site, out, args.packages)
+
+    sectext = dump_secrets(sec, site)
+    write_, remove = compare(outdir, out.files)
+    if args.check:
+        changed = False
+        try:
+            with open(secpath) as fh:
+                if fh.read() != sectext:
+                    print(f"{show(secpath)}: would be written again")
+                    changed = True
+        except OSError:
+            changed = True
+        for p in write_:
+            print(f"{show(outdir, p)}: would be written")
+        for p in remove:
+            print(f"{show(outdir, p)}: would be removed")
+        if not changed and not write_ and not remove:
+            print(f"{show(outdir)}: up to date")
+        return 1 if changed or write_ or remove else 0
+
+    try:
+        with open(secpath) as fh:
+            same = fh.read() == sectext
+    except OSError:
+        same = False
+    if not same:
+        save_secrets(secpath, sectext)
+    if new and not old:
+        print(f"made {show(secpath)}, with every password, key and certificate")
+    elif new:
+        print(f"{show(secpath)}: new {summary(new)}")
+    write_out(outdir, out.files, write_, remove)
+    # The files written: one line per folder of out/, unless only a few.
+    if len(write_) + len(remove) <= 10:
+        for p in write_:
+            print(f"wrote {show(outdir, p)}")
+        for p in remove:
+            print(f"removed {show(outdir, p)}")
+    else:
+        for top in sorted({p.split("/")[0] for p in write_ + remove}):
+            mine = [p for p in write_ if p.split("/")[0] == top]
+            gone = [p for p in remove if p.split("/")[0] == top]
+            if mine == [top]:
+                print(f"wrote {show(outdir, top)}")
+            else:
+                print(f"{show(outdir, top)}/: {len(mine)} written" + (f", {len(gone)} removed" if gone else ""))
+    if not write_ and not remove:
+        print(f"{show(outdir)}: up to date")
+
+    gone = sorted(set((old.get("device") or {})) - {d["address"] for d in site.devices})
+    if gone and (write_ or remove):
+        note(f"{show(secpath)} keeps the secrets of devices no longer in {site.src}: {', '.join(gone)}")
+    for sv in site.servers:
+        if expires_within(sec["pki"][sv["name"]]["crt"], 60):
+            note(f"warning: the certificate of {sv['name']} expires within 60 days: "
+                 f"run {PROG} --renew-certs, then setup.sh on every server")
+    if expires_within(sec["pki"]["ca_crt"], 365):
+        note("warning: the cluster's CA certificate expires within a year")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
