@@ -20,6 +20,8 @@
 #      if all of them match. Otherwise nothing is changed.
 #   AES keys and private IDs never appear in output or on a command line; the
 #   snapshot is deleted (shred) when the script exits.
+#   Only the YubiKeys are copied: the service accounts and groups that
+#   yubikey-db.sh 1.10.0 added are not (it warns when the source has any).
 #
 # MODES
 #   new   (default) First migration. The PostgreSQL table must be empty.
@@ -452,8 +454,15 @@ if "$SQLITE3" -batch -readonly "$WORKDIR/snapshot.db" "SELECT label FROM yubikey
     SRC_LABEL=label
 fi
 
+# Service accounts and groups (yubikey-db.sh 1.10.0) are not copied.
+groups=$("$SQLITE3" -batch -readonly "$WORKDIR/snapshot.db" \
+    "SELECT (SELECT count(*) FROM service_accounts) || ' ' || (SELECT count(*) FROM user_groups);" 2>/dev/null) || groups=''
+
 info "Source: $SRC (snapshot taken $snapshot_time)"
 info "Target: $DB_DESC, mode $MODE, AES keys stored as $SECRET_ENCODING"
+if [[ -n $groups && $groups != '0 0' ]]; then
+    printf '%s: warning: %s\n' "$PROG" "$SRC has ${groups% *} service account(s) and ${groups#* } group(s), which this script doesn't copy: add them again with 'yubikey-db.sh -b pg service add' and 'group add' (and member, access and rule)" >&2
+fi
 if [[ $DRY_RUN == 1 ]]; then info "Dry run: all changes will be rolled back"; fi
 
 bool() { if [[ $1 == 1 ]]; then echo true; else echo false; fi; }

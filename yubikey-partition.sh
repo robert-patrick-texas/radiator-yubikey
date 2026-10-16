@@ -235,19 +235,60 @@ cluster_psql() {
     return $rc
 }
 
+# find_ydb: print the path of yubikey-db.sh (next to this script, or on the
+# PATH), or fail.
+find_ydb() {
+    local ydb=${YUBIKEY_DB_SH:-}
+    if [[ -z $ydb ]]; then
+        if [[ -x $HERE/yubikey-db.sh ]]; then ydb=$HERE/yubikey-db.sh; else ydb=$(command -v yubikey-db.sh) || true; fi
+    fi
+    [[ -n $ydb ]] || { echo "yubikey-db.sh not found (put it next to $PROG or on the PATH)"; return 1; }
+    echo "$ydb"
+}
+
+# The service-account and group tables, in the order they are filled. The
+# copy gets what Radiator reads; they are small, so they are copied whole.
+GROUP_TABLES=(service_accounts user_groups group_members group_access group_rules)
+GROUP_ROWS=(
+    "format('INSERT INTO service_accounts (username, password, active) VALUES (%L, %L, %s);', username, password, active) FROM service_accounts"
+    "format('INSERT INTO user_groups (name) VALUES (%L);', name) FROM user_groups"
+    "format('INSERT INTO group_members (user_group, username) VALUES (%L, %L);', user_group, username) FROM group_members"
+    "format('INSERT INTO group_access (user_group, device_group, priv_lvl, radius_reply) VALUES (%L, %L, %s, %L);', user_group, device_group, priv_lvl, radius_reply) FROM group_access"
+    "format('INSERT INTO group_rules (user_group, device_group, seq, rule) VALUES (%L, %L, %s, %L);', user_group, device_group, seq, rule) FROM group_rules"
+)
+
 # sync: make the copy match this server's PostgreSQL, except that its
 # counters only move forward. A YubiKey whose keys changed (or that is gone)
 # is replaced (or removed); its counters start again from the database's.
+# The service accounts and groups are replaced whole, when this server's
+# PostgreSQL has them (a copy made before they existed gets their tables).
 sync_copy() {
-    local rows out
+    local rows out groups='' t q ydb
     rows=$(local_psql -c "SELECT format('INSERT INTO src VALUES (%L, %L, %L, %L, %L, %L, %L, %L, %L);',
                                 username, password, active, tokenId, userId, secret, counter, low, high)
                           FROM yubikeys" 2>&1) || { echo "cannot read this server's PostgreSQL: ${rows%%$'\n'*}"; return 1; }
+    out=$(local_psql -c "SELECT to_regclass('group_rules') IS NOT NULL" 2>&1) \
+        || { echo "cannot read this server's PostgreSQL: ${out%%$'\n'*}"; return 1; }
+    if [[ $out == t ]]; then
+        if [[ $(copy_read "SELECT count(*) FROM sqlite_master WHERE name = 'group_rules'" 2>/dev/null) != 1 ]]; then
+            ydb=$(find_ydb) || return 1
+            out=$("$ydb" -d "$COPY" init ${OWNER:+--owner "$OWNER"} 2>&1) \
+                || { echo "cannot add the group tables to the copy: ${out%%$'\n'*}"; return 1; }
+        fi
+        for q in "${GROUP_ROWS[@]}"; do
+            out=$(local_psql -c "SELECT $q" 2>&1) || { echo "cannot read this server's PostgreSQL: ${out%%$'\n'*}"; return 1; }
+            groups+=$out${out:+$'\n'}
+        done
+        for ((t = ${#GROUP_TABLES[@]} - 1; t >= 0; t--)); do
+            groups="DELETE FROM ${GROUP_TABLES[t]};"$'\n'$groups
+        done
+    fi
     out=$({
         printf '.bail on\n.timeout 10000\nBEGIN IMMEDIATE;\n'
         printf 'CREATE TEMP TABLE src (username text, password text, active int, tokenId text, userId text,\n'
         printf '    secret text, counter int, low int, high int);\n'
         printf '%s\n' "$rows"
+        printf '%s' "$groups"
         cat <<'EOF'
 DELETE FROM yubikeys WHERE NOT EXISTS (SELECT 1 FROM src s WHERE s.userId = yubikeys.userId
     AND s.tokenId = yubikeys.tokenId AND s.secret = yubikeys.secret);
@@ -349,11 +390,7 @@ leave_partition() {
 cmd_setup() {
     local ydb out
     load_conf
-    ydb=${YUBIKEY_DB_SH:-}
-    if [[ -z $ydb ]]; then
-        if [[ -x $HERE/yubikey-db.sh ]]; then ydb=$HERE/yubikey-db.sh; else ydb=$(command -v yubikey-db.sh) || true; fi
-    fi
-    [[ -n $ydb ]] || die "yubikey-db.sh not found (put it next to $PROG or on the PATH)"
+    ydb=$(find_ydb) || die "$ydb"
     command -v "$SQLITE3" >/dev/null || die "$SQLITE3 not found (sudo apt install sqlite3)"
     if [[ $EUID -eq 0 ]] && ! perl -MDBD::SQLite -e 1 2>/dev/null; then
         die "Radiator needs DBD::SQLite for the copy (sudo apt install libdbd-sqlite3-perl)"
@@ -366,9 +403,8 @@ cmd_setup() {
     fi
     [[ -f $CLUSTER_CONF ]] || die "no $CLUSTER_CONF (write it with 'yubikey-db.sh -b pg config')"
     grep -q 'dbi:Pg:' "$CLUSTER_CONF" || die "$CLUSTER_CONF has no PostgreSQL DBSource"
-    if [[ ! -f $COPY ]]; then
-        out=$("$ydb" -d "$COPY" init ${OWNER:+--owner "$OWNER"} 2>&1) || die "cannot make the copy: $out"
-    fi
+    # init also brings a copy made by an older version up to date.
+    out=$("$ydb" -d "$COPY" init ${OWNER:+--owner "$OWNER"} 2>&1) || die "cannot make the copy: $out"
     out=$(sync_copy) || die "$out"
     "$ydb" -d "$COPY" config >"$COPY_CONF.new" || die "cannot write $COPY_CONF"
     if [[ $EUID -eq 0 ]]; then chown root:radiator "$COPY_CONF.new"; fi

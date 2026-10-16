@@ -71,7 +71,51 @@ Commands:
         counter, low, high, label. AES keys are 32 hex characters and private
         IDs are in clear text; passwords are as stored ({crypt} hashes stay
         hashed). An existing FILE is replaced only with --force.
-  config                        Print a sample Radiator AuthBy clause
+  config                        Print a sample Radiator AuthBy clause, and the
+                                clauses ServiceAccounts and GroupAccess
+
+Service accounts and groups (the tables are added by init):
+  service add NAME [-l LABEL] [--inactive] [--generate]
+        Add a service account. NAME is svc. followed by letters, digits and
+        . _ @ + -. Its password (at least 12 characters) is asked for twice,
+        read from standard input when it is not a terminal, or generated
+        (--generate: 32 random characters, shown once). It is stored hashed
+        like static passwords (-H).
+  service password NAME [--generate]   Change the password
+  service list                         List the accounts (no passwords shown)
+  service enable|disable NAME          Let the account log in, or not
+  service delete NAME                  Delete it, and take it out of its groups
+  service label NAME LABEL             Set its label ('' removes it)
+  group add NAME [-l LABEL]            Add a group (up to 64 letters, digits
+                                       and . _ -)
+  group delete NAME                    Delete it, with its members, access
+                                       and rules
+  group list                           List groups, members and access
+  group label NAME LABEL               Set its label ('' removes it)
+  member add|delete GROUP USER...      Put YubiKey users or service accounts
+                                       in a group, or take them out
+  access set GROUP DEVICE_GROUP PRIV_LVL [-r RADIUS_REPLY]
+        Let GROUP log in to the devices in DEVICE_GROUP (the Identifier of
+        their <Client> clauses in Radiator, or * for every device), at
+        TACACS+ privilege level PRIV_LVL (0-15), or change the level. -r
+        sets the RADIUS reply attributes for those logins, such as
+        'cisco-avpair="shell:priv-lvl=15"' ('' removes them). An account in
+        several groups gets the most privileged one allowed on the device.
+  access delete GROUP DEVICE_GROUP     Take that access away, with its rules
+  access list [GROUP]                  List the access of every group
+  access check USER DEVICE_GROUP
+        Show what Radiator finds for USER on a device in DEVICE_GROUP: the
+        group, privilege level, TACACS+ rules and RADIUS reply. Exits 1 when
+        USER may not log in there.
+  rule add GROUP DEVICE_GROUP 'RULE' [--seq N]
+        Add a TACACS+ command rule, after the last one (or at N). RULE is
+        permit|permitreplace|deny, then a Perl regular expression for each
+        argument of the command, in order, each matched whole, e.g.
+        'deny service=shell cmd=reload' or 'permit service=shell cmd=show'.
+        The first rule that matches decides; a command no rule matches is
+        denied. With no rules, every command is allowed.
+  rule delete GROUP DEVICE_GROUP SEQ   Delete a rule
+  rule list GROUP DEVICE_GROUP         List the rules, in order
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
@@ -164,7 +208,51 @@ Commands:
         counter, low, high, label. AES keys are 32 hex characters and private
         IDs are in clear text; passwords are as stored ({crypt} hashes stay
         hashed). An existing FILE is replaced only with --force.
-  config                        Print a sample Radiator AuthBy clause
+  config                        Print a sample Radiator AuthBy clause, and the
+                                clauses ServiceAccounts and GroupAccess
+
+Service accounts and groups (the tables are added by init):
+  service add NAME [-l LABEL] [--inactive] [--generate]
+        Add a service account. NAME is svc. followed by letters, digits and
+        . _ @ + -. Its password (at least 12 characters) is asked for twice,
+        read from standard input when it is not a terminal, or generated
+        (--generate: 32 random characters, shown once). It is stored hashed
+        like static passwords (-H).
+  service password NAME [--generate]   Change the password
+  service list                         List the accounts (no passwords shown)
+  service enable|disable NAME          Let the account log in, or not
+  service delete NAME                  Delete it, and take it out of its groups
+  service label NAME LABEL             Set its label ('' removes it)
+  group add NAME [-l LABEL]            Add a group (up to 64 letters, digits
+                                       and . _ -)
+  group delete NAME                    Delete it, with its members, access
+                                       and rules
+  group list                           List groups, members and access
+  group label NAME LABEL               Set its label ('' removes it)
+  member add|delete GROUP USER...      Put YubiKey users or service accounts
+                                       in a group, or take them out
+  access set GROUP DEVICE_GROUP PRIV_LVL [-r RADIUS_REPLY]
+        Let GROUP log in to the devices in DEVICE_GROUP (the Identifier of
+        their <Client> clauses in Radiator, or * for every device), at
+        TACACS+ privilege level PRIV_LVL (0-15), or change the level. -r
+        sets the RADIUS reply attributes for those logins, such as
+        'cisco-avpair="shell:priv-lvl=15"' ('' removes them). An account in
+        several groups gets the most privileged one allowed on the device.
+  access delete GROUP DEVICE_GROUP     Take that access away, with its rules
+  access list [GROUP]                  List the access of every group
+  access check USER DEVICE_GROUP
+        Show what Radiator finds for USER on a device in DEVICE_GROUP: the
+        group, privilege level, TACACS+ rules and RADIUS reply. Exits 1 when
+        USER may not log in there.
+  rule add GROUP DEVICE_GROUP 'RULE' [--seq N]
+        Add a TACACS+ command rule, after the last one (or at N). RULE is
+        permit|permitreplace|deny, then a Perl regular expression for each
+        argument of the command, in order, each matched whole, e.g.
+        'deny service=shell cmd=reload' or 'permit service=shell cmd=show'.
+        The first rule that matches decides; a command no rule matches is
+        denied. With no rules, every command is allowed.
+  rule delete GROUP DEVICE_GROUP SEQ   Delete a rule
+  rule list GROUP DEVICE_GROUP         List the rules, in order
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.

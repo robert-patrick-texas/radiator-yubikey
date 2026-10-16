@@ -178,6 +178,20 @@ login "active=0"                        "REJECT: Yubikey is not active" inactive
 login "active='true'"                   ACCEPT truey s3cr3t "$(otp vvccccbbcdej 4a6f8e2d1c3f $K1 1 0)"
 login "active='false'"                  ACCEPT falsey s3cr3t "$(otp vvccccbbcdek 4a6f8e2d1c40 $K1 1 0)"
 login "password stored in clear text"   ACCEPT clearpw 'plain pw' "$(otp vvccccbbcdel 4a6f8e2d1c41 $K1 1 0)"
+# A YubiKey stored for the username DEFAULT logs in no one else: Radiator
+# never falls back to a user called DEFAULT for a YubiKey clause, by default
+# and with the NoDefault that 'config' writes.
+"$Y" add -u DEFAULT -P vvccccbbcdbd -p 4a6f8e2d1c43 -k $K1 -w s3cr3t >/dev/null
+login "another user with DEFAULT's YubiKey" "REJECT: Yubikey secret not found in database" \
+    mallory s3cr3t "$(otp vvccccbbcdbd 4a6f8e2d1c43 $K1 1 0)"
+sed -i '/^ *NoDefault *$/d' "$CONF"
+start_radiator
+login "...the same without NoDefault (Radiator's default)" "REJECT: Yubikey secret not found in database" \
+    mallory s3cr3t "$(otp vvccccbbcdbd 4a6f8e2d1c43 $K1 2 0)"
+login "...DEFAULT's YubiKey for DEFAULT itself" ACCEPT DEFAULT s3cr3t "$(otp vvccccbbcdbd 4a6f8e2d1c43 $K1 3 0)"
+"$Y" delete DEFAULT >/dev/null
+make_conf
+start_radiator
 login "16-character public ID"          "REJECT: Yubikey secret not found in database" longpub s3cr3t "$(otp vvccccbbcdefghij 4a6f8e2d1c42 $K1 1 0)"
 check "UpdateQuery saved counter/low/high" "5|0|0" \
     "$(sqlite3 "$DB" "SELECT counter || '|' || low || '|' || high FROM yubikeys WHERE username = 'alice';")"
@@ -312,7 +326,7 @@ make_conf
 sed -i 's/^\( *\)DBAuth *$/\1DBAuth       lab-radiator-pw/' "$CONF"
 unset PGHOST PGSSLROOTCERT
 check "DBSource from 'config'" "dbi:Pg:dbname=yubikey;host=localhost;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2" \
-    "$(awk '/^ +DBSource/ {print $2}' "$CONF")"
+    "$(awk '/^ +DBSource/ {print $2; exit}' "$CONF")"
 start_radiator
 login "password:OTP over TLS"           ACCEPT alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 5 0)"
 login "the same OTP again"              "REJECT: Replay attack detected" alice s3cr3t "$(otp vvccccbbcdef 4a6f8e2d1c3b $K1 5 0)"

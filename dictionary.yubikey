@@ -1,0 +1,13 @@
+# dictionary.yubikey - Radiator dictionary entries for radiator-yubikey's
+# groups and TACACS+ configuration (radiator-groups.example.conf). Install it
+# as /etc/radiator/dictionary.yubikey, and load it after Radiator's own:
+#
+#   DictionaryFile  /opt/radiator/radiator/dictionary, %D/dictionary.yubikey
+#
+# YubiKey-Via marks the requests that <ServerTACACSPLUS> makes from TACACS+
+# (AddToRequest YubiKey-Via=tacacs), so that Handlers and the GroupAccess
+# clause can tell them from RADIUS requests. Like Radiator's own internal
+# attributes, its number is above 255 with no vendor, so no RADIUS packet can
+# carry it: a RADIUS client cannot send it.
+
+ATTRIBUTE	YubiKey-Via	95170001	string

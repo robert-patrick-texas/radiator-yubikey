@@ -29,6 +29,51 @@ $ SQLITE3=/nonexistent/sqlite3 yubikey-db.sh -d <WORK>/yubicred.db config
 
     # Also check that the private ID in the OTP matches userId.
     CheckSecretId
+
+    # Never fall back to a user called DEFAULT. Radiator's YubiKey clauses
+    # already don't (and look up the login's own username in any case); it
+    # is written here so that it stays so.
+    NoDefault
+</AuthBy>
+
+# Service accounts (svc.NAME) log in with a password from the table
+# service_accounts ('yubikey-db.sh service add'): the Handler for svc.* users
+# uses this clause instead of the YubiKey one. NoDefault: never fall back to
+# an account called DEFAULT.
+<AuthBy SQL>
+    Identifier       ServiceAccounts
+    DBSource         dbi:SQLite:dbname=<WORK>/yubicred.db
+    DBUsername
+    DBAuth
+    NoDefault
+    AuthSelect       SELECT password FROM service_accounts WHERE username = ? AND active = 1
+    AuthSelectParam  %0
+    AuthColumnDef    0, User-Password, check
+</AuthBy>
+
+# The group check, after the YubiKey or password check of every login (with
+# AuthByPolicy ContinueWhileAccept in the Handler): one of the account's
+# groups must be allowed on the device's group ('yubikey-db.sh access set'),
+# which is the Identifier of the device's <Client> clause. The most
+# privileged of those groups decides. A TACACS+ request (marked
+# YubiKey-Via=tacacs by <ServerTACACSPLUS>) gets that group's name and
+# command rules, for its GroupMemberAttr and AuthorizeGroupAttr; a RADIUS
+# request gets the group's RADIUS reply attributes. No group: the login is
+# rejected.
+<AuthBy SQL>
+    Identifier       GroupAccess
+    DBSource         dbi:SQLite:dbname=<WORK>/yubicred.db
+    DBUsername
+    DBAuth
+    NoCheckPassword
+    NoDefault
+    AuthSelect       SELECT CASE WHEN ? = 'tacacs' THEN user_group END, CASE WHEN ? = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = ? AND device_group IN (?, '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %0
+    AuthSelectParam  %{Client:Identifier}
+    AuthColumnDef    0, OSC-Group-Identifier, reply
+    AuthColumnDef    1, GENERIC, reply
 </AuthBy>
 [exit 0]
 

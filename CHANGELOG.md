@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+TACACS+, service accounts and groups. Nothing changes for an installation
+that doesn't use them. To use them, run `yubikey-db.sh init` (or `-b pg
+init`), which adds their tables, and follow the guide's new section,
+[Groups and TACACS+](docs/guide.md#groups-and-tacacs). A clause written
+again with `config` for a remote PostgreSQL has three `DBAuth` lines, one
+for each clause: put Radiator's password on each.
+
+### Added
+
+- Service accounts (`svc.NAME`), which log in with a password instead of a
+  YubiKey: `yubikey-db.sh service add|password|list|enable|disable|delete|label`.
+  Passwords are at least 12 characters, asked for twice, read from standard
+  input, or generated (`--generate`), and stored as `{crypt}` SHA-512
+  hashes.
+- Groups: `group add|delete|list|label`, `member add|delete`,
+  `access set|delete|list|check` and `rule add|delete|list`. A group may
+  log in to a device group (the `Identifier` of the devices' `<Client>`
+  clauses, or `*`) at a TACACS+ privilege level, with RADIUS reply
+  attributes and TACACS+ command rules. An account gets the most
+  privileged of its groups allowed on the device, and only while it has an
+  active YubiKey or is an active service account. `access check` shows
+  what Radiator finds for an account on a device group.
+- Tables `service_accounts`, `user_groups`, `group_members`,
+  `group_access` and `group_rules`, and the view `access_replies`, in both
+  databases. `init` adds them to an existing database and prints
+  `Added the service-account and group tables`. In PostgreSQL, Radiator's
+  role may read only the view and the service accounts' names, password
+  hashes and `active`.
+- `config` also prints the clauses `ServiceAccounts` and `GroupAccess` (for
+  PostgreSQL, reading from any server that answers, the primary or a
+  standby). Both have `NoDefault`, so Radiator never falls back to an
+  account called `DEFAULT`.
+- `radiator-groups.example.conf`: RADIUS and TACACS+ (port 49) through the
+  same Handlers, the YubiKey or password check followed by the group check,
+  devices in `/etc/radiator/clients.d`, TACACS+ accounting to a file. Every
+  TACACS+ authorization asks the groups again (`AllowAuthorizeOnly`,
+  `AuthorizationTimeout 0`), so a change, or a disabled account, applies to
+  sessions already open within 2 seconds, whichever of Radiator's
+  processes answers. It works around Radiator 4.30 answering a refused
+  TACACS+ authorization with an authentication packet, which devices take
+  for an error.
+- `dictionary.yubikey`, with the attribute `YubiKey-Via` that marks TACACS+
+  requests; a RADIUS client can't send it.
+- Partition mode: the copy also holds the service accounts and groups, and
+  a copy made by an older version gets their tables at the next sync.
+  `setup` now runs `yubikey-db.sh init` on an existing copy too.
+- `config`: the YubiKey clause has `NoDefault`, so Radiator never falls
+  back to a user called `DEFAULT`. Radiator 4.30's YubiKey clauses already
+  don't, by default (and look up the login's own username in any case), so
+  nothing changes; the line keeps it so. `e2e.sh` checks that a YubiKey
+  stored for `DEFAULT` logs in no one else, with and without the line.
+- `yubikey-db-migrate.sh` copies only the YubiKeys, as before, and warns
+  when the SQLite database has service accounts or groups, which it doesn't
+  copy.
+
+### Tests
+
+- `tests/run-tests.sh`: scenarios `groups` and `pg_groups` (42 in all),
+  which also run Radiator's `GroupAccess` query (on PostgreSQL as
+  Radiator's role); `pg_partition` checks the copied groups.
+- `tests/radiator/groups.sh` (`run.sh DIR groups`): Radiator with
+  `radiator-groups.example.conf`, logins over TACACS+ and RADIUS on SQLite
+  and PostgreSQL, with `tests/radiator/tacacs.pl`, a small TACACS+ client
+  on Radiator's own modules.
+
 ## 1.9.0 - 2026-10-15
 
 A planned switchover no longer leaves a login unanswered now and then. After

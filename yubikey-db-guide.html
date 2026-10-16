@@ -304,6 +304,8 @@ database servers</a></li>
 <li><a href="#partition-mode" id="toc-partition-mode">Partition
 mode</a></li>
 <li><a href="#anycast" id="toc-anycast">Anycast</a></li>
+<li><a href="#groups-and-tacacs" id="toc-groups-and-tacacs">Groups and
+TACACS+</a></li>
 <li><a href="#security" id="toc-security">Security</a></li>
 <li><a href="#troubleshooting"
 id="toc-troubleshooting">Troubleshooting</a></li>
@@ -376,9 +378,9 @@ generate</strong>, and that key is loaded into the database.</p>
 <td><code>yubikey-db.sh</code></td>
 <td>Creates the database, adds, updates, labels, lists, disables and
 deletes users and YubiKeys, checks a password and OTP
-(<code>verify</code>), exports and restores, and prints the Radiator
-configuration. SQLite by default, PostgreSQL with
-<code>-b pg</code>.</td>
+(<code>verify</code>), exports and restores, manages service accounts
+and groups, and prints the Radiator configuration. SQLite by default,
+PostgreSQL with <code>-b pg</code>.</td>
 </tr>
 <tr>
 <td><code>install.sh</code></td>
@@ -390,8 +392,8 @@ radiator-yubikey package</a>).</td>
 </tr>
 <tr>
 <td><code>yubikey-db-migrate.sh</code></td>
-<td>Copies everything from the SQLite database into PostgreSQL, verified
-row by row, and keeps counters in step during a cutover.</td>
+<td>Copies every YubiKey from the SQLite database into PostgreSQL,
+verified row by row, and keeps counters in step during a cutover.</td>
 </tr>
 <tr>
 <td><code>yubikey-db-user.example.sh</code></td>
@@ -402,6 +404,14 @@ variables at the top of the file.</td>
 <td><code>radiator.example.conf</code></td>
 <td>A Radiator configuration for YubiKey logins, to replace the
 package's sample.</td>
+</tr>
+<tr>
+<td><code>radiator-groups.example.conf</code>,
+<code>dictionary.yubikey</code></td>
+<td>A Radiator configuration for RADIUS and TACACS+ logins, by YubiKey
+or service account, checked against groups (see <a
+href="#groups-and-tacacs">Groups and TACACS+</a>), and the dictionary
+entry it needs.</td>
 </tr>
 <tr>
 <td><code>yubikey-partition.sh</code></td>
@@ -646,9 +656,9 @@ it.</p>
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
 Patroni, etcd and FRR (and debhelper and lintian, to build and check the
-package) added, and runs four tests of real Radiator logins:</p>
+package) added, and runs five tests of real Radiator logins:</p>
 <ul>
-<li><code>e2e.sh</code>, 134 checks in a throwaway container: SQLite
+<li><code>e2e.sh</code>, 140 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
 socket and over TLS, the example wrapper, a user with two YubiKeys (each
 with its own counters, PIN and <code>active</code>; another user's
@@ -657,10 +667,23 @@ runs, the same OTP sent twice at the same moment to two of Radiator's
 farm processes (accepted twice without the trigger, once with it), and a
 counter save on PostgreSQL whose answer is lost (its session ended while
 it waits for a standby: not answered with 1.8.1's
-<code>UpdateQuery</code>, accepted with this one's). For each login it
-checks Radiator's answer and the reason it logs, and that
-<code>verify</code> agrees.</li>
-<li><code>ha.sh</code>, 62 checks with four containers: two PostgreSQL
+<code>UpdateQuery</code>, accepted with this one's), and a YubiKey
+stored for the username <code>DEFAULT</code>, which logs in no one else.
+For each login it checks Radiator's answer and the reason it logs, and
+that <code>verify</code> agrees.</li>
+<li><code>groups.sh</code>, 107 checks in a throwaway container, with
+<code>radiator-groups.example.conf</code> and devices at addresses in
+127.0.0.0/8: logins over TACACS+ (with a small client on Radiator's own
+modules, and with Radiator's <code>tacacsplustest</code>) and RADIUS, by
+YubiKey and by service account, from devices in three device groups and
+from an unlisted one, on SQLite and then PostgreSQL. It checks each
+login, privilege level, command authorization and RADIUS reply against
+the groups; a login followed by eight authorizations at once, which
+several of Radiator's processes answer; <code>enable</code>; accounting;
+that a change in the groups, or a disabled account, applies to a session
+already open; and that nothing is allowed while PostgreSQL is
+stopped.</li>
+<li><code>ha.sh</code>, 63 checks with four containers: two PostgreSQL
 servers (primary and streaming standby, over TLS) and two Radiator
 servers, through a dead primary, a hung primary, failovers, an old
 primary coming back, a planned switchover (a login held until the
@@ -711,12 +734,13 @@ commands; the package's units neither enabled nor started by the
 install, restarted by an upgrade only while they run, stopped by a
 removal, and gone after a purge.</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all four, about 23 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, geo, or package)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all five, about 24 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, or package)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
-<code>Radiator 4.30-1: 134 passed, 0 failed</code>,
-<code>Two database servers: 62 passed, 0 failed</code>,
+<code>Radiator 4.30-1: 140 passed, 0 failed</code> (and
+<code>107 passed</code> for <code>groups.sh</code>),
+<code>Two database servers: 63 passed, 0 failed</code>,
 <code>Three sites: 191 passed, 0 failed</code> and
 <code>Package: 49 passed, 0 failed</code>. Run them again with each new
 Radiator version.
@@ -1088,9 +1112,11 @@ sudo chmod 0640 /etc/radiator/conf.d/yubikey.conf
 ./yubikey-db.sh config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null          # SQLite
 ./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null    # PostgreSQL</code></pre>
 <p>For PostgreSQL on a separate server, also put Radiator's password on
-the <code>DBAuth</code> line
-(<code>sudoedit /etc/radiator/conf.d/yubikey.conf</code>). This is why
-the file must not be readable by other users.</p>
+the <code>DBAuth</code> lines
+(<code>sudoedit /etc/radiator/conf.d/yubikey.conf</code>): one in each
+clause, <code>YubiKeySQL</code>, <code>ServiceAccounts</code> and
+<code>GroupAccess</code>. This is why the file must not be readable by
+other users.</p>
 <p>The clause it writes, for SQLite:</p>
 <pre class="apache"><code>&lt;AuthBy SQLYUBIKEY&gt;
     Identifier   YubiKeyLocal
@@ -1101,6 +1127,7 @@ the file must not be readable by other users.</p>
     UpdateQuery  update yubikeys set accessed=datetime(%5,&#39;unixepoch&#39;), counter=%0, low=%1, high=%2 where username=%3 and tokenId=%7
     Require2Factor
     CheckSecretId
+    NoDefault
 &lt;/AuthBy&gt;</code></pre>
 <ul>
 <li><code>AuthSelect</code> finds the row by both the username and the
@@ -1114,6 +1141,10 @@ the same counters again (see <a href="#database-layout">Database
 layout</a>).</li>
 <li><code>CheckSecretId</code> checks the private ID inside the OTP
 against the database.</li>
+<li><code>NoDefault</code>: never fall back to a user called
+<code>DEFAULT</code>, as some Radiator clauses do for a user they don't
+find. Radiator's YubiKey clauses already don't, by default; the line
+keeps it so.</li>
 <li><code>Require2Factor</code>: see below.</li>
 <li>For PostgreSQL, <code>config</code> also writes
 <code>Timeout 2</code>, <code>ConnectTimeout</code> and
@@ -1424,7 +1455,7 @@ AES keys or PINs; it shows each YubiKey's public ID,
 <td><code>sudo ./yubikey-db.sh delete alice</code></td>
 </tr>
 <tr>
-<td>Back up everything, encrypted</td>
+<td>Back up every YubiKey, encrypted</td>
 <td><code>sudo ./yubikey-db.sh export - | gpg -e -r backup@example.com &gt; yubikeys.csv.gpg</code></td>
 </tr>
 <tr>
@@ -1506,8 +1537,9 @@ valid again. <code>export FILE</code> writes a file with mode
 <p>You can also back up the database itself: for SQLite,
 <code>sudo sqlite3 /etc/radiator/db/yubicred.db ".backup '/root/yubicred-backup.db'"</code>
 takes a consistent copy while Radiator runs; for PostgreSQL, use
-<code>pg_dump</code>. Every backup holds every AES key: keep it
-encrypted.</p>
+<code>pg_dump</code>. Only such a backup holds the <a
+href="#groups-and-tacacs">service accounts and groups</a> too. Every
+backup holds every AES key: keep it encrypted.</p>
 </section>
 <section id="after-upgrading-the-scripts" class="level3">
 <h3>After upgrading the scripts</h3>
@@ -1550,7 +1582,7 @@ Radiator's clause again with <code>config</code> on each Radiator server
 (as in <a href="#install-the-configuration">Install the
 configuration</a>; with partition mode, as
 <code>yubikey-cluster.conf</code>), put Radiator's password back on the
-<code>DBAuth</code> line, and restart Radiator. Either can come first:
+<code>DBAuth</code> lines, and restart Radiator. Either can come first:
 until both are done, Radiator works as before, and once both are, a
 login whose counters were saved just as the primary stopped is answered
 (see <a href="#database-layout">Database layout</a>). With two database
@@ -1595,6 +1627,10 @@ SHA-256 fingerprint of the snapshot. Rows from the old example commands
 are normalized and each change is reported (for example, an
 <code>active</code> of <code>false</code> becomes 0, and the report
 warns that those YubiKeys could log in before).</p>
+<p>It copies only the YubiKeys. <a href="#groups-and-tacacs">Service
+accounts and groups</a> aren't copied: it warns when the SQLite database
+has any, and you add them again with
+<code>yubikey-db.sh -b pg</code>.</p>
 <p>The account that runs it must be a member of
 <code>yubikey_admin</code> and able to read the SQLite file, for example
 by joining the <code>radiator</code> group
@@ -1841,7 +1877,7 @@ Radiator's configuration (see <a
 href="#install-the-configuration">Install the configuration</a>):</p>
 <pre class="bash"><code>export PGHOST=db1.example.com,db2.example.com PGUSER=opsadmin PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt
 ./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null
-sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator&#39;s password on the DBAuth line
+sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator&#39;s password on each DBAuth line
 sudo systemctl restart radiator</code></pre>
 <p><code>config</code> writes:</p>
 <pre class="apache"><code>    DBSource     dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write
@@ -2386,7 +2422,7 @@ for two servers</a>:</p>
 export PGHOST=east1.example.com,east2.example.com,west.example.com PGUSER=opsadmin \
        PGSSLMODE=verify-full PGSSLROOTCERT=/etc/radiator/pg-ca.crt
 ./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null
-sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator&#39;s password on the DBAuth line
+sudoedit /etc/radiator/conf.d/yubikey.conf     # put Radiator&#39;s password on each DBAuth line
 sudo systemctl enable --now radiator</code></pre>
 <p><code>config</code> writes
 <code>host=east1.example.com,east2.example.com,west.example.com</code>
@@ -2972,6 +3008,332 @@ its check's user:
 </ul>
 </section>
 </section>
+<section id="groups-and-tacacs" class="level2">
+<h2>Groups and TACACS+</h2>
+<p>With <code>radiator-groups.example.conf</code> instead of
+<code>radiator.example.conf</code>, Radiator also takes logins over
+<strong>TACACS+</strong> (TCP port 49), and checks every login, RADIUS
+or TACACS+, against <strong>groups</strong> in the same database: which
+accounts may log in to which devices, at which TACACS+ privilege level,
+with which commands, and with which RADIUS reply attributes. It also
+takes <strong>service accounts</strong>: accounts that log in with a
+password instead of a YubiKey, for scripts and tools, named
+<code>svc.NAME</code>.</p>
+<section id="how-groups-work" class="level3">
+<h3>How groups work</h3>
+<ul>
+<li>A <strong>device group</strong> is the <code>Identifier</code> of
+the devices' <code>&lt;Client&gt;</code> clauses in Radiator, for
+example <code>core</code> for the core switches. Several devices or
+subnets can share one. A <code>&lt;Client DEFAULT&gt;</code> clause
+takes every device that isn't listed, in a device group of its own.</li>
+<li>A <strong>group</strong> holds accounts: YubiKey users and service
+accounts.</li>
+<li><strong>Access</strong> lets a group log in to the devices of a
+device group (or to every device, <code>*</code>), at a TACACS+
+privilege level from 0 to 15, with RADIUS reply attributes for RADIUS
+logins, and, if you want, TACACS+ command rules.</li>
+<li>At each login, after the YubiKey or password check, Radiator looks
+for the most privileged of the account's groups that may use the
+device's group (a named device group before <code>*</code>). If there is
+none, the login is rejected. An account counts only while it can log in:
+it has an active YubiKey, or it is an active service account.</li>
+<li>Over TACACS+, the device then asks Radiator to authorize the session
+(exec), and, if it is set up to, each command. Radiator answers with the
+group's privilege level and command rules. Each of these requests asks
+the database again, so a change applies within 2 seconds, even to
+sessions already open: taking a group's access away, or disabling an
+account, stops its commands.</li>
+<li>Command rules are tried in order, and the first that matches
+decides. A command no rule matches is denied. A group with no rules on a
+device group may run every command there.</li>
+<li><code>enable</code> on a device is a second login, which takes a new
+OTP. With the privilege level from the group, users don't need it.</li>
+<li>The groups are in the database: a change applies on every server at
+once, with no Radiator restart. The devices are in Radiator's
+configuration: adding one takes
+<code>sudo systemctl restart radiator</code>, which also closes the
+TACACS+ connections that are open (devices open new ones).</li>
+</ul>
+<p>Radiator 4.30's TACACS+ has no TLS. Its packets are protected only by
+the device's key (RFC 8907's MD5-based obfuscation): give each device a
+long random key, and keep TACACS+ on your management network.</p>
+</section>
+<section id="what-devices-see" class="level3">
+<h3>What devices see</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>TACACS+</th>
+<th>RADIUS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Login, and a group may use the device</td>
+<td>Pass; the session gets the group's privilege level</td>
+<td><code>Access-Accept</code>, with the group's reply attributes</td>
+</tr>
+<tr>
+<td>Login, and none of the account's groups may use the device</td>
+<td>Fail</td>
+<td><code>Access-Reject</code></td>
+</tr>
+<tr>
+<td>A command the rules deny</td>
+<td>Authorization fails</td>
+<td></td>
+</tr>
+<tr>
+<td>A command, after the account was disabled or its group's access
+taken away</td>
+<td>Authorization fails (within 2 s)</td>
+<td></td>
+</tr>
+<tr>
+<td>No database server answers</td>
+<td>Refused at first (by each of Radiator's processes, for up to a
+second), then no answer (an error), so the device may try another
+server. Nothing is allowed.</td>
+<td>As for any login (see <a
+href="#what-users-see-during-a-failover">What users see during a
+failover</a>)</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="set-up-groups-and-tacacs" class="level3">
+<h3>Set up groups and TACACS+</h3>
+<p>These steps were run as written by
+<code>tests/radiator/groups.sh</code> (see <a
+href="#the-automated-test">The automated test</a>), for SQLite and
+PostgreSQL. Add <code>-b pg</code> to every <code>yubikey-db.sh</code>
+command for PostgreSQL. From the package's folder:</p>
+<pre class="bash"><code>cd /opt/radiator-yubikey</code></pre>
+<ol type="1">
+<li><p>Add the service-account and group tables to the database.
+<code>init</code> is safe to re-run, and says
+<code>Added the service-account and group tables</code>:</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh init         # SQLite
+./yubikey-db.sh -b pg init        # PostgreSQL, as a member of yubikey_admin</code></pre></li>
+<li><p>Install the dictionary and the configuration, in place of
+<code>radiator.example.conf</code>, and make the folder for the
+devices:</p>
+<pre class="bash"><code>sudo install -m 0644 dictionary.yubikey /etc/radiator/dictionary.yubikey
+sudo install -m 0640 -o root -g radiator radiator-groups.example.conf /etc/radiator/radiator.conf
+sudo install -d -m 0750 -o root -g radiator /etc/radiator/clients.d
+sudoedit /etc/radiator/radiator.conf</code></pre>
+<p>In the editor, change the <code>Secret</code> and
+<code>TACACSPLUSKey</code> of <code>&lt;Client 127.0.0.1&gt;</code>, and
+set <code>BindAddress</code> as for <a
+href="#set-up-anycast-on-each-server">anycast</a> if you use
+it.</p></li>
+<li><p>Write the clauses again, as in <a
+href="#install-the-configuration">Install the configuration</a>:
+<code>config</code> now also writes <code>ServiceAccounts</code> and
+<code>GroupAccess</code>.</p>
+<pre class="bash"><code>./yubikey-db.sh config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null          # SQLite
+./yubikey-db.sh -b pg config | sudo tee /etc/radiator/conf.d/yubikey.conf &gt;/dev/null    # PostgreSQL</code></pre></li>
+<li><p>Put the devices in files in <code>/etc/radiator/clients.d</code>
+(mode <code>0640</code>, owner <code>root:radiator</code>, since they
+hold the secrets and keys), one <code>&lt;Client&gt;</code> per device
+or subnet, for example
+<code>sudoedit /etc/radiator/clients.d/core.conf</code>:</p>
+<pre class="apache"><code>&lt;Client 192.0.2.10&gt;
+    Identifier     core
+    Secret         a-long-random-secret-for-radius
+    TACACSPLUSKey  another-long-random-key-for-tacacs
+&lt;/Client&gt;
+&lt;Client 198.51.100.0/24&gt;
+    Identifier     access
+    Secret         a-long-random-secret-for-radius
+    TACACSPLUSKey  another-long-random-key-for-tacacs
+&lt;/Client&gt;</code></pre>
+<p><code>openssl rand -base64 32</code> makes a good secret or
+key.</p></li>
+<li><p>Make the groups, put accounts in them, and give them access:</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh group add netadmins -l &#39;network team&#39;
+sudo ./yubikey-db.sh member add netadmins alice carol
+sudo ./yubikey-db.sh access set netadmins core 15 -r &#39;cisco-avpair=&quot;shell:priv-lvl=15&quot;&#39;
+sudo ./yubikey-db.sh access set netadmins access 15
+sudo ./yubikey-db.sh group add helpdesk
+sudo ./yubikey-db.sh member add helpdesk bob
+sudo ./yubikey-db.sh access set helpdesk access 1
+sudo ./yubikey-db.sh rule add helpdesk access &#39;permit service=shell cmd=show&#39;</code></pre>
+<p>Helpdesk may now only run <code>show</code> commands on the access
+switches, and log in nowhere else. Check what an account gets on a
+device group:</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh access check bob access</code></pre>
+<pre class="text"><code>bob may log in to devices in access, as a member of helpdesk (access to access), at privilege level 1
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=1}
+  permit service=shell cmd=show
+RADIUS reply: (none)</code></pre>
+<p>The first rule is the privilege level, which every access
+gets.</p></li>
+<li><p>Check the configuration and restart Radiator, as in <a
+href="#check-and-start">Check and start</a>, and allow TCP port 49 from
+the devices in the firewall, as well as RADIUS.</p></li>
+<li><p>Test from the server: the RADIUS login with <code>radpwtst</code>
+as in <a href="#check-the-whole-path-radpwtst">Check the whole path</a>,
+and a TACACS+ login with Radiator's own client, with the key of
+<code>&lt;Client 127.0.0.1&gt;</code> (the server itself is device group
+<code>localhost</code>, so give a test group access to it first):</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh access set netadmins localhost 1
+read -rsp &#39;PIN:OTP: &#39; pw; echo
+perl /opt/radiator/radiator/goodies/tacacsplustest -s 127.0.0.1 -key local-test-key \
+    -user alice -password &quot;$pw&quot; -noacct -notrace; echo $?
+sudo ./yubikey-db.sh access delete netadmins localhost</code></pre>
+<p>Type alice's PIN, a colon, and touch her YubiKey.
+<code>tacacsplustest</code> prints <code>OK</code> for the login and
+<code>OK</code> for its authorization (of <code>telnet host1</code>,
+which a group with no rules may run), and exits with 0.</p></li>
+</ol>
+</section>
+<section id="service-accounts" class="level3">
+<h3>Service accounts</h3>
+<p>A service account logs in with a password, at least 12 characters,
+stored as a <code>{crypt}</code> SHA-512 hash like the PINs. Its name is
+<code>svc.</code> followed by letters, digits and
+<code>. _ @ + -</code>, which is how Radiator tells it from a YubiKey
+user. Like any account, it may log in only where its groups allow.</p>
+<pre class="bash"><code>sudo ./yubikey-db.sh service add svc.backup -l &#39;nightly config backup&#39;   # asks for the password twice
+sudo ./yubikey-db.sh service add svc.monitor --generate                  # makes one, and shows it once
+sudo ./yubikey-db.sh group add backup
+sudo ./yubikey-db.sh member add backup svc.backup
+sudo ./yubikey-db.sh access set backup core 15
+sudo ./yubikey-db.sh rule add backup core &#39;permit service=shell cmd=show cmd-arg=running-config&#39;
+sudo ./yubikey-db.sh rule add backup core &#39;permit service=shell cmd=copy&#39;</code></pre>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List service accounts (no passwords)</td>
+<td><code>sudo ./yubikey-db.sh service list</code></td>
+</tr>
+<tr>
+<td>Change a password</td>
+<td><code>sudo ./yubikey-db.sh service password svc.backup</code> (or
+<code>--generate</code>)</td>
+</tr>
+<tr>
+<td>Suspend one, or turn it back on</td>
+<td><code>sudo ./yubikey-db.sh service disable svc.backup</code>,
+<code>service enable svc.backup</code></td>
+</tr>
+<tr>
+<td>Remove one (and take it out of its groups)</td>
+<td><code>sudo ./yubikey-db.sh service delete svc.backup</code></td>
+</tr>
+</tbody>
+</table>
+<p>Without a terminal, <code>service add</code> and
+<code>service password</code> read the password from the first line of
+standard input.</p>
+</section>
+<section id="command-rules" class="level3">
+<h3>Command rules</h3>
+<p>A rule is <code>permit</code>, <code>permitreplace</code> or
+<code>deny</code>, then one pattern for each argument of the TACACS+
+request, in order, as Radiator's <code>AuthorizeGroup</code> takes them.
+Each pattern is a Perl regular expression that must match the whole
+argument. A device asks about <code>show running-config</code> as
+<code>service=shell cmd=show cmd-arg=running-config cmd-arg=&lt;cr&gt;</code>;
+a rule with fewer patterns than the request has arguments ignores the
+rest.</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Allows or denies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>permit service=shell cmd=show</code></td>
+<td>Every <code>show</code> command</td>
+</tr>
+<tr>
+<td><code>permit service=shell cmd=show cmd-arg=running-config</code></td>
+<td>Only <code>show running-config</code></td>
+</tr>
+<tr>
+<td><code>deny service=shell cmd=reload</code></td>
+<td><code>reload</code></td>
+</tr>
+<tr>
+<td><code>permit service=shell</code></td>
+<td>Every command</td>
+</tr>
+<tr>
+<td><code>deny .*</code></td>
+<td>Everything</td>
+</tr>
+</tbody>
+</table>
+<pre class="bash"><code>sudo ./yubikey-db.sh rule add netadmins core &#39;deny service=shell cmd=reload&#39;
+sudo ./yubikey-db.sh rule add netadmins core &#39;permit service=shell&#39;
+sudo ./yubikey-db.sh rule list netadmins core
+sudo ./yubikey-db.sh rule delete netadmins core 10
+sudo ./yubikey-db.sh rule add netadmins core &#39;permit service=shell cmd=show&#39; --seq 5   # before the first</code></pre>
+<p>Rules are numbered 10, 20, 30 and so on; <code>--seq</code> puts one
+in between. Once a group has rules on a device group, a command none of
+them matches is denied, so the netadmins example above ends with
+<code>permit service=shell</code>. A rule may not contain a double
+quote, or an octal escape such as <code>\101</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List groups, members and access</td>
+<td><code>sudo ./yubikey-db.sh group list</code></td>
+</tr>
+<tr>
+<td>List the access of every group</td>
+<td><code>sudo ./yubikey-db.sh access list</code></td>
+</tr>
+<tr>
+<td>Change a privilege level</td>
+<td><code>sudo ./yubikey-db.sh access set helpdesk access 5</code></td>
+</tr>
+<tr>
+<td>Change or remove RADIUS reply attributes</td>
+<td><code>access set helpdesk access 5 -r 'Service-Type=Login-User'</code>,
+or <code>-r ''</code></td>
+</tr>
+<tr>
+<td>Take a group's access away (and its rules)</td>
+<td><code>sudo ./yubikey-db.sh access delete helpdesk access</code></td>
+</tr>
+<tr>
+<td>Take an account out of a group</td>
+<td><code>sudo ./yubikey-db.sh member delete helpdesk bob</code></td>
+</tr>
+<tr>
+<td>Delete a group (with its members, access and rules)</td>
+<td><code>sudo ./yubikey-db.sh group delete helpdesk</code></td>
+</tr>
+</tbody>
+</table>
+<p>With <a href="#partition-mode">partition mode</a>, the copy on each
+server also holds the service accounts and groups; the next sync
+(<code>SYNC</code> seconds) brings a change to it. A copy made by an
+older version gets their tables at the next sync, if
+<code>yubikey-db.sh</code> is next to <code>yubikey-partition.sh</code>
+(as in the package).</p>
+</section>
+</section>
 <section id="security" class="level2">
 <h2>Security</h2>
 <ul>
@@ -3038,6 +3400,23 @@ it before the one for everyone else.
 router accepts only the two anycast routes from its server. If your
 routers require BGP passwords, FRR sets them with
 <code>neighbor ADDRESS password</code> (the test doesn't use them).</li>
+<li><strong>Groups and TACACS+:</strong> the files in
+<code>/etc/radiator/clients.d</code> hold every device's RADIUS secret
+and TACACS+ key: mode <code>0640</code>, owner
+<code>root:radiator</code>. Radiator 4.30's TACACS+ has no TLS, only the
+key's obfuscation: long random keys, and TACACS+ only on your management
+network. Service accounts' passwords are salted SHA-512
+<code>{crypt}</code> hashes; in PostgreSQL, Radiator's role can read
+only those hashes (with the names and <code>active</code>) and the view
+<code>access_replies</code>, and change nothing in the group tables.
+Keep the two <code>Authorize-Only</code> Handlers of
+<code>radiator-groups.example.conf</code> before the others: the first
+works around Radiator answering a refused TACACS+ authorization with a
+packet devices take for an error (which some then treat as allowed), the
+second refuses <code>Authorize-Only</code> from RADIUS clients, which
+would otherwise get an account's reply attributes without a password. A
+RADIUS client can't send <code>YubiKey-Via</code>, which marks TACACS+
+requests (its number can't be carried in a RADIUS packet).</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -3216,6 +3595,54 @@ addresses), or <code>(Policy)</code>, which means a route map is
 missing.</td>
 </tr>
 <tr>
+<td>With groups, Radiator logs
+<code>Access rejected for alice: No such user</code> after her YubiKey
+or password was accepted</td>
+<td>None of her groups may use the device's group, or her account isn't
+active:
+<code>sudo ./yubikey-db.sh access check alice DEVICE_GROUP</code>. The
+device group is the <code>Identifier</code> of the
+<code>&lt;Client&gt;</code> the device matched.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Authorization denied for alice ..., group no-access</code></td>
+<td>A TACACS+ authorization for an account that none of whose groups may
+use the device (any more), or that isn't active.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Authorization denied for alice, group netadmins. No matching AuthorizeGroup rule</code></td>
+<td>The group has rules on that device group, and none matches the
+command: add one (<code>rule add</code>), or end the rules with
+<code>permit service=shell</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Inconsistent lengths in Tacacs Authentication request from ADDRESS. Bad Key?</code></td>
+<td>The device's TACACS+ key isn't the <code>TACACSPLUSKey</code> of its
+<code>&lt;Client&gt;</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>Could not find a Client for ADDRESS. Falling back to default Key</code></td>
+<td>That device isn't in a <code>&lt;Client&gt;</code> and there is no
+<code>&lt;Client DEFAULT&gt;</code>: add it to
+<code>/etc/radiator/clients.d</code> and
+<code>sudo systemctl restart radiator</code>.</td>
+</tr>
+<tr>
+<td>Radiator logs
+<code>No files to include with '/etc/radiator/clients.d/*.conf'</code></td>
+<td>No device files yet: only <code>&lt;Client 127.0.0.1&gt;</code> is
+known.</td>
+</tr>
+<tr>
+<td><code>yubikey-db.sh: error: ... has no service-account and group tables</code></td>
+<td>Run <code>init</code> (or <code>-b pg init</code>): it adds
+them.</td>
+</tr>
+<tr>
 <td><code>radiusd</code> fails with
 <code>Can't locate Cache/FastMmap.pm</code></td>
 <td><code>DupCache shared</code> needs it:
@@ -3331,8 +3758,9 @@ restart PostgreSQL.</td>
 </tr>
 <tr>
 <td><code>password authentication failed for user "radiator"</code></td>
-<td>The <code>DBAuth</code> line doesn't match the password set with
-<code>init-pg --set-password</code>.</td>
+<td>A <code>DBAuth</code> line doesn't match the password set with
+<code>init-pg --set-password</code> (<code>config</code> writes three:
+one for each clause).</td>
 </tr>
 </tbody>
 </table>
@@ -3472,7 +3900,63 @@ characters, no control characters; <code>''</code> removes it.</td>
 <td></td>
 <td>Print the <code>&lt;AuthBy SQLYUBIKEY&gt;</code> clause (for
 PostgreSQL, also the clauses <code>YubiKeyConnect</code> and
-<code>YubiKeyLocal</code>).</td>
+<code>YubiKeyLocal</code>), and the clauses <code>ServiceAccounts</code>
+and <code>GroupAccess</code> for <a
+href="#groups-and-tacacs">groups</a>.</td>
+</tr>
+<tr>
+<td><code>service add</code></td>
+<td><code>NAME</code>, <code>-l LABEL</code>, <code>--inactive</code>,
+<code>--generate</code></td>
+<td>Add a service account (<code>svc.NAME</code>); the password is asked
+for twice, read from standard input, or generated.</td>
+</tr>
+<tr>
+<td><code>service password</code></td>
+<td><code>NAME</code>, <code>--generate</code></td>
+<td>Change its password.</td>
+</tr>
+<tr>
+<td><code>service list</code>, <code>enable</code>,
+<code>disable</code>, <code>delete</code>, <code>label</code></td>
+<td><code>NAME</code>, <code>LABEL</code></td>
+<td>List the accounts, turn one on or off, delete it (and take it out of
+its groups), or label it.</td>
+</tr>
+<tr>
+<td><code>group add</code>, <code>delete</code>, <code>list</code>,
+<code>label</code></td>
+<td><code>NAME</code>, <code>-l LABEL</code></td>
+<td>Add a group, delete it (with its members, access and rules), list
+them, or label one.</td>
+</tr>
+<tr>
+<td><code>member add</code>, <code>delete</code></td>
+<td><code>GROUP USER...</code></td>
+<td>Put accounts in a group, or take them out.</td>
+</tr>
+<tr>
+<td><code>access set</code></td>
+<td><code>GROUP DEVICE_GROUP PRIV_LVL</code>,
+<code>-r RADIUS_REPLY</code></td>
+<td>Let the group log in to that device group (or <code>*</code>) at
+that privilege level, with those RADIUS reply attributes; or change
+them.</td>
+</tr>
+<tr>
+<td><code>access delete</code>, <code>list</code>,
+<code>check</code></td>
+<td><code>GROUP DEVICE_GROUP</code>, <code>[GROUP]</code>,
+<code>USER DEVICE_GROUP</code></td>
+<td>Take access away (with its rules), list it, or show what an account
+gets on a device group (exit 1: nothing).</td>
+</tr>
+<tr>
+<td><code>rule add</code>, <code>delete</code>, <code>list</code></td>
+<td><code>GROUP DEVICE_GROUP 'RULE'</code> (<code>--seq N</code>),
+<code>GROUP DEVICE_GROUP SEQ</code>,
+<code>GROUP DEVICE_GROUP</code></td>
+<td>TACACS+ command rules, in order.</td>
 </tr>
 </tbody>
 </table>
@@ -3873,6 +4357,63 @@ no login, from the scripts or from a clause written by
 <code>config</code> before 1.9.0, empties <code>login_id</code>. Two
 logins with the same OTP have different IDs, so the second is still
 refused.</p>
+<p>The service accounts and groups (added in 1.10.0; <code>init</code>
+adds them to an older database) are in five more tables, the same in
+both databases but for the types of times and <code>active</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Columns</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>service_accounts</code></td>
+<td><code>username</code> (key), <code>password</code>,
+<code>active</code>, <code>created</code>, <code>changed</code>,
+<code>label</code></td>
+<td>Service accounts: <code>svc.NAME</code>, a <code>{crypt}</code>
+hash, 1 or 0, when added and when the password was last set</td>
+</tr>
+<tr>
+<td><code>user_groups</code></td>
+<td><code>name</code> (key), <code>label</code></td>
+<td>Groups</td>
+</tr>
+<tr>
+<td><code>group_members</code></td>
+<td><code>user_group</code>, <code>username</code></td>
+<td>Who is in each group: YubiKey users and service accounts, by
+username</td>
+</tr>
+<tr>
+<td><code>group_access</code></td>
+<td><code>user_group</code>, <code>device_group</code>,
+<code>priv_lvl</code>, <code>radius_reply</code></td>
+<td>The device groups each group may use (<code>*</code>: every one), at
+privilege level 0 to 15, with RADIUS reply attributes</td>
+</tr>
+<tr>
+<td><code>group_rules</code></td>
+<td><code>user_group</code>, <code>device_group</code>,
+<code>seq</code>, <code>rule</code></td>
+<td>TACACS+ command rules for an access, tried in <code>seq</code>
+order</td>
+</tr>
+</tbody>
+</table>
+<p>The view <code>access_replies</code> has one row for each active
+account, group it is in and device group that group may use, with the
+RADIUS reply and the TACACS+ rules Radiator returns
+(<code>OSC-Authorize-Group</code> attributes: the privilege level first,
+then the rules, or <code>permit service=shell</code> when there are
+none). <code>GroupAccess</code> takes the row with the highest privilege
+level for the user and the device's group (or <code>*</code>). In
+PostgreSQL, Radiator's role may read only the view and the service
+accounts' <code>username</code>, <code>password</code> and
+<code>active</code>.</p>
 </section>
 <section id="export-format" class="level3">
 <h3>Export format</h3>
@@ -3882,8 +4423,10 @@ and one row per YubiKey: AES keys as 32 hex characters, PINs as stored,
 times in UTC, and fields with a comma, quote or line break quoted. Only
 <code>import --from-export</code> reads it. It also reads exports made
 before 1.8.0, which have no <code>label</code> column; with
-<code>--replace</code>, the YubiKeys in them keep the labels they
-have.</p>
+<code>--replace</code>, the YubiKeys in them keep the labels they have.
+<code>export</code> doesn't include the service accounts and groups:
+back them up with the database itself (see <a
+href="#backups">Backups</a>).</p>
 </section>
 <section id="how-radiator-430-checks-a-login" class="level3">
 <h3>How Radiator 4.30 checks a login</h3>
@@ -3926,7 +4469,7 @@ repeat if the first save was made.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 40 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 42 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>, where the scripts' version shows as
@@ -3936,14 +4479,17 @@ checks each request the way Radiator does, and stand-ins for
 <code>ip</code> and <code>ss</code>. <code>pg_partition</code> runs
 <code>yubikey-partition.sh</code> with the test's PostgreSQL as both the
 local database and the primary, a stand-in for <code>systemctl</code>,
-and a peer that is a port that listens or doesn't. <code>install</code>
-runs <code>install.sh</code> with stand-ins for <code>apt-get</code>,
-<code>dpkg-query</code> and Radiator, installed in each of the ways it
-recognizes. It needs <code>bash</code>, <code>sqlite3</code>,
-<code>perl</code>, and, for the <code>verify</code> and
-<code>anycast</code> scenarios, <code>openssl</code> and
-<code>libcrypt-rijndael-perl</code> (and <code>dpkg-deb</code> for
-<code>install</code>); it runs as a normal user.</p>
+and a peer that is a port that listens or doesn't. <code>groups</code>
+and <code>pg_groups</code> also run Radiator's <code>GroupAccess</code>
+query from <code>config</code> on the database (on PostgreSQL, as
+Radiator's role). <code>install</code> runs <code>install.sh</code> with
+stand-ins for <code>apt-get</code>, <code>dpkg-query</code> and
+Radiator, installed in each of the ways it recognizes. It needs
+<code>bash</code>, <code>sqlite3</code>, <code>perl</code>, and, for the
+<code>verify</code> and <code>anycast</code> scenarios,
+<code>openssl</code> and <code>libcrypt-rijndael-perl</code> (and
+<code>dpkg-deb</code> for <code>install</code>); it runs as a normal
+user.</p>
 <pre class="bash"><code>tests/run-tests.sh                 # every scenario
 tests/run-tests.sh add verify      # some scenarios
 tests/run-tests.sh --update        # accept a deliberate change; then review it with git diff</code></pre>

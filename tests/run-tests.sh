@@ -1344,6 +1344,11 @@ scenario_migrate_sync() {
     sqlite3 src.db "INSERT INTO yubikeys VALUES ('clash', '', 1, '2026-08-01 08:00:00', '', 'vvccccbbcdei', '777777777777', '0f1e2d3c4b5a69788796a5b4c3d2e1f0', 0, 0, 0, '');"
     run_migrate -d "$PGDB" --mode sync src.db
     run_migrate -d "$PGDB" --mode sync --skip-invalid src.db
+
+    # Service accounts and groups are not copied, and a warning says so.
+    run_lines 'backup-password-1' -- -d src.db service add svc.backup >/dev/null
+    run -d src.db group add netadmins >/dev/null
+    run_migrate -d "$PGDB" --mode sync --dry-run --skip-invalid src.db
 }
 
 scenario_migrate_invalid() {
@@ -1789,6 +1794,14 @@ copy_rows() {
         "SELECT username, tokenId, active, counter, low FROM yubikeys ORDER BY username, tokenId"
 }
 
+# The copy's service accounts and what Radiator's group check finds there.
+copy_groups() {
+    printf '# the copy'"'"'s service accounts and access:\n'
+    sqlite3 -batch -header -separator ' | ' "$WORK/state/keys.db" \
+        "SELECT username, active FROM service_accounts ORDER BY username;
+         SELECT username, user_group, device_group, priv_lvl, tacacs_reply FROM access_replies ORDER BY 1, 2, 3"
+}
+
 # The primary's counters.
 primary_rows() {
     printf '# the primary:\n'
@@ -1863,6 +1876,23 @@ EOF
     run_lines 'carol,vvccccdddddd,aabbccddeeff,0f1e2d3c4b5a69788796a5b4c3d2e1f0,newpin' -- -b pg -d "$PGDB" import --replace - >/dev/null
     part sync
     copy_rows
+    echo
+
+    # Service accounts and groups reach the copy too, replaced whole each
+    # time; a copy made before they existed gets their tables.
+    run_lines 'backup-password-1' -- -b pg -d "$PGDB" service add svc.backup >/dev/null
+    run -b pg -d "$PGDB" group add netadmins >/dev/null
+    run -b pg -d "$PGDB" member add netadmins carol svc.backup >/dev/null
+    run -b pg -d "$PGDB" access set netadmins core 15 >/dev/null
+    run -b pg -d "$PGDB" rule add netadmins core 'deny service=shell cmd=reload' >/dev/null
+    part sync
+    copy_groups
+    run -b pg -d "$PGDB" member delete netadmins carol >/dev/null
+    run -b pg -d "$PGDB" service disable svc.backup >/dev/null
+    sqlite3 state/keys.db "DROP VIEW access_replies; DROP TABLE group_rules; DROP TABLE group_access;
+                           DROP TABLE group_members; DROP TABLE user_groups; DROP TABLE service_accounts;"
+    part sync
+    copy_groups
     echo
 
     # The copy is ahead (logins here while cut off): its counters stay.
@@ -1941,6 +1971,243 @@ EOF
     wait "$lock"
     printf '# yubikey.conf -> %s\n' "$(readlink conf.d/yubikey.conf)"
     primary_rows
+}
+
+# --------------------------------------------------------------------------
+# Service accounts and groups
+# --------------------------------------------------------------------------
+
+# The service-account and group tables of a SQLite database.
+dump_groups() {
+    printf '# service accounts and groups in %s\n' "${1##*/}"
+    sqlite3 -batch -header -separator ' | ' "$1" "
+        SELECT username, password, active, label FROM service_accounts ORDER BY username;
+        SELECT name, label FROM user_groups ORDER BY name;
+        SELECT user_group, username FROM group_members ORDER BY user_group, username;
+        SELECT user_group, device_group, priv_lvl, radius_reply FROM group_access ORDER BY user_group, device_group;
+        SELECT user_group, device_group, seq, rule FROM group_rules ORDER BY user_group, device_group, seq;"
+    echo
+}
+
+# Radiator's GroupAccess query from 'config' (run with the options in
+# CONFIG_OPTS), with its parameters filled in: access_query VIA USER
+# DEVICE_GROUP. VIA is tacacs for a TACACS+ request, empty for RADIUS.
+CONFIG_OPTS=()
+access_query() {
+    local q v
+    q=$("$SCRIPT" "${CONFIG_OPTS[@]}" config | sed -n '/Identifier *GroupAccess/,/<\/AuthBy>/s/^ *AuthSelect[[:space:]]\{1,\}//p')
+    for v in "$1" "$1" "$2" "$3"; do q=${q/\?/"'$v'"}; done
+    printf '%s' "$q"
+}
+
+# The query, on a SQLite database ($1): radiator_access_sqlite DB VIA USER DEVICE_GROUP
+radiator_access_sqlite() {
+    local q out rc=0
+    q=$(CONFIG_OPTS=(-d "$1"); access_query "$2" "$3" "$4")
+    out=$(sqlite3 -batch -separator ' | ' "$1" "$q" 2>&1) || rc=$?
+    printf '$ radiator> GroupAccess via=%s user=%s device_group=%s\n%s%s[exit %d]\n\n' \
+        "${2:-radius}" "$3" "$4" "$out" "${out:+$'\n'}" "$rc"
+}
+
+# A service account's stored password checked against PASSWORD:
+# check_crypt_svc DB USER PASSWORD (SQLite), check_crypt_svc_pg USER PASSWORD
+check_crypt_svc() {
+    verify_crypt "$2" "$3" "$(sqlite3 -batch "$1" "SELECT password FROM service_accounts WHERE username = '$2';")"
+}
+check_crypt_svc_pg() {
+    verify_crypt "$1" "$2" "$(pgq "$PGDB" "SELECT password FROM service_accounts WHERE username = '$1';")"
+}
+
+# service add --generate: the transcript hides the password, which is then
+# checked against the stored hash. $@ = the global options.
+service_generate() {
+    local out rc=0 pw
+    out=$("$SCRIPT" "$@" service add svc.gen --generate </dev/null 2>&1) || rc=$?
+    printf '$ yubikey-db.sh %s service add svc.gen --generate\n%s\n[exit %d]\n\n' "$*" \
+        "$(sed -E 's/(shown only now:) .*/\1 <PASSWORD>/' <<<"$out")" "$rc"
+    pw=${out##*shown only now: }
+    printf '# generated password: %s\n' "$([[ $pw =~ ^[A-Za-z0-9]{32}$ ]] && echo '32 letters and digits' || echo "UNEXPECTED: $pw")"
+    if [[ $1 == -b ]]; then check_crypt_svc_pg svc.gen "$pw"; else check_crypt_svc "$2" svc.gen "$pw"; fi
+}
+
+# Service accounts, groups, members, access and rules on SQLite, with what
+# Radiator's GroupAccess query finds. A database made before 1.10.0 gets the
+# tables from init.
+scenario_groups() {
+    local db=$WORK/groups.db
+    old_sqlite_db "$db"
+    run -d "$db" group list
+    run -d "$db" init
+    run -d "$db" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+
+    # Service accounts: the password from standard input, at least 12
+    # characters, stored as a {crypt} hash; or generated.
+    run_lines 'backup-password-1' -- -d "$db" service add svc.backup -l 'nightly backup'
+    check_crypt_svc "$db" svc.backup backup-password-1
+    run_lines 'backup-password-1' -- -d "$db" service add svc.backup
+    run_lines 'too-short' -- -d "$db" service add svc.short
+    run -d "$db" service add svc.nopassword
+    run -d "$db" service add backup
+    run -d "$db" service add 'svc.bad name'
+    run -d "$db" service add svc.x --bogus
+    service_generate -d "$db"
+    run_lines 'another-password-2' -- -d "$db" service password svc.backup
+    check_crypt_svc "$db" svc.backup another-password-2
+    run -d "$db" service password svc.missing --generate
+    run -d "$db" service disable svc.backup
+    run -d "$db" service label svc.gen 'made by --generate'
+    run -d "$db" service list
+    run -d "$db" service enable svc.backup
+    run -d "$db" service enable svc.missing
+    run -d "$db" service bogus
+
+    # Groups and members. A member need not have a YubiKey or an account yet.
+    run -d "$db" group add netadmins -l 'network team'
+    run -d "$db" group add helpdesk
+    run -d "$db" group add netadmins
+    run -d "$db" group add 'bad/name'
+    run -d "$db" member add netadmins alice svc.backup ghost
+    run -d "$db" member add netadmins alice
+    run -d "$db" member add nogroup alice
+    run -d "$db" member add helpdesk alice svc.gen
+    run -d "$db" member add helpdesk 'bad user'
+    run -d "$db" member list helpdesk
+
+    # Access: privilege level and RADIUS reply per device group, or *.
+    run -d "$db" access set netadmins core 14 -r 'cisco-avpair="shell:priv-lvl=15", Service-Type=Administrative-User'
+    run -d "$db" access set netadmins core 15
+    run -d "$db" access set netadmins '*' 1
+    run -d "$db" access set helpdesk access 5 -r 'cisco-avpair="shell:priv-lvl=5"'
+    run -d "$db" access set helpdesk core 7
+    run -d "$db" access set helpdesk access 5 -r ''
+    run -d "$db" access set netadmins core 16
+    run -d "$db" access set netadmins 'core switches' 1
+    run -d "$db" access set netadmins core 15 -r 'not an attribute'
+    run -d "$db" access set netadmins core 15 -r 'Reply-Message="unterminated'
+    run -d "$db" access set nogroup core 1
+
+    # Rules, tried in order; the first that matches decides.
+    run -d "$db" rule add netadmins core 'deny service=shell cmd=reload'
+    run -d "$db" rule add netadmins core 'permit service=shell'
+    run -d "$db" rule add netadmins core 'permit service=shell cmd=show cmd-arg=running-config' --seq 5
+    run -d "$db" rule add netadmins core 'permit service=shell' --seq 5
+    run -d "$db" rule add netadmins core 'permit service=shell' --seq 0
+    run -d "$db" rule add netadmins edge 'permit service=shell'
+    run -d "$db" rule add netadmins core 'allow service=shell'
+    run -d "$db" rule add netadmins core 'permit cmd=('
+    run -d "$db" rule add netadmins core 'permit cmd="show"'
+    run -d "$db" rule add netadmins core 'permit cmd=\101'
+    run -d "$db" rule add netadmins core 'permit service=shell {priv-lvl}'
+    run -d "$db" rule add netadmins core 'permit'
+    run -d "$db" rule add helpdesk core 'permitreplace service=shell cmd=show {cmd-arg=version}'
+    run -d "$db" rule add helpdesk core 'deny .*'
+    run -d "$db" rule list netadmins core
+    run -d "$db" rule delete netadmins core 20
+    run -d "$db" rule delete netadmins core 20
+    run -d "$db" rule list netadmins edge
+    run -d "$db" group list
+    run -d "$db" access list
+    run -d "$db" access list helpdesk
+
+    # What an account gets on a device group: the most privileged of its
+    # groups allowed there, a named device group before *, then by name.
+    run -d "$db" access check alice core
+    run -d "$db" access check alice edge
+    run -d "$db" access check alice access
+    run -d "$db" access check svc.gen core
+    run -d "$db" access check svc.gen edge
+    run -d "$db" access check bob core
+    # Only accounts that can log in count: a disabled YubiKey user or
+    # service account, or a member with neither, gets nothing.
+    run -d "$db" disable alice
+    run -d "$db" access check alice core
+    run -d "$db" enable alice
+    run -d "$db" service disable svc.gen
+    run -d "$db" access check svc.gen core
+    run -d "$db" service enable svc.gen
+    run -d "$db" access check ghost edge
+    radiator_access_sqlite "$db" tacacs alice core
+    radiator_access_sqlite "$db" '' alice core
+    radiator_access_sqlite "$db" tacacs svc.gen access
+    radiator_access_sqlite "$db" '' svc.gen access
+    radiator_access_sqlite "$db" tacacs bob core
+
+    # Taking things away.
+    run -d "$db" member delete helpdesk svc.gen
+    run -d "$db" member delete helpdesk svc.gen
+    run -d "$db" service delete svc.backup
+    run -d "$db" service delete svc.backup
+    run -d "$db" access delete netadmins core
+    run -d "$db" access delete netadmins core
+    dump_groups "$db"
+    run -d "$db" group delete helpdesk
+    run -d "$db" group delete helpdesk
+    dump_groups "$db"
+}
+
+# The same on PostgreSQL, where Radiator's role may only read what its
+# clauses need. A database made before 1.10.0 gets the tables from init.
+scenario_pg_groups() {
+    local -a P=(-b pg -d "$PGDB")
+    run "${P[@]}" init-pg >/dev/null
+    pgq postgres "ALTER ROLE ${PGT}_radiator PASSWORD 'test-only';"
+    pgq "$PGDB" "SET ROLE ${PGT}_admin; DROP VIEW access_replies;
+                 DROP TABLE group_rules, group_access, group_members, user_groups, service_accounts;"
+    run "${P[@]}" group list
+    run "${P[@]}" init
+    run "${P[@]}" init
+    run "${P[@]}" add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+
+    run_lines 'backup-password-1' -- "${P[@]}" service add svc.backup -l 'nightly backup'
+    check_crypt_svc_pg svc.backup backup-password-1
+    service_generate "${P[@]}"
+    run "${P[@]}" service disable svc.gen
+    run "${P[@]}" service list
+    run "${P[@]}" group add netadmins -l 'network team'
+    run "${P[@]}" group add helpdesk
+    run "${P[@]}" member add netadmins alice svc.backup
+    run "${P[@]}" member add helpdesk alice svc.gen
+    run "${P[@]}" access set netadmins core 15 -r 'cisco-avpair="shell:priv-lvl=15"'
+    run "${P[@]}" access set netadmins '*' 1
+    run "${P[@]}" access set helpdesk access 5
+    run "${P[@]}" rule add netadmins core 'deny service=shell cmd=reload'
+    run "${P[@]}" rule add netadmins core 'permit service=shell'
+    run "${P[@]}" group list
+    run "${P[@]}" access list
+    run "${P[@]}" rule list netadmins core
+    run "${P[@]}" access check alice core
+    run "${P[@]}" access check alice access
+    run "${P[@]}" access check bob core
+
+    # Radiator's queries, as Radiator's role.
+    CONFIG_OPTS=("${P[@]}")
+    as_radiator "$(access_query tacacs alice core)"
+    as_radiator "$(access_query '' alice core)"
+    as_radiator "$(access_query tacacs alice edge)"
+    as_radiator "$(access_query tacacs bob core)"
+    as_radiator "SELECT password FROM service_accounts WHERE username = 'svc.backup' AND active = 1"
+    as_radiator "SELECT password FROM service_accounts WHERE username = 'svc.gen' AND active = 1"
+    # It can read nothing else, and change nothing.
+    as_radiator "select label from service_accounts"
+    as_radiator "update service_accounts set active = 1"
+    as_radiator "insert into group_members values ('netadmins', 'mallory')"
+    as_radiator "update group_access set priv_lvl = 15"
+    as_radiator "delete from group_rules"
+    as_radiator "insert into user_groups values ('x', '')"
+    pgtable "SELECT table_name, privilege_type, string_agg(column_name, ', ' ORDER BY column_name) AS columns
+               FROM information_schema.column_privileges
+              WHERE grantee = '${PGT}_radiator' AND table_name <> 'yubikeys'
+              GROUP BY table_name, privilege_type ORDER BY 1, 2;"
+    echo
+    # The script refuses to change them as Radiator's role.
+    run_env PGHOST=127.0.0.1 PGUSER="${PGT}_radiator" PGPASSWORD=test-only -- "${P[@]}" group add x
+
+    run "${P[@]}" service delete svc.backup
+    run "${P[@]}" access delete netadmins core
+    run "${P[@]}" group delete netadmins
+    pgtable "SELECT user_group, username FROM group_members ORDER BY 1, 2;"
+    pgtable "SELECT count(*) AS rules FROM group_rules;"
+    echo
 }
 
 # --------------------------------------------------------------------------
@@ -2161,7 +2428,7 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_offline pg_init pg_import pg_add pg_encodings pg_modify pg_radiator pg_export pg_restore
      pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
-     anycast anycast_run pg_partition install)
+     anycast anycast_run pg_partition groups pg_groups install)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }

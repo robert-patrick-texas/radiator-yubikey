@@ -12,6 +12,13 @@ Radiator's clause: yubikey.conf -> yubikey-cluster.conf; in partition mode -> yu
 # yubikey.conf -> yubikey-cluster.conf
     Identifier   YubiKeyLocal
     DBSource     dbi:SQLite:dbname=<WORK>/state/keys.db
+    Identifier       ServiceAccounts
+    DBSource         dbi:SQLite:dbname=<WORK>/state/keys.db
+# which is the Identifier of the device's <Client> clause. The most
+    Identifier       GroupAccess
+    DBSource         dbi:SQLite:dbname=<WORK>/state/keys.db
+    AuthSelectParam  %{Client:Identifier}
+    AuthColumnDef    0, OSC-Group-Identifier, reply
 # the copy:
 username | tokenId | active | counter | low
 test.user | cbdefghijkln | 1 | 0 | 0
@@ -36,6 +43,24 @@ username | tokenId | active | counter | low
 carol | vvccccdddddd | 1 | 0 | 0
 test.user | cbdefghijkln | 1 | 9 | 1
 test.user2 | cbdefghijklr | 0 | 0 | 0
+
+$ yubikey-partition.sh sync
+copy: 3 YubiKeys
+[exit 0]
+
+# the copy's service accounts and access:
+username | active
+svc.backup | 1
+username | user_group | device_group | priv_lvl | tacacs_reply
+carol | netadmins | core | 15 | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=15}",OSC-Authorize-Group="deny service=shell cmd=reload"
+svc.backup | netadmins | core | 15 | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=15}",OSC-Authorize-Group="deny service=shell cmd=reload"
+$ yubikey-partition.sh sync
+copy: 3 YubiKeys
+[exit 0]
+
+# the copy's service accounts and access:
+username | active
+svc.backup | 0
 
 $ yubikey-partition.sh sync
 copy: 3 YubiKeys

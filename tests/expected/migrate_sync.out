@@ -84,3 +84,20 @@ Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the sna
 Committed.
 [exit 0]
 
+$ yubikey-db-migrate.sh -d <T>_db --mode sync --dry-run --skip-invalid src.db
+Source: src.db (snapshot taken <TIMESTAMP> UTC)
+Target: PostgreSQL database <T>_db, mode sync, AES keys stored as base64
+yubikey-db-migrate.sh: warning: src.db has 1 service account(s) and 1 group(s), which this script doesn't copy: add them again with 'yubikey-db.sh -b pg service add' and 'group add' (and member, access and rule)
+Dry run: all changes will be rolled back
+invalid: source row 6 (user clash, public ID vvccccbbcdei): public ID belongs to a different key in PostgreSQL
+Read 6 row(s) from the snapshot: 5 valid, 1 invalid
+Inserted 0 row(s), with their counters
+Counters moved forward on 0 row(s)
+differs: user test.user2 (public ID cbdefghijklr) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+differs: user olduser (public ID vvccccbbcdef) has a different username, password, active, public ID, AES key or label in PostgreSQL; left unchanged
+Rows that differ and were left unchanged: 2
+Rows only in PostgreSQL, left unchanged: 1
+Verified: 5 row(s) checked against an independent SHA-256 fingerprint of the snapshot
+Dry run complete: everything checked out, and the changes were rolled back.
+[exit 0]
+

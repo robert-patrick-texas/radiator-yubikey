@@ -489,7 +489,7 @@ node east1 db-init
 for n in "${SITES[@]}"; do node "$n" rad-setup || exit 1; done
 check "DBSource from 'config'" \
     "dbi:Pg:dbname=yubikey;host=east1.yk.test,east2.yk.test,west.yk.test;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write" \
-    "$(docker exec yk-geo-west awk '/^ +DBSource/ {print $2}' /etc/radiator/conf.d/yubikey.conf)"
+    "$(docker exec yk-geo-west awk '/^ +DBSource/ {print $2; exit}' /etc/radiator/conf.d/yubikey.conf)"
 node west admin add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k $K1 -w s3cr3t >/dev/null
 check "the admin adds alice at West; she is on the primary" alice \
     "$(node east1 sql yubikey 'SELECT username FROM yubikeys')"

@@ -174,6 +174,7 @@ yubikey-db.sh: error: <WORK>/old.db was made by an older version of yubikey-db.s
 [exit 1]
 
 $ yubikey-db.sh -d <WORK>/old.db init
+Added the service-account and group tables
 Added the label column to the yubikeys table
 yubikey-db.sh: warning: Radiator needs write access to <WORK>/old.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
 Database ready: <WORK>/old.db
@@ -201,6 +202,51 @@ FOR EACH ROW WHEN NEW.counter < OLD.counter OR (NEW.counter = OLD.counter AND NE
 BEGIN
     SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
 END;
+CREATE TABLE service_accounts (
+    username varchar(255) PRIMARY KEY,                  -- svc.NAME
+    password text         NOT NULL,                     -- {crypt} hash
+    active   boolean NOT NULL DEFAULT 1,
+    created  datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    changed  datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- password last set
+    label    varchar(255) NOT NULL DEFAULT ''
+);
+CREATE TABLE user_groups (
+    name  varchar(64)  PRIMARY KEY,
+    label varchar(255) NOT NULL DEFAULT ''
+);
+CREATE TABLE group_members (
+    user_group varchar(64)  NOT NULL REFERENCES user_groups (name) ON DELETE CASCADE,
+    username   varchar(255) NOT NULL,
+    PRIMARY KEY (user_group, username)
+);
+CREATE INDEX group_members_username ON group_members (username);
+CREATE TABLE group_access (
+    user_group   varchar(64) NOT NULL REFERENCES user_groups (name) ON DELETE CASCADE,
+    device_group varchar(64) NOT NULL,
+    priv_lvl     smallint    NOT NULL CHECK (priv_lvl BETWEEN 0 AND 15),
+    radius_reply text        NOT NULL DEFAULT '',
+    PRIMARY KEY (user_group, device_group)
+);
+CREATE TABLE group_rules (
+    user_group   varchar(64) NOT NULL,
+    device_group varchar(64) NOT NULL,
+    seq          integer     NOT NULL CHECK (seq > 0),
+    rule         text        NOT NULL,
+    PRIMARY KEY (user_group, device_group, seq),
+    FOREIGN KEY (user_group, device_group) REFERENCES group_access (user_group, device_group) ON DELETE CASCADE
+);
+CREATE VIEW access_replies AS
+SELECT m.username, a.user_group, a.device_group, a.priv_lvl, a.radius_reply,
+       'OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=' || a.priv_lvl || '}"'
+       || coalesce((SELECT ',' || string_agg('OSC-Authorize-Group="' || r.rule || '"', ',' ORDER BY r.seq)
+                      FROM group_rules r
+                     WHERE r.user_group = a.user_group AND r.device_group = a.device_group),
+                   ',OSC-Authorize-Group="permit service=shell"') AS tacacs_reply
+  FROM group_members m JOIN group_access a ON a.user_group = m.user_group
+ WHERE EXISTS (SELECT 1 FROM yubikeys y
+                WHERE y.username = m.username AND coalesce(CAST(y.active AS text), '1') NOT IN ('0', ''))
+    OR EXISTS (SELECT 1 FROM service_accounts s WHERE s.username = m.username AND s.active = 1)
+/* access_replies(username,user_group,device_group,priv_lvl,radius_reply,tacacs_reply) */;
 
 $ yubikey-db.sh -d <WORK>/old.db init
 yubikey-db.sh: warning: Radiator needs write access to <WORK>/old.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>

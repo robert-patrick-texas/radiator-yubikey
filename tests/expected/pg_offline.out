@@ -114,6 +114,11 @@ $ yubikey-db.sh -b pg config
 
     # Also check that the private ID in the OTP matches userId.
     CheckSecretId
+
+    # Never fall back to a user called DEFAULT. Radiator's YubiKey clauses
+    # already don't (and look up the login's own username in any case); it
+    # is written here so that it stays so.
+    NoDefault
 </AuthBy>
 
 # Before the YubiKey check: a Radiator process with no database connection
@@ -137,56 +142,162 @@ $ yubikey-db.sh -b pg config
     AuthBy       YubiKeyConnect
     AuthBy       YubiKeySQL
 </AuthBy>
+
+# Service accounts (svc.NAME) log in with a password from the table
+# service_accounts ('yubikey-db.sh service add'): the Handler for svc.* users
+# uses this clause instead of the YubiKey one. NoDefault: never fall back to
+# an account called DEFAULT.
+<AuthBy SQL>
+    Identifier       ServiceAccounts
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    DBAuth
+    Timeout             2
+    ConnectTimeout      5
+    FailureBackoffTime  2
+    NoDefault
+    AuthSelect       SELECT password FROM service_accounts WHERE username = ? AND active = 1
+    AuthSelectParam  %0
+    AuthColumnDef    0, User-Password, check
+</AuthBy>
+
+# The group check, after the YubiKey or password check of every login (with
+# AuthByPolicy ContinueWhileAccept in the Handler): one of the account's
+# groups must be allowed on the device's group ('yubikey-db.sh access set'),
+# which is the Identifier of the device's <Client> clause. The most
+# privileged of those groups decides. A TACACS+ request (marked
+# YubiKey-Via=tacacs by <ServerTACACSPLUS>) gets that group's name and
+# command rules, for its GroupMemberAttr and AuthorizeGroupAttr; a RADIUS
+# request gets the group's RADIUS reply attributes. No group: the login is
+# rejected.
+<AuthBy SQL>
+    Identifier       GroupAccess
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    DBAuth
+    Timeout             2
+    ConnectTimeout      5
+    FailureBackoffTime  2
+    NoCheckPassword
+    NoDefault
+    AuthSelect       SELECT CASE WHEN ? = 'tacacs' THEN user_group END, CASE WHEN ? = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = ? AND device_group IN (?, '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %0
+    AuthSelectParam  %{Client:Identifier}
+    AuthColumnDef    0, OSC-Group-Identifier, reply
+    AuthColumnDef    1, GENERIC, reply
+</AuthBy>
 [exit 0]
 
 $ DB_BACKEND=pg yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiator
     ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    ConnectTimeout      5
 
 $ PGHOST=db.example.com yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;connect_timeout=2
     DBUsername   radiator
+    ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;connect_timeout=2
+    DBUsername       radiator
+    ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;connect_timeout=2
+    DBUsername       radiator
     ConnectTimeout      3
 
 $ PGHOST=/var/run/postgresql yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiator
     ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiator
+    ConnectTimeout      5
 
 $ PGHOST=db.example.com PGPORT=6432 PGSSLMODE=require yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require;connect_timeout=2
     DBUsername   radiator
+    ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require;connect_timeout=2
+    DBUsername       radiator
+    ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=6432;sslmode=require;connect_timeout=2
+    DBUsername       radiator
     ConnectTimeout      3
 
 $ PGHOST=db.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2
     DBUsername   radiator
     ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2
+    DBUsername       radiator
+    ConnectTimeout      3
+    DBSource         dbi:Pg:dbname=yubikey;host=db.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2
+    DBUsername       radiator
+    ConnectTimeout      3
 
 $ PGSERVICE=yubikey yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:service=yubikey
     DBUsername   radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:service=yubikey
+    DBUsername       radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:service=yubikey
+    DBUsername       radiator
     ConnectTimeout      5
 
 $ PGSERVICE=yubikey PGDATABASE=radius yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=radius
     DBUsername   radiator
     ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=radius
+    DBUsername       radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=radius
+    DBUsername       radiator
+    ConnectTimeout      5
 
 $ PG_RADIATOR_ROLE=radiusd yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey
     DBUsername   radiusd
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiusd
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey
+    DBUsername       radiusd
     ConnectTimeout      5
 
 $ PGHOST=db1.example.com,db2.example.com PGSSLROOTCERT=/etc/radiator/pg-ca.crt yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write
     DBUsername   radiator
     ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=any
+    DBUsername       radiator
+    ConnectTimeout      5
+    DBSource         dbi:Pg:dbname=yubikey;host=db1.example.com,db2.example.com;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=any
+    DBUsername       radiator
+    ConnectTimeout      5
 
 $ PGHOST=db1,db2 PGCONNECT_TIMEOUT=3 PGTARGETSESSIONATTRS=primary yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
     DBSource     dbi:Pg:dbname=yubikey;host=db1,db2;port=5432;sslmode=verify-full;connect_timeout=3;target_session_attrs=primary
     DBUsername   radiator
+    ConnectTimeout      7
+    DBSource         dbi:Pg:dbname=yubikey;host=db1,db2;port=5432;sslmode=verify-full;connect_timeout=3;target_session_attrs=any
+    DBUsername       radiator
+    ConnectTimeout      7
+    DBSource         dbi:Pg:dbname=yubikey;host=db1,db2;port=5432;sslmode=verify-full;connect_timeout=3;target_session_attrs=any
+    DBUsername       radiator
     ConnectTimeout      7
 
 $ PGCONNECT_TIMEOUT=0 yubikey-db.sh -b pg config | grep -E "DB|ConnectTimeout"
@@ -195,4 +306,8 @@ yubikey-db.sh: error: PGCONNECT_TIMEOUT must be 1 to 999 seconds (0 would wait f
 $ yubikey-db.sh -b pg -d radius config | grep DB
     DBSource     dbi:Pg:dbname=radius
     DBUsername   radiator
+    DBSource         dbi:Pg:dbname=radius
+    DBUsername       radiator
+    DBSource         dbi:Pg:dbname=radius
+    DBUsername       radiator
 

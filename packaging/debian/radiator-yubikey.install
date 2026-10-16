@@ -5,6 +5,8 @@ yubikey-anycast.sh              opt/radiator-yubikey
 install.sh                      opt/radiator-yubikey
 yubikey-db-user.example.sh      opt/radiator-yubikey
 radiator.example.conf           opt/radiator-yubikey
+radiator-groups.example.conf    opt/radiator-yubikey
+dictionary.yubikey              opt/radiator-yubikey
 users.example.csv               opt/radiator-yubikey
 yubikey-partition.example.conf  opt/radiator-yubikey
 yubikey-anycast.example.conf    opt/radiator-yubikey

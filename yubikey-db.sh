@@ -58,7 +58,17 @@
 #   verify    Ask for a username, password and OTP, and check them against
 #             the database the way Radiator 4.30 does; saves the counters if
 #             accepted
-#   config    Print a sample Radiator <AuthBy SQLYUBIKEY> clause for this database
+#   config    Print a sample Radiator <AuthBy SQLYUBIKEY> clause for this
+#             database, and the clauses for service accounts and groups
+#   service   Service accounts (svc.NAME), which log in with a password
+#             instead of a YubiKey: add, password, list, enable, disable,
+#             delete, label
+#   group     Groups of accounts: add, delete, list, label
+#   member    Put accounts in a group, or take them out: add, delete
+#   access    Which device groups a group may log in to, with the TACACS+
+#             privilege level and RADIUS reply: set, delete, list, check
+#   rule      TACACS+ command rules for a group on a device group: add,
+#             delete, list
 #   Run "yubikey-db.sh help" for every option.
 #
 # CSV FORMAT (for 'import')
@@ -248,7 +258,51 @@ Commands:
         counter, low, high, label. AES keys are 32 hex characters and private
         IDs are in clear text; passwords are as stored ({crypt} hashes stay
         hashed). An existing FILE is replaced only with --force.
-  config                        Print a sample Radiator AuthBy clause
+  config                        Print a sample Radiator AuthBy clause, and the
+                                clauses ServiceAccounts and GroupAccess
+
+Service accounts and groups (the tables are added by init):
+  service add NAME [-l LABEL] [--inactive] [--generate]
+        Add a service account. NAME is svc. followed by letters, digits and
+        . _ @ + -. Its password (at least 12 characters) is asked for twice,
+        read from standard input when it is not a terminal, or generated
+        (--generate: 32 random characters, shown once). It is stored hashed
+        like static passwords (-H).
+  service password NAME [--generate]   Change the password
+  service list                         List the accounts (no passwords shown)
+  service enable|disable NAME          Let the account log in, or not
+  service delete NAME                  Delete it, and take it out of its groups
+  service label NAME LABEL             Set its label ('' removes it)
+  group add NAME [-l LABEL]            Add a group (up to 64 letters, digits
+                                       and . _ -)
+  group delete NAME                    Delete it, with its members, access
+                                       and rules
+  group list                           List groups, members and access
+  group label NAME LABEL               Set its label ('' removes it)
+  member add|delete GROUP USER...      Put YubiKey users or service accounts
+                                       in a group, or take them out
+  access set GROUP DEVICE_GROUP PRIV_LVL [-r RADIUS_REPLY]
+        Let GROUP log in to the devices in DEVICE_GROUP (the Identifier of
+        their <Client> clauses in Radiator, or * for every device), at
+        TACACS+ privilege level PRIV_LVL (0-15), or change the level. -r
+        sets the RADIUS reply attributes for those logins, such as
+        'cisco-avpair="shell:priv-lvl=15"' ('' removes them). An account in
+        several groups gets the most privileged one allowed on the device.
+  access delete GROUP DEVICE_GROUP     Take that access away, with its rules
+  access list [GROUP]                  List the access of every group
+  access check USER DEVICE_GROUP
+        Show what Radiator finds for USER on a device in DEVICE_GROUP: the
+        group, privilege level, TACACS+ rules and RADIUS reply. Exits 1 when
+        USER may not log in there.
+  rule add GROUP DEVICE_GROUP 'RULE' [--seq N]
+        Add a TACACS+ command rule, after the last one (or at N). RULE is
+        permit|permitreplace|deny, then a Perl regular expression for each
+        argument of the command, in order, each matched whole, e.g.
+        'deny service=shell cmd=reload' or 'permit service=shell cmd=show'.
+        The first rule that matches decides; a command no rule matches is
+        denied. With no rules, every command is allowed.
+  rule delete GROUP DEVICE_GROUP SEQ   Delete a rule
+  rule list GROUP DEVICE_GROUP         List the rules, in order
 
 --replace overwrites any existing row with the same public ID or private ID,
 and resets its counters. Use it after reprogramming a YubiKey.
@@ -737,7 +791,14 @@ verify_otp() {
 #                        array of objects with the keys username, password,
 #                        active, created, accessed (UTC text), tokenid,
 #                        userid, secret, counter, low, high, label
-#   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause
+#   db_config            print a sample Radiator <AuthBy SQLYUBIKEY> clause,
+#                        and the clauses for service accounts and groups
+#   db_table             run one SELECT read from stdin and print its rows as
+#                        a table with a header
+#   db_groups_ready read|write
+#                        exit unless the database can be read (or changed)
+#                        and has the service-account and group tables
+#   db_service_list      print the service accounts (never their passwords)
 # --------------------------------------------------------------------------
 
 db_require_tools()   { "${DB_BACKEND}_require_tools"; }
@@ -750,6 +811,9 @@ db_list()            { "${DB_BACKEND}_list" "$@"; }
 db_change()          { "${DB_BACKEND}_change" "$@"; }
 db_export_json()     { "${DB_BACKEND}_export_json" "$@"; }
 db_config()          { "${DB_BACKEND}_config" "$@"; }
+db_table()           { "${DB_BACKEND}_table"; }
+db_groups_ready()    { "${DB_BACKEND}_groups_ready" "$@"; }
+db_service_list()    { "${DB_BACKEND}_service_list"; }
 
 # --------------------------------------------------------------------------
 # SQLite backend
@@ -800,6 +864,85 @@ EOF
     esac
 }
 
+# The service-account and group tables, for both backends ($1 = the type for
+# times, $2 = the type for the active flag). Radiator reads them through the
+# view access_replies (and service_accounts for passwords); they replace
+# nothing in yubikeys.
+#   service_accounts  accounts that log in with a password instead of a
+#                     YubiKey (svc.NAME), as {crypt} hashes
+#   user_groups       groups of accounts (YubiKey users and service accounts)
+#   group_members     who is in each group, by username
+#   group_access      the device groups (the Identifier of the devices'
+#                     <Client> clauses, or * for every device) each group
+#                     may log in to, with the TACACS+ privilege level and
+#                     the RADIUS reply attributes for those devices
+#   group_rules       TACACS+ command rules for a group on a device group,
+#                     tried in seq order; none means every command
+groups_schema() {
+    local time=$1 flag=$2 check=''
+    [[ $flag == smallint ]] && check=' CHECK (active IN (0, 1))'
+    cat <<EOF
+CREATE TABLE IF NOT EXISTS service_accounts (
+    username varchar(255) PRIMARY KEY,                  -- svc.NAME
+    password text         NOT NULL,                     -- {crypt} hash
+    active   $flag NOT NULL DEFAULT 1$check,
+    created  $time NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    changed  $time NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- password last set
+    label    varchar(255) NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS user_groups (
+    name  varchar(64)  PRIMARY KEY,
+    label varchar(255) NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    user_group varchar(64)  NOT NULL REFERENCES user_groups (name) ON DELETE CASCADE,
+    username   varchar(255) NOT NULL,
+    PRIMARY KEY (user_group, username)
+);
+CREATE INDEX IF NOT EXISTS group_members_username ON group_members (username);
+CREATE TABLE IF NOT EXISTS group_access (
+    user_group   varchar(64) NOT NULL REFERENCES user_groups (name) ON DELETE CASCADE,
+    device_group varchar(64) NOT NULL,
+    priv_lvl     smallint    NOT NULL CHECK (priv_lvl BETWEEN 0 AND 15),
+    radius_reply text        NOT NULL DEFAULT '',
+    PRIMARY KEY (user_group, device_group)
+);
+CREATE TABLE IF NOT EXISTS group_rules (
+    user_group   varchar(64) NOT NULL,
+    device_group varchar(64) NOT NULL,
+    seq          integer     NOT NULL CHECK (seq > 0),
+    rule         text        NOT NULL,
+    PRIMARY KEY (user_group, device_group, seq),
+    FOREIGN KEY (user_group, device_group) REFERENCES group_access (user_group, device_group) ON DELETE CASCADE
+);
+EOF
+}
+
+# The body of the view access_replies: one row for each account that can log
+# in (it has a YubiKey that Radiator counts as active, whose active is not 0
+# or empty, or it is an active service account), group it is in, and device
+# group that group may use, with what Radiator replies. So disabling an
+# account also ends its TACACS+ authorizations, in sessions already open.
+# tacacs_reply holds the rules Radiator's <ServerTACACSPLUS> applies
+# (AuthorizeGroupAttr OSC-Authorize-Group): first the privilege level, for a
+# login's exec authorization (cmd* or an empty cmd=), then the group's
+# command rules, or when it has none, a rule that allows every command. The
+# first rule that matches decides, and a request no rule matches is denied.
+access_replies_sql() {
+    cat <<'EOF'
+SELECT m.username, a.user_group, a.device_group, a.priv_lvl, a.radius_reply,
+       'OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=' || a.priv_lvl || '}"'
+       || coalesce((SELECT ',' || string_agg('OSC-Authorize-Group="' || r.rule || '"', ',' ORDER BY r.seq)
+                      FROM group_rules r
+                     WHERE r.user_group = a.user_group AND r.device_group = a.device_group),
+                   ',OSC-Authorize-Group="permit service=shell"') AS tacacs_reply
+  FROM group_members m JOIN group_access a ON a.user_group = m.user_group
+ WHERE EXISTS (SELECT 1 FROM yubikeys y
+                WHERE y.username = m.username AND coalesce(CAST(y.active AS text), '1') NOT IN ('0', ''))
+    OR EXISTS (SELECT 1 FROM service_accounts s WHERE s.username = m.username AND s.active = 1);
+EOF
+}
+
 # Table definition from the original example, with a label column. The
 # username index speeds up Radiator's lookups by user. The trigger is
 # explained at pg_schema.
@@ -828,6 +971,10 @@ BEGIN
     SELECT RAISE(ABORT, 'counter violation: this YubiKey already used this OTP or a later one');
 END;
 EOF
+    groups_schema datetime boolean
+    # The view is made again on every init, so an older one is replaced.
+    printf 'DROP VIEW IF EXISTS access_replies;\nCREATE VIEW access_replies AS\n'
+    access_replies_sql
 }
 
 # Create the database directory and file, then the table. Options: --owner.
@@ -849,7 +996,12 @@ sqlite_init() {
     [[ -w $dir ]] || die "no write access to $dir (run with sudo?)"
     [[ -e $DB_FILE ]] || created_file=1
 
+    local had_groups=1
+    if [[ $created_file == 0 ]]; then
+        had_groups=$(echo "SELECT count(*) FROM sqlite_master WHERE name = 'service_accounts';" | sqlite_run)
+    fi
     sqlite_schema | sqlite_run
+    if [[ $had_groups == 0 ]]; then info "Added the service-account and group tables"; fi
     if [[ $created_file == 1 ]]; then
         chmod 0640 -- "$DB_FILE"
     fi
@@ -934,6 +1086,71 @@ sqlite_change() {
     printf '%s\nSELECT changes();\n' "$1" | sqlite_run
 }
 
+sqlite_table() {
+    { printf '.headers on\n.mode column --wrap 0\n'; cat; } | sqlite_run
+}
+
+sqlite_groups_ready() {
+    if [[ $1 == write ]]; then sqlite_ensure_writable; else sqlite_ensure_readable; fi
+    [[ $(echo "SELECT count(*) FROM sqlite_master WHERE name IN ('service_accounts', 'user_groups', 'group_members', 'group_access', 'group_rules', 'access_replies');" | sqlite_run) == 6 ]] \
+        || die "$DB_FILE has no service-account and group tables; run '$PROG init' to add them"
+}
+
+sqlite_service_list() {
+    sqlite_table <<'EOF'
+SELECT username, active, created, changed, label FROM service_accounts ORDER BY username;
+EOF
+}
+
+# Print the clauses ServiceAccounts and GroupAccess, for the database in DSN
+# ($1), as the login $2 (empty for SQLite), with the connection settings in
+# $3 (lines, may be empty).
+groups_config() {
+    local dsn=$1 user=$2 settings=$3
+    cat <<EOF
+
+# Service accounts (svc.NAME) log in with a password from the table
+# service_accounts ('$PROG service add'): the Handler for svc.* users
+# uses this clause instead of the YubiKey one. NoDefault: never fall back to
+# an account called DEFAULT.
+<AuthBy SQL>
+    Identifier       ServiceAccounts
+    DBSource         $dsn
+    DBUsername${user:+       $user}
+    DBAuth
+$settings    NoDefault
+    AuthSelect       SELECT password FROM service_accounts WHERE username = ? AND active = 1
+    AuthSelectParam  %0
+    AuthColumnDef    0, User-Password, check
+</AuthBy>
+
+# The group check, after the YubiKey or password check of every login (with
+# AuthByPolicy ContinueWhileAccept in the Handler): one of the account's
+# groups must be allowed on the device's group ('$PROG access set'),
+# which is the Identifier of the device's <Client> clause. The most
+# privileged of those groups decides. A TACACS+ request (marked
+# YubiKey-Via=tacacs by <ServerTACACSPLUS>) gets that group's name and
+# command rules, for its GroupMemberAttr and AuthorizeGroupAttr; a RADIUS
+# request gets the group's RADIUS reply attributes. No group: the login is
+# rejected.
+<AuthBy SQL>
+    Identifier       GroupAccess
+    DBSource         $dsn
+    DBUsername${user:+       $user}
+    DBAuth
+$settings    NoCheckPassword
+    NoDefault
+    AuthSelect       SELECT CASE WHEN ? = 'tacacs' THEN user_group END, CASE WHEN ? = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = ? AND device_group IN (?, '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %{YubiKey-Via}
+    AuthSelectParam  %0
+    AuthSelectParam  %{Client:Identifier}
+    AuthColumnDef    0, OSC-Group-Identifier, reply
+    AuthColumnDef    1, GENERIC, reply
+</AuthBy>
+EOF
+}
+
 sqlite_config() {
     cat <<EOF
 # Sample Radiator <AuthBy SQLYUBIKEY> clause for $DB_FILE
@@ -962,8 +1179,14 @@ sqlite_config() {
 
     # Also check that the private ID in the OTP matches userId.
     CheckSecretId
+
+    # Never fall back to a user called DEFAULT. Radiator's YubiKey clauses
+    # already don't (and look up the login's own username in any case); it
+    # is written here so that it stays so.
+    NoDefault
 </AuthBy>
 EOF
+    groups_config "dbi:SQLite:dbname=$DB_FILE" '' ''
 }
 
 # --------------------------------------------------------------------------
@@ -1100,8 +1323,15 @@ pg_ensure_writable() {
 # trigger keeps that ID in login_id with the counters. Every other save,
 # from the scripts or from an older Radiator clause, names none and empties
 # it. Radiator's role cannot read or write login_id.
+#
+# Of the service-account and group tables (groups_schema), Radiator's role
+# reads only the passwords of service accounts and the view access_replies,
+# which reads the group tables with its owner's rights.
 pg_schema() {
     cat <<EOF
+-- An older database (with a yubikeys table) that has no service_accounts
+-- table gets the service-account and group tables: say so.
+SELECT to_regclass('service_accounts') IS NOT NULL OR to_regclass('yubikeys') IS NULL AS had_groups \\gset
 CREATE TABLE IF NOT EXISTS yubikeys (
     username varchar(255) NOT NULL,
     password text         NOT NULL DEFAULT '',
@@ -1144,6 +1374,12 @@ END
 CREATE OR REPLACE TRIGGER yubikeys_counters_forward
     BEFORE UPDATE OF counter, low ON yubikeys FOR EACH ROW
     EXECUTE FUNCTION yubikeys_counters_forward();
+$(groups_schema timestamptz smallint)
+CREATE OR REPLACE VIEW access_replies AS
+$(access_replies_sql)
+REVOKE ALL ON service_accounts, user_groups, group_members, group_access, group_rules, access_replies FROM PUBLIC;
+GRANT SELECT (username, password, active) ON service_accounts TO $PG_RADIATOR_ROLE;
+GRANT SELECT ON access_replies TO $PG_RADIATOR_ROLE;
 \\if :had_label
 \\else
 \\echo 'Added the label column to the yubikeys table'
@@ -1151,6 +1387,10 @@ CREATE OR REPLACE TRIGGER yubikeys_counters_forward
 \\if :had_login_id
 \\else
 \\echo 'Added the login_id column to the yubikeys table'
+\\endif
+\\if :had_groups
+\\else
+\\echo 'Added the service-account and group tables'
 \\endif
 EOF
 }
@@ -1319,6 +1559,38 @@ pg_change() {
     printf 'WITH changed AS (%s RETURNING 1) SELECT count(*) FROM changed;\n' "${1%;}" | pg_run
 }
 
+pg_table() {
+    pg_psql --pset=footer=off
+}
+
+# The tables exist, and this role may read them (or change them).
+pg_groups_ready() {
+    local priv=SELECT state
+    if [[ $1 == write ]]; then pg_ensure_writable; priv=INSERT; else pg_ensure_readable; fi
+    state=$(pg_run <<EOF 2>&1
+SELECT CASE WHEN to_regclass('group_rules') IS NULL OR to_regclass('access_replies') IS NULL THEN 'missing'
+            WHEN NOT (has_table_privilege('service_accounts', '$priv') AND has_table_privilege('user_groups', '$priv')
+                      AND has_table_privilege('group_members', '$priv') AND has_table_privilege('group_access', '$priv')
+                      AND has_table_privilege('group_rules', '$priv')) THEN 'denied'
+            ELSE 'ok' END;
+EOF
+    ) || die "cannot use $DB_DESC: ${state#psql: error: }"
+    case $state in
+        ok)      ;;
+        missing) die "$DB_DESC has no service-account and group tables; run '$PROG -b pg init' to add them" ;;
+        *)       die "no access to the service-account and group tables in $DB_DESC (is ${PGUSER:-$(id -un)} a member of $PG_ADMIN_ROLE?)" ;;
+    esac
+}
+
+pg_service_list() {
+    pg_table <<'EOF'
+SELECT username, active,
+       to_char(created AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS created,
+       to_char(changed AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS changed, label
+  FROM service_accounts ORDER BY username;
+EOF
+}
+
 pg_config() {
     local dsn hosts ct=${PGCONNECT_TIMEOUT:-2} connect_timeout=5
     [[ $ct =~ ^[1-9][0-9]{0,2}$ ]] || die "PGCONNECT_TIMEOUT must be 1 to 999 seconds (0 would wait for ever)"
@@ -1434,6 +1706,11 @@ EOF
 
     # Also check that the private ID in the OTP matches userId.
     CheckSecretId
+
+    # Never fall back to a user called DEFAULT. Radiator's YubiKey clauses
+    # already don't (and look up the login's own username in any case); it
+    # is written here so that it stays so.
+    NoDefault
 </AuthBy>
 
 # Before the YubiKey check: a Radiator process with no database connection
@@ -1458,6 +1735,13 @@ EOF
     AuthBy       YubiKeySQL
 </AuthBy>
 EOF
+    # These two only read, so any server will do, the primary or a standby:
+    # with several, the first one that answers.
+    local read_dsn=${dsn/target_session_attrs=${PGTARGETSESSIONATTRS-}/target_session_attrs=any}
+    groups_config "$read_dsn" "$PG_RADIATOR_ROLE" "    Timeout             2
+    ConnectTimeout      $connect_timeout
+    FailureBackoffTime  2
+"
 }
 
 # --------------------------------------------------------------------------
@@ -1768,6 +2052,531 @@ cmd_label() {
 }
 
 # --------------------------------------------------------------------------
+# Service accounts and groups
+#
+# Service accounts (svc.NAME) log in with a password instead of a YubiKey.
+# Groups say which device groups (the Identifier of the devices' <Client>
+# clauses in Radiator, or * for every device) their members may log in to,
+# with what TACACS+ privilege level and command rules, and what RADIUS reply
+# attributes. Radiator reads them with the clauses ServiceAccounts and
+# GroupAccess from 'config'.
+# --------------------------------------------------------------------------
+
+check_service_name() {
+    [[ $1 =~ ^svc\.[A-Za-z0-9._@+-]{1,251}$ ]] \
+        || die "$2: invalid service account '$1' (svc. followed by letters, digits and . _ @ + -)"
+}
+check_group_name() {
+    [[ $1 =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
+        || die "$2: invalid group name '$1' (up to 64 letters, digits and . _ -)"
+}
+check_device_group() {
+    [[ $1 == '*' || $1 =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
+        || die "$2: invalid device group '$1' (a <Client> Identifier: up to 64 letters, digits and . _ -; or * for every device)"
+}
+check_username() {
+    [[ $1 =~ ^[A-Za-z0-9._@+-]{1,255}$ ]] \
+        || die "$2: invalid username '$1' (allowed: letters, digits and . _ @ + -)"
+}
+check_priv_lvl() {
+    [[ $1 =~ ^([0-9]|1[0-5])$ ]] || die "$2: invalid privilege level '$1' (0 to 15)"
+}
+
+# db_value SQL: print what a SELECT of one value returns.
+db_value() {
+    printf '%s\n' "$1" | db_run
+}
+
+# group_exists NAME COMMAND: exit unless the group exists.
+group_exists() {
+    [[ $(db_value "SELECT count(*) FROM user_groups WHERE name = $(sql_quote "$1");") == 1 ]] \
+        || die "$2: no group '$1' (add it with '$PROG group add $1')"
+}
+
+# Read a service account's password into SVC_PW: generated (--generate),
+# asked for twice on a terminal, or the next line of standard input.
+# $1 = account, $2 = 1 to generate.
+read_service_password() {
+    local name=$1 pw='' again=''
+    if [[ $2 == 1 ]]; then
+        # 32 characters from 62, without modulo bias (bytes 248-255 skipped).
+        pw=$(perl -e '
+            open(my $r, "<", "/dev/urandom") or die "cannot read /dev/urandom: $!\n";
+            my @c = ("a".."z", "A".."Z", 0..9);
+            my $pw = "";
+            while (length $pw < 32) {
+                read($r, my $b, 1) == 1 or die "short read from /dev/urandom\n";
+                $pw .= $c[ord($b) % 62] if ord($b) < 248;
+            }
+            print $pw;') || die "could not generate a password"
+    elif [[ -t 0 ]]; then
+        prompt_value pw "Password for $name" secret
+        prompt_value again "The same password again" secret
+        [[ $pw == "$again" ]] || die "the two passwords differ"
+    else
+        IFS= read -r pw || [[ -n $pw ]] || die "standard input ended before the password for $name"
+    fi
+    [[ ${#pw} -ge 12 ]] || die "the password for $name is too short (at least 12 characters)"
+    [[ ! $pw =~ [[:cntrl:]] ]] || die "the password for $name contains control characters"
+    SVC_PW=$pw
+}
+
+cmd_service() {
+    local sub=${1-}
+    [[ $# -eq 0 ]] || shift
+    case $sub in
+        add)                   service_add "$@" ;;
+        password)              service_password "$@" ;;
+        list)                  [[ $# -eq 0 ]] || die "service list: too many arguments"
+                               db_groups_ready read
+                               db_service_list ;;
+        enable|disable|delete) service_modify "$sub" "$@" ;;
+        label)                 service_label "$@" ;;
+        *) die "service: usage: $PROG service add|password|list|enable|disable|delete|label ... (see '$PROG help')" ;;
+    esac
+}
+
+# service add NAME [-l LABEL] [--inactive] [--generate]
+service_add() {
+    local name='' label='' active=1 generate=0 hash
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -l|--label)  label=${2?--label needs a value}; shift 2 ;;
+            --inactive)  active=0; shift ;;
+            --generate)  generate=1; shift ;;
+            -?*)         die "service add: unknown option '$1'" ;;
+            *)           [[ -z $name ]] || die "service add: only one account at a time"; name=$1; shift ;;
+        esac
+    done
+    [[ -n $name ]] || die "service add: usage: $PROG service add NAME [-l LABEL] [--inactive] [--generate]"
+    check_service_name "$name" "service add"
+    validate_label "$name" "$label" || die "service add: $ERR"
+    db_groups_ready write
+    [[ $(db_value "SELECT count(*) FROM service_accounts WHERE username = $(sql_quote "$name");") == 0 ]] \
+        || die "service add: $name already exists (change its password with '$PROG service password $name')"
+    read_service_password "$name" "$generate"
+    hash=$(hash_password "$SVC_PW") || die "could not hash the password for $name"
+    printf 'INSERT INTO service_accounts (username, password, active, label) VALUES (%s, %s, %s, %s);\n' \
+        "$(sql_quote "$name")" "$(sql_quote "$hash")" "$active" "$(sql_quote "$R_LABEL")" | db_run >/dev/null
+    info "Added service account $name$( ((active)) || echo ' (inactive)')"
+    if [[ $generate == 1 ]]; then info "Its password, shown only now: $SVC_PW"; fi
+}
+
+# service password NAME [--generate]
+service_password() {
+    local name='' generate=0 hash n
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --generate) generate=1; shift ;;
+            -?*)        die "service password: unknown option '$1'" ;;
+            *)          [[ -z $name ]] || die "service password: only one account at a time"; name=$1; shift ;;
+        esac
+    done
+    [[ -n $name ]] || die "service password: usage: $PROG service password NAME [--generate]"
+    check_service_name "$name" "service password"
+    db_groups_ready write
+    [[ $(db_value "SELECT count(*) FROM service_accounts WHERE username = $(sql_quote "$name");") == 1 ]] \
+        || die "service password: no service account $name"
+    read_service_password "$name" "$generate"
+    hash=$(hash_password "$SVC_PW") || die "could not hash the password for $name"
+    n=$(db_change "UPDATE service_accounts SET password = $(sql_quote "$hash"), changed = CURRENT_TIMESTAMP
+ WHERE username = $(sql_quote "$name");")
+    [[ $n -gt 0 ]] || die "service password: no service account $name"
+    info "Changed the password of $name"
+    if [[ $generate == 1 ]]; then info "Its password, shown only now: $SVC_PW"; fi
+}
+
+# service enable|disable|delete NAME. Deleting an account also takes it out
+# of its groups.
+service_modify() {
+    local action=$1 name=${2-} q n m=0
+    [[ $# -eq 2 ]] || die "service $action: usage: $PROG service $action NAME"
+    check_service_name "$name" "service $action"
+    db_groups_ready write
+    q=$(sql_quote "$name")
+    case $action in
+        enable)  n=$(db_change "UPDATE service_accounts SET active = 1 WHERE username = $q;") ;;
+        disable) n=$(db_change "UPDATE service_accounts SET active = 0 WHERE username = $q;") ;;
+        delete)  n=$(db_change "DELETE FROM service_accounts WHERE username = $q;")
+                 if [[ $n -gt 0 ]]; then m=$(db_change "DELETE FROM group_members WHERE username = $q;"); fi ;;
+    esac
+    [[ $n -gt 0 ]] || die "service $action: no service account $name"
+    case $action in
+        enable)  info "Enabled $name" ;;
+        disable) info "Disabled $name" ;;
+        delete)  info "Deleted $name$( ((m)) && echo ", and took it out of $m group(s)")" ;;
+    esac
+}
+
+# service label NAME LABEL ('' removes it)
+service_label() {
+    [[ $# -eq 2 ]] || die "service label: usage: $PROG service label NAME LABEL ('' removes the label)"
+    local name=$1 n
+    check_service_name "$name" "service label"
+    validate_label "$name" "$2" || die "service label: $ERR"
+    db_groups_ready write
+    n=$(db_change "UPDATE service_accounts SET label = $(sql_quote "$R_LABEL") WHERE username = $(sql_quote "$name");")
+    [[ $n -gt 0 ]] || die "service label: no service account $name"
+    if [[ -n $R_LABEL ]]; then info "Labeled $name: $R_LABEL"; else info "Removed the label of $name"; fi
+}
+
+cmd_group() {
+    local sub=${1-}
+    [[ $# -eq 0 ]] || shift
+    case $sub in
+        add)    group_add "$@" ;;
+        delete) group_delete "$@" ;;
+        list)   [[ $# -eq 0 ]] || die "group list: too many arguments"
+                db_groups_ready read
+                db_table <<'EOF'
+SELECT g.name AS "group",
+       coalesce((SELECT string_agg(m.username, ' ' ORDER BY m.username)
+                   FROM group_members m WHERE m.user_group = g.name), '') AS members,
+       coalesce((SELECT string_agg(a.device_group || ':' || a.priv_lvl, ' ' ORDER BY a.device_group)
+                   FROM group_access a WHERE a.user_group = g.name), '') AS "device groups:priv-lvl",
+       g.label
+  FROM user_groups g ORDER BY g.name;
+EOF
+                ;;
+        label)  group_label "$@" ;;
+        *) die "group: usage: $PROG group add|delete|list|label ... (see '$PROG help')" ;;
+    esac
+}
+
+# group add NAME [-l LABEL]
+group_add() {
+    local name='' label=''
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -l|--label) label=${2?--label needs a value}; shift 2 ;;
+            -?*)        die "group add: unknown option '$1'" ;;
+            *)          [[ -z $name ]] || die "group add: only one group at a time"; name=$1; shift ;;
+        esac
+    done
+    [[ -n $name ]] || die "group add: usage: $PROG group add NAME [-l LABEL]"
+    check_group_name "$name" "group add"
+    validate_label "$name" "$label" || die "group add: $ERR"
+    db_groups_ready write
+    [[ $(db_value "SELECT count(*) FROM user_groups WHERE name = $(sql_quote "$name");") == 0 ]] \
+        || die "group add: group $name already exists"
+    printf 'INSERT INTO user_groups (name, label) VALUES (%s, %s);\n' "$(sql_quote "$name")" "$(sql_quote "$R_LABEL")" \
+        | db_run >/dev/null
+    info "Added group $name"
+}
+
+# group delete NAME: with its members, access and rules, in one transaction.
+group_delete() {
+    [[ $# -eq 1 ]] || die "group delete: usage: $PROG group delete NAME"
+    local q out
+    check_group_name "$1" "group delete"
+    db_groups_ready write
+    group_exists "$1" "group delete"
+    q=$(sql_quote "$1")
+    out=$(db_run <<EOF
+BEGIN;
+SELECT (SELECT count(*) FROM group_members WHERE user_group = $q) || ' ' || (SELECT count(*) FROM group_access WHERE user_group = $q);
+DELETE FROM group_rules WHERE user_group = $q;
+DELETE FROM group_access WHERE user_group = $q;
+DELETE FROM group_members WHERE user_group = $q;
+DELETE FROM user_groups WHERE name = $q;
+COMMIT;
+EOF
+    ) || die "group delete: could not delete $1"
+    info "Deleted group $1, with its ${out%% *} member(s) and ${out##* } device group(s)"
+}
+
+# group label NAME LABEL ('' removes it)
+group_label() {
+    [[ $# -eq 2 ]] || die "group label: usage: $PROG group label NAME LABEL ('' removes the label)"
+    local n
+    check_group_name "$1" "group label"
+    validate_label "$1" "$2" || die "group label: $ERR"
+    db_groups_ready write
+    n=$(db_change "UPDATE user_groups SET label = $(sql_quote "$R_LABEL") WHERE name = $(sql_quote "$1");")
+    [[ $n -gt 0 ]] || die "group label: no group '$1'"
+    if [[ -n $R_LABEL ]]; then info "Labeled group $1: $R_LABEL"; else info "Removed the label of group $1"; fi
+}
+
+# member add|delete GROUP USER...
+cmd_member() {
+    local sub=${1-} group user q added=0 n
+    [[ $# -eq 0 ]] || shift
+    [[ ($sub == add || $sub == delete) && $# -ge 2 ]] \
+        || die "member: usage: $PROG member add|delete GROUP USER..."
+    group=$1; shift
+    check_group_name "$group" "member $sub"
+    for user in "$@"; do check_username "$user" "member $sub"; done
+    db_groups_ready write
+    group_exists "$group" "member $sub"
+    q=$(sql_quote "$group")
+    for user in "$@"; do
+        if [[ $sub == add ]]; then
+            n=$(db_change "INSERT INTO group_members (user_group, username) VALUES ($q, $(sql_quote "$user"))
+ ON CONFLICT (user_group, username) DO NOTHING;")
+            if [[ $n == 0 ]]; then info "$user is already in $group"; continue; fi
+            if [[ $(db_value "SELECT (SELECT count(*) FROM yubikeys WHERE username = $(sql_quote "$user"))
+     + (SELECT count(*) FROM service_accounts WHERE username = $(sql_quote "$user"));") == 0 ]]; then
+                warn "$user has no YubiKey and is not a service account (yet)"
+            fi
+        else
+            n=$(db_change "DELETE FROM group_members WHERE user_group = $q AND username = $(sql_quote "$user");")
+            [[ $n -gt 0 ]] || die "member delete: $user is not in $group"
+        fi
+        added=$((added + 1))
+    done
+    if [[ $sub == add ]]; then
+        if [[ $added -gt 0 ]]; then info "Added $added member(s) to $group"; fi
+    else
+        info "Took $added member(s) out of $group"
+    fi
+}
+
+cmd_access() {
+    local sub=${1-}
+    [[ $# -eq 0 ]] || shift
+    case $sub in
+        set)    access_set "$@" ;;
+        delete) access_delete "$@" ;;
+        list)   access_list "$@" ;;
+        check)  access_check "$@" ;;
+        *) die "access: usage: $PROG access set|delete|list|check ... (see '$PROG help')" ;;
+    esac
+}
+
+# access set GROUP DEVICE_GROUP PRIV_LVL [-r RADIUS_REPLY]: add the access,
+# or change its privilege level (and its RADIUS reply, if -r is given).
+access_set() {
+    local -a args=()
+    local reply='' reply_set=0 group dev priv update
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -r|--radius-reply) reply=${2?--radius-reply needs a value}; reply_set=1; shift 2 ;;
+            -?*)               die "access set: unknown option '$1'" ;;
+            *)                 args+=("$1"); shift ;;
+        esac
+    done
+    [[ ${#args[@]} -eq 3 ]] \
+        || die "access set: usage: $PROG access set GROUP DEVICE_GROUP PRIV_LVL [-r RADIUS_REPLY]"
+    group=${args[0]} dev=${args[1]} priv=${args[2]}
+    check_group_name "$group" "access set"
+    check_device_group "$dev" "access set"
+    check_priv_lvl "$priv" "access set"
+    if [[ $reply_set == 1 ]]; then check_radius_reply "$reply" "access set"; fi
+    db_groups_ready write
+    group_exists "$group" "access set"
+    update="priv_lvl = excluded.priv_lvl"
+    if [[ $reply_set == 1 ]]; then update+=", radius_reply = excluded.radius_reply"; fi
+    printf 'INSERT INTO group_access (user_group, device_group, priv_lvl, radius_reply) VALUES (%s, %s, %s, %s)\n ON CONFLICT (user_group, device_group) DO UPDATE SET %s;\n' \
+        "$(sql_quote "$group")" "$(sql_quote "$dev")" "$priv" "$(sql_quote "$reply")" "$update" | db_run >/dev/null
+    info "Group $group may use device group $dev, at privilege level $priv"
+}
+
+# access delete GROUP DEVICE_GROUP: with its rules.
+access_delete() {
+    [[ $# -eq 2 ]] || die "access delete: usage: $PROG access delete GROUP DEVICE_GROUP"
+    local g d out
+    check_group_name "$1" "access delete"
+    check_device_group "$2" "access delete"
+    db_groups_ready write
+    g=$(sql_quote "$1") d=$(sql_quote "$2")
+    out=$(db_run <<EOF
+BEGIN;
+SELECT (SELECT count(*) FROM group_access WHERE user_group = $g AND device_group = $d) || ' '
+    || (SELECT count(*) FROM group_rules WHERE user_group = $g AND device_group = $d);
+DELETE FROM group_rules WHERE user_group = $g AND device_group = $d;
+DELETE FROM group_access WHERE user_group = $g AND device_group = $d;
+COMMIT;
+EOF
+    ) || die "access delete: could not delete the access"
+    [[ ${out%% *} -gt 0 ]] || die "access delete: group $1 has no access to device group $2"
+    info "Group $1 may no longer use device group $2 (${out##* } rule(s) deleted)"
+}
+
+# access list [GROUP]
+access_list() {
+    [[ $# -le 1 ]] || die "access list: usage: $PROG access list [GROUP]"
+    local where=''
+    if [[ $# -eq 1 ]]; then
+        check_group_name "$1" "access list"
+        where="WHERE a.user_group = $(sql_quote "$1")"
+    fi
+    db_groups_ready read
+    db_table <<EOF
+SELECT a.user_group AS "group", a.device_group AS "device group", a.priv_lvl AS "priv-lvl",
+       CASE (SELECT count(*) FROM group_rules r WHERE r.user_group = a.user_group AND r.device_group = a.device_group)
+            WHEN 0 THEN 'every command'
+            ELSE (SELECT count(*) FROM group_rules r WHERE r.user_group = a.user_group AND r.device_group = a.device_group) || ' rule(s)'
+       END AS "TACACS+ commands",
+       a.radius_reply AS "RADIUS reply"
+  FROM group_access a $where ORDER BY a.user_group, a.device_group;
+EOF
+}
+
+# access check USER DEVICE_GROUP: what Radiator's GroupAccess clause finds
+# for USER on a device in DEVICE_GROUP, with the same query. Exits 1 when
+# USER may not log in there.
+access_check() {
+    [[ $# -eq 2 ]] || die "access check: usage: $PROG access check USER DEVICE_GROUP"
+    local user=$1 dev=$2 from row rules reply g p d q
+    check_username "$user" "access check"
+    check_device_group "$dev" "access check"
+    db_groups_ready read
+    from="FROM access_replies WHERE username = $(sql_quote "$user") AND device_group IN ($(sql_quote "$dev"), '*')
+ ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1"
+    row=$(db_value "SELECT user_group || ' ' || priv_lvl || ' ' || device_group $from;")
+    if [[ -z $row ]]; then
+        q=$(sql_quote "$user")
+        if [[ $(db_value "SELECT (SELECT count(*) FROM yubikeys WHERE username = $q
+                                  AND coalesce(CAST(active AS text), '1') NOT IN ('0', ''))
+                              + (SELECT count(*) FROM service_accounts WHERE username = $q AND active = 1);") == 0 ]]; then
+            info "$user may not log in to devices in $dev: they have no active YubiKey and are no active service account"
+        else
+            info "$user may not log in to devices in $dev: none of their groups may use it"
+        fi
+        exit 1
+    fi
+    rules=$(db_value "SELECT tacacs_reply $from;")
+    reply=$(db_value "SELECT radius_reply $from;")
+    read -r g p d <<<"$row"
+    info "$user may log in to devices in $dev, as a member of $g (access to $d), at privilege level $p"
+    info "TACACS+ rules, the first that matches decides:"
+    RULES=$rules perl -e 'print map { "  $_\n" } $ENV{RULES} =~ /OSC-Authorize-Group="([^"]*)"/g'
+    info "RADIUS reply: ${reply:-(none)}"
+}
+
+# rule add|delete|list GROUP DEVICE_GROUP ...
+cmd_rule() {
+    local sub=${1-}
+    [[ $# -eq 0 ]] || shift
+    case $sub in
+        add)    rule_add "$@" ;;
+        delete) rule_delete "$@" ;;
+        list)   rule_list "$@" ;;
+        *) die "rule: usage: $PROG rule add|delete|list GROUP DEVICE_GROUP ... (see '$PROG help')" ;;
+    esac
+}
+
+# access_exists GROUP DEVICE_GROUP COMMAND
+access_exists() {
+    [[ $(db_value "SELECT count(*) FROM group_access WHERE user_group = $(sql_quote "$1") AND device_group = $(sql_quote "$2");") == 1 ]] \
+        || die "$3: group $1 has no access to device group $2 (add it with '$PROG access set $1 $2 PRIV_LVL')"
+}
+
+# rule add GROUP DEVICE_GROUP RULE [--seq N]: by default after the last rule.
+rule_add() {
+    local -a args=()
+    local seq='' g d n
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --seq) seq=${2?--seq needs a number}; shift 2 ;;
+            -?*)   die "rule add: unknown option '$1'" ;;
+            *)     args+=("$1"); shift ;;
+        esac
+    done
+    [[ ${#args[@]} -eq 3 ]] || die "rule add: usage: $PROG rule add GROUP DEVICE_GROUP 'RULE' [--seq N]"
+    check_group_name "${args[0]}" "rule add"
+    check_device_group "${args[1]}" "rule add"
+    [[ -z $seq || $seq =~ ^[1-9][0-9]{0,8}$ ]] || die "rule add: invalid --seq '$seq' (a whole number from 1)"
+    check_rule "${args[2]}" "rule add"
+    db_groups_ready write
+    access_exists "${args[0]}" "${args[1]}" "rule add"
+    g=$(sql_quote "${args[0]}") d=$(sql_quote "${args[1]}")
+    if [[ -z $seq ]]; then
+        seq=$(db_value "SELECT coalesce(max(seq), 0) + 10 FROM group_rules WHERE user_group = $g AND device_group = $d;")
+    elif [[ $(db_value "SELECT count(*) FROM group_rules WHERE user_group = $g AND device_group = $d AND seq = $seq;") != 0 ]]; then
+        die "rule add: there is already a rule $seq for group ${args[0]} on device group ${args[1]}"
+    fi
+    printf 'INSERT INTO group_rules (user_group, device_group, seq, rule) VALUES (%s, %s, %s, %s);\n' \
+        "$g" "$d" "$seq" "$(sql_quote "$RULE")" | db_run >/dev/null
+    n=$(db_value "SELECT count(*) FROM group_rules WHERE user_group = $g AND device_group = $d;")
+    info "Added rule $seq for group ${args[0]} on device group ${args[1]} ($n rule(s); a command no rule matches is denied)"
+}
+
+# rule delete GROUP DEVICE_GROUP SEQ
+rule_delete() {
+    [[ $# -eq 3 ]] || die "rule delete: usage: $PROG rule delete GROUP DEVICE_GROUP SEQ"
+    local n
+    check_group_name "$1" "rule delete"
+    check_device_group "$2" "rule delete"
+    [[ $3 =~ ^[1-9][0-9]{0,8}$ ]] || die "rule delete: invalid SEQ '$3'"
+    db_groups_ready write
+    n=$(db_change "DELETE FROM group_rules WHERE user_group = $(sql_quote "$1") AND device_group = $(sql_quote "$2") AND seq = $3;")
+    [[ $n -gt 0 ]] || die "rule delete: group $1 has no rule $3 on device group $2"
+    info "Deleted rule $3 for group $1 on device group $2"
+}
+
+# rule list GROUP DEVICE_GROUP
+rule_list() {
+    [[ $# -eq 2 ]] || die "rule list: usage: $PROG rule list GROUP DEVICE_GROUP"
+    check_group_name "$1" "rule list"
+    check_device_group "$2" "rule list"
+    db_groups_ready read
+    access_exists "$1" "$2" "rule list"
+    db_table <<EOF
+SELECT seq, rule FROM group_rules
+ WHERE user_group = $(sql_quote "$1") AND device_group = $(sql_quote "$2") ORDER BY seq;
+EOF
+}
+
+# Check a TACACS+ command rule as Radiator's <ServerTACACSPLUS> parses it
+# (AuthorizeGroup syntax without the group name):
+#   permit|permitreplace|deny PATTERN... [{REPLY...}] [{CHECK...}]
+# Each PATTERN is a Perl regular expression for one argument of the request,
+# in order (service=shell, cmd=show, cmd-arg=version, ...), matched whole.
+# Double quotes are refused (the rule is stored inside a quoted attribute),
+# and so are octal escapes like \101, which Radiator would turn into
+# characters. Sets RULE.
+check_rule() {
+    local rc=0
+    RULE_TEXT=$1 perl -e '
+        my $s = $ENV{RULE_TEXT};
+        exit 2 if $s =~ /["[:cntrl:]]/;
+        exit 3 if $s =~ /\\[0-7]{3}/;
+        exit 4 if length $s > 1000;
+        $s =~ /^(permit|permitreplace|deny)\s+([^{]*?)\s*(?:\{([^}]*)\})?\s*(?:\{([^}]*)\})?$/ or exit 5;
+        my ($m, $reply, $check) = ($2, $3, $4);
+        my @p = grep { length } split /\s+/, $m;
+        exit 5 unless @p;
+        for (@p) { eval { qr/^$_$/ } or exit 6 }
+        for (grep { length } split(/\s+/, $reply // ""), split(/\s+/, $check // "")) {
+            /^\S+?[=*]\S*$/ or exit 7;
+        }' || rc=$?
+    case $rc in
+        0) RULE=$1 ;;
+        2) die "$2: the rule contains a double quote or a control character" ;;
+        3) die "$2: the rule contains an octal escape (\\NNN), which Radiator would change" ;;
+        4) die "$2: the rule is longer than 1000 characters" ;;
+        5) die "$2: invalid rule '$1' (permit|permitreplace|deny, then the patterns, e.g. 'permit service=shell cmd=show')" ;;
+        6) die "$2: invalid rule '$1': a pattern is not a valid regular expression" ;;
+        7) die "$2: invalid rule '$1': items in braces must be like priv-lvl=15" ;;
+        *) die "$2: could not check the rule" ;;
+    esac
+}
+
+# Check RADIUS reply attributes as Radiator reads them from the database:
+# NAME=VALUE or NAME="VALUE", separated by commas.
+check_radius_reply() {
+    local rc=0
+    [[ -n $1 ]] || return 0
+    REPLY_TEXT=$1 perl -e '
+        my $s = $ENV{REPLY_TEXT};
+        exit 2 if $s =~ /[[:cntrl:]]/;
+        exit 4 if length $s > 2000;
+        while ($s =~ /\S/) {
+            $s =~ s/^[\s,]*//;
+            next if $s =~ s/^[A-Za-z0-9][A-Za-z0-9:._-]* *= *"(?:\\"|[^"])*"\s*(?:,|$)//;
+            next if $s =~ s/^[A-Za-z0-9][A-Za-z0-9:._-]* *= *[^,"]*(?:,|$)//;
+            exit 5;
+        }' || rc=$?
+    case $rc in
+        0) ;;
+        2) die "$2: the RADIUS reply contains a control character" ;;
+        4) die "$2: the RADIUS reply is longer than 2000 characters" ;;
+        *) die "$2: invalid RADIUS reply '$1' (NAME=VALUE or NAME=\"VALUE\", separated by commas)" ;;
+    esac
+}
+
+# --------------------------------------------------------------------------
 # Main: global options, then dispatch the command
 # --------------------------------------------------------------------------
 
@@ -1811,5 +2620,10 @@ case $cmd in
     label)                  cmd_label "$@" ;;
     export)                 cmd_export "$@" ;;
     verify)                 cmd_verify "$@" ;;
+    service)                cmd_service "$@" ;;
+    group)                  cmd_group "$@" ;;
+    member)                 cmd_member "$@" ;;
+    access)                 cmd_access "$@" ;;
+    rule)                   cmd_rule "$@" ;;
     *)                      die "unknown command '$cmd' (see '$PROG help')" ;;
 esac

@@ -2,7 +2,7 @@
 #
 # run.sh - Test yubikey-db.sh against a real Radiator, in a Docker container.
 #
-# Usage: tests/radiator/run.sh DIR [e2e|ha|geo|package]
+# Usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package]
 #   DIR holds the Radiator packages from Radiator Software, which are not part
 #   of this repository: radiator_<version>_all.deb and
 #   radiator-radius-utilxs_<version>_amd64.deb.
@@ -32,8 +32,8 @@ die() { printf 'run.sh: error: %s\n' "$*" >&2; exit 1; }
 
 dir=${1:-}
 which=${2:-all}
-[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|ha|geo|package] (DIR: the directory with the Radiator .deb packages)"
-[[ $which =~ ^(all|e2e|ha|geo|package)$ ]] || die "unknown test '$which' (e2e, ha, geo or package)"
+[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package] (DIR: the directory with the Radiator .deb packages)"
+[[ $which =~ ^(all|e2e|groups|ha|geo|package)$ ]] || die "unknown test '$which' (e2e, groups, ha, geo or package)"
 shopt -s nullglob
 rad=("$dir"/radiator_*_all.deb)
 utilxs=("$dir"/radiator-radius-utilxs_*.deb)
@@ -52,6 +52,10 @@ docker build -q -t "$image" "$ctx" >/dev/null
 status=0
 if [[ $which == all || $which == e2e ]]; then
     docker run --rm -v "$root:/repo:ro" "$image" bash /repo/tests/radiator/e2e.sh || status=1
+fi
+if [[ $which == all || $which == groups ]]; then
+    [[ $which == all ]] && echo
+    docker run --rm -v "$root:/repo:ro" "$image" bash /repo/tests/radiator/groups.sh || status=1
 fi
 if [[ $which == all || $which == ha ]]; then
     [[ $which == all ]] && echo

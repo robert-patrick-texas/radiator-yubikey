@@ -1,0 +1,424 @@
+$ yubikey-db.sh -d <WORK>/groups.db group list
+yubikey-db.sh: error: <WORK>/groups.db was made by an older version of yubikey-db.sh; run 'yubikey-db.sh init' to bring it up to date
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db init
+Added the service-account and group tables
+Added the label column to the yubikeys table
+yubikey-db.sh: warning: Radiator needs write access to <WORK>/groups.db and its directory to update OTP counters; re-run with --owner <radiator-user>[:group] if Radiator does not run as <USER>
+Database ready: <WORK>/groups.db
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+Added alice with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ printf %s\n 'backup-password-1' | yubikey-db.sh -d <WORK>/groups.db service add svc.backup -l nightly backup
+Added service account svc.backup
+[exit 0]
+
+# crypt check for svc.backup: match
+
+$ printf %s\n 'backup-password-1' | yubikey-db.sh -d <WORK>/groups.db service add svc.backup
+yubikey-db.sh: error: service add: svc.backup already exists (change its password with 'yubikey-db.sh service password svc.backup')
+[exit 1]
+
+$ printf %s\n 'too-short' | yubikey-db.sh -d <WORK>/groups.db service add svc.short
+yubikey-db.sh: error: the password for svc.short is too short (at least 12 characters)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service add svc.nopassword
+yubikey-db.sh: error: standard input ended before the password for svc.nopassword
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service add backup
+yubikey-db.sh: error: service add: invalid service account 'backup' (svc. followed by letters, digits and . _ @ + -)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service add svc.bad name
+yubikey-db.sh: error: service add: invalid service account 'svc.bad name' (svc. followed by letters, digits and . _ @ + -)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service add svc.x --bogus
+yubikey-db.sh: error: service add: unknown option '--bogus'
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service add svc.gen --generate
+Added service account svc.gen
+Its password, shown only now: <PASSWORD>
+[exit 0]
+
+# generated password: 32 letters and digits
+# crypt check for svc.gen: match
+
+$ printf %s\n 'another-password-2' | yubikey-db.sh -d <WORK>/groups.db service password svc.backup
+Changed the password of svc.backup
+[exit 0]
+
+# crypt check for svc.backup: match
+
+$ yubikey-db.sh -d <WORK>/groups.db service password svc.missing --generate
+yubikey-db.sh: error: service password: no service account svc.missing
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service disable svc.backup
+Disabled svc.backup
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service label svc.gen made by --generate
+Labeled svc.gen: made by --generate
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service list
+username    active  created              changed              label             
+----------  ------  -------------------  -------------------  ------------------
+svc.backup  0       <TIMESTAMP>  <TIMESTAMP>  nightly backup    
+svc.gen     1       <TIMESTAMP>  <TIMESTAMP>  made by --generate
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service enable svc.backup
+Enabled svc.backup
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service enable svc.missing
+yubikey-db.sh: error: service enable: no service account svc.missing
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service bogus
+yubikey-db.sh: error: service: usage: yubikey-db.sh service add|password|list|enable|disable|delete|label ... (see 'yubikey-db.sh help')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db group add netadmins -l network team
+Added group netadmins
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db group add helpdesk
+Added group helpdesk
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db group add netadmins
+yubikey-db.sh: error: group add: group netadmins already exists
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db group add bad/name
+yubikey-db.sh: error: group add: invalid group name 'bad/name' (up to 64 letters, digits and . _ -)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db member add netadmins alice svc.backup ghost
+yubikey-db.sh: warning: ghost has no YubiKey and is not a service account (yet)
+Added 3 member(s) to netadmins
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db member add netadmins alice
+alice is already in netadmins
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db member add nogroup alice
+yubikey-db.sh: error: member add: no group 'nogroup' (add it with 'yubikey-db.sh group add nogroup')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db member add helpdesk alice svc.gen
+Added 2 member(s) to helpdesk
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db member add helpdesk bad user
+yubikey-db.sh: error: member add: invalid username 'bad user' (allowed: letters, digits and . _ @ + -)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db member list helpdesk
+yubikey-db.sh: error: member: usage: yubikey-db.sh member add|delete GROUP USER...
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core 14 -r cisco-avpair="shell:priv-lvl=15", Service-Type=Administrative-User
+Group netadmins may use device group core, at privilege level 14
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core 15
+Group netadmins may use device group core, at privilege level 15
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins * 1
+Group netadmins may use device group *, at privilege level 1
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set helpdesk access 5 -r cisco-avpair="shell:priv-lvl=5"
+Group helpdesk may use device group access, at privilege level 5
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set helpdesk core 7
+Group helpdesk may use device group core, at privilege level 7
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set helpdesk access 5 -r 
+Group helpdesk may use device group access, at privilege level 5
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core 16
+yubikey-db.sh: error: access set: invalid privilege level '16' (0 to 15)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core switches 1
+yubikey-db.sh: error: access set: invalid device group 'core switches' (a <Client> Identifier: up to 64 letters, digits and . _ -; or * for every device)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core 15 -r not an attribute
+yubikey-db.sh: error: access set: invalid RADIUS reply 'not an attribute' (NAME=VALUE or NAME="VALUE", separated by commas)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set netadmins core 15 -r Reply-Message="unterminated
+yubikey-db.sh: error: access set: invalid RADIUS reply 'Reply-Message="unterminated' (NAME=VALUE or NAME="VALUE", separated by commas)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access set nogroup core 1
+yubikey-db.sh: error: access set: no group 'nogroup' (add it with 'yubikey-db.sh group add nogroup')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core deny service=shell cmd=reload
+Added rule 10 for group netadmins on device group core (1 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit service=shell
+Added rule 20 for group netadmins on device group core (2 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit service=shell cmd=show cmd-arg=running-config --seq 5
+Added rule 5 for group netadmins on device group core (3 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit service=shell --seq 5
+yubikey-db.sh: error: rule add: there is already a rule 5 for group netadmins on device group core
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit service=shell --seq 0
+yubikey-db.sh: error: rule add: invalid --seq '0' (a whole number from 1)
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins edge permit service=shell
+yubikey-db.sh: error: rule add: group netadmins has no access to device group edge (add it with 'yubikey-db.sh access set netadmins edge PRIV_LVL')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core allow service=shell
+yubikey-db.sh: error: rule add: invalid rule 'allow service=shell' (permit|permitreplace|deny, then the patterns, e.g. 'permit service=shell cmd=show')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit cmd=(
+yubikey-db.sh: error: rule add: invalid rule 'permit cmd=(': a pattern is not a valid regular expression
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit cmd="show"
+yubikey-db.sh: error: rule add: the rule contains a double quote or a control character
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit cmd=\101
+yubikey-db.sh: error: rule add: the rule contains an octal escape (\NNN), which Radiator would change
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit service=shell {priv-lvl}
+yubikey-db.sh: error: rule add: invalid rule 'permit service=shell {priv-lvl}': items in braces must be like priv-lvl=15
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add netadmins core permit
+yubikey-db.sh: error: rule add: invalid rule 'permit' (permit|permitreplace|deny, then the patterns, e.g. 'permit service=shell cmd=show')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add helpdesk core permitreplace service=shell cmd=show {cmd-arg=version}
+Added rule 10 for group helpdesk on device group core (1 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule add helpdesk core deny .*
+Added rule 20 for group helpdesk on device group core (2 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule list netadmins core
+seq  rule                                                
+---  ----------------------------------------------------
+5    permit service=shell cmd=show cmd-arg=running-config
+10   deny service=shell cmd=reload                       
+20   permit service=shell                                
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule delete netadmins core 20
+Deleted rule 20 for group netadmins on device group core
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule delete netadmins core 20
+yubikey-db.sh: error: rule delete: group netadmins has no rule 20 on device group core
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db rule list netadmins edge
+yubikey-db.sh: error: rule list: group netadmins has no access to device group edge (add it with 'yubikey-db.sh access set netadmins edge PRIV_LVL')
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db group list
+group      members                 device groups:priv-lvl  label       
+---------  ----------------------  ----------------------  ------------
+helpdesk   alice svc.gen           access:5 core:7                     
+netadmins  alice ghost svc.backup  *:1 core:15             network team
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access list
+group      device group  priv-lvl  TACACS+ commands  RADIUS reply                                                      
+---------  ------------  --------  ----------------  ------------------------------------------------------------------
+helpdesk   access        5         every command                                                                       
+helpdesk   core          7         2 rule(s)                                                                           
+netadmins  *             1         every command                                                                       
+netadmins  core          15        2 rule(s)         cisco-avpair="shell:priv-lvl=15", Service-Type=Administrative-User
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access list helpdesk
+group     device group  priv-lvl  TACACS+ commands  RADIUS reply
+--------  ------------  --------  ----------------  ------------
+helpdesk  access        5         every command                 
+helpdesk  core          7         2 rule(s)                     
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check alice core
+alice may log in to devices in core, as a member of netadmins (access to core), at privilege level 15
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=15}
+  permit service=shell cmd=show cmd-arg=running-config
+  deny service=shell cmd=reload
+RADIUS reply: cisco-avpair="shell:priv-lvl=15", Service-Type=Administrative-User
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check alice edge
+alice may log in to devices in edge, as a member of netadmins (access to *), at privilege level 1
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=1}
+  permit service=shell
+RADIUS reply: (none)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check alice access
+alice may log in to devices in access, as a member of helpdesk (access to access), at privilege level 5
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=5}
+  permit service=shell
+RADIUS reply: (none)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check svc.gen core
+svc.gen may log in to devices in core, as a member of helpdesk (access to core), at privilege level 7
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=7}
+  permitreplace service=shell cmd=show {cmd-arg=version}
+  deny .*
+RADIUS reply: (none)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check svc.gen edge
+svc.gen may not log in to devices in edge: none of their groups may use it
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check bob core
+bob may not log in to devices in core: they have no active YubiKey and are no active service account
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db disable alice
+disable: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check alice core
+alice may not log in to devices in core: they have no active YubiKey and are no active service account
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db enable alice
+enable: 1 row(s) changed
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service disable svc.gen
+Disabled svc.gen
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check svc.gen core
+svc.gen may not log in to devices in core: they have no active YubiKey and are no active service account
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service enable svc.gen
+Enabled svc.gen
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access check ghost edge
+ghost may not log in to devices in edge: they have no active YubiKey and are no active service account
+[exit 1]
+
+$ radiator> GroupAccess via=tacacs user=alice device_group=core
+netadmins | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=15}",OSC-Authorize-Group="permit service=shell cmd=show cmd-arg=running-config",OSC-Authorize-Group="deny service=shell cmd=reload"
+[exit 0]
+
+$ radiator> GroupAccess via=radius user=alice device_group=core
+ | cisco-avpair="shell:priv-lvl=15", Service-Type=Administrative-User
+[exit 0]
+
+$ radiator> GroupAccess via=tacacs user=svc.gen device_group=access
+helpdesk | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=5}",OSC-Authorize-Group="permit service=shell"
+[exit 0]
+
+$ radiator> GroupAccess via=radius user=svc.gen device_group=access
+ | 
+[exit 0]
+
+$ radiator> GroupAccess via=tacacs user=bob device_group=core
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db member delete helpdesk svc.gen
+Took 1 member(s) out of helpdesk
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db member delete helpdesk svc.gen
+yubikey-db.sh: error: member delete: svc.gen is not in helpdesk
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db service delete svc.backup
+Deleted svc.backup, and took it out of 1 group(s)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db service delete svc.backup
+yubikey-db.sh: error: service delete: no service account svc.backup
+[exit 1]
+
+$ yubikey-db.sh -d <WORK>/groups.db access delete netadmins core
+Group netadmins may no longer use device group core (2 rule(s) deleted)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db access delete netadmins core
+yubikey-db.sh: error: access delete: group netadmins has no access to device group core
+[exit 1]
+
+# service accounts and groups in groups.db
+username | password | active | label
+svc.gen | {crypt}$6$<HASH> | 1 | made by --generate
+name | label
+helpdesk | 
+netadmins | network team
+user_group | username
+helpdesk | alice
+netadmins | alice
+netadmins | ghost
+user_group | device_group | priv_lvl | radius_reply
+helpdesk | access | 5 | 
+helpdesk | core | 7 | 
+netadmins | * | 1 | 
+user_group | device_group | seq | rule
+helpdesk | core | 10 | permitreplace service=shell cmd=show {cmd-arg=version}
+helpdesk | core | 20 | deny .*
+
+$ yubikey-db.sh -d <WORK>/groups.db group delete helpdesk
+Deleted group helpdesk, with its 1 member(s) and 2 device group(s)
+[exit 0]
+
+$ yubikey-db.sh -d <WORK>/groups.db group delete helpdesk
+yubikey-db.sh: error: group delete: no group 'helpdesk' (add it with 'yubikey-db.sh group add helpdesk')
+[exit 1]
+
+# service accounts and groups in groups.db
+username | password | active | label
+svc.gen | {crypt}$6$<HASH> | 1 | made by --generate
+name | label
+netadmins | network team
+user_group | username
+netadmins | alice
+netadmins | ghost
+user_group | device_group | priv_lvl | radius_reply
+netadmins | * | 1 | 
+

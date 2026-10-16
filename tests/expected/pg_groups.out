@@ -1,0 +1,199 @@
+$ yubikey-db.sh -b pg -d <T>_db group list
+yubikey-db.sh: error: PostgreSQL database <T>_db has no service-account and group tables; run 'yubikey-db.sh -b pg init' to add them
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Added the service-account and group tables
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db init
+Database ready: PostgreSQL database <T>_db (owner <T>_admin, Radiator role <T>_radiator)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db add -u alice -P vvccccbbcdeg -p 4a6f8e2d1c3c -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t
+Added alice with YubiKey vvccccbbcdeg (active=1)
+[exit 0]
+
+$ printf %s\n 'backup-password-1' | yubikey-db.sh -b pg -d <T>_db service add svc.backup -l nightly backup
+Added service account svc.backup
+[exit 0]
+
+# crypt check for svc.backup: match
+
+$ yubikey-db.sh -b pg -d <T>_db service add svc.gen --generate
+Added service account svc.gen
+Its password, shown only now: <PASSWORD>
+[exit 0]
+
+# generated password: 32 letters and digits
+# crypt check for svc.gen: match
+
+$ yubikey-db.sh -b pg -d <T>_db service disable svc.gen
+Disabled svc.gen
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db service list
+  username  | active |       created       |       changed       |     label      
+------------+--------+---------------------+---------------------+----------------
+ svc.backup |      1 | <TIMESTAMP> | <TIMESTAMP> | nightly backup
+ svc.gen    |      0 | <TIMESTAMP> | <TIMESTAMP> | 
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db group add netadmins -l network team
+Added group netadmins
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db group add helpdesk
+Added group helpdesk
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db member add netadmins alice svc.backup
+Added 2 member(s) to netadmins
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db member add helpdesk alice svc.gen
+Added 2 member(s) to helpdesk
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access set netadmins core 15 -r cisco-avpair="shell:priv-lvl=15"
+Group netadmins may use device group core, at privilege level 15
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access set netadmins * 1
+Group netadmins may use device group *, at privilege level 1
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access set helpdesk access 5
+Group helpdesk may use device group access, at privilege level 5
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db rule add netadmins core deny service=shell cmd=reload
+Added rule 10 for group netadmins on device group core (1 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db rule add netadmins core permit service=shell
+Added rule 20 for group netadmins on device group core (2 rule(s); a command no rule matches is denied)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db group list
+   group   |     members      | device groups:priv-lvl |    label     
+-----------+------------------+------------------------+--------------
+ helpdesk  | alice svc.gen    | access:5               | 
+ netadmins | alice svc.backup | *:1 core:15            | network team
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access list
+   group   | device group | priv-lvl | TACACS+ commands |           RADIUS reply           
+-----------+--------------+----------+------------------+----------------------------------
+ helpdesk  | access       |        5 | every command    | 
+ netadmins | *            |        1 | every command    | 
+ netadmins | core         |       15 | 2 rule(s)        | cisco-avpair="shell:priv-lvl=15"
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db rule list netadmins core
+ seq |             rule              
+-----+-------------------------------
+  10 | deny service=shell cmd=reload
+  20 | permit service=shell
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access check alice core
+alice may log in to devices in core, as a member of netadmins (access to core), at privilege level 15
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=15}
+  deny service=shell cmd=reload
+  permit service=shell
+RADIUS reply: cisco-avpair="shell:priv-lvl=15"
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access check alice access
+alice may log in to devices in access, as a member of helpdesk (access to access), at privilege level 5
+TACACS+ rules, the first that matches decides:
+  permit service=shell cmd[*=] {priv-lvl=5}
+  permit service=shell
+RADIUS reply: (none)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access check bob core
+bob may not log in to devices in core: they have no active YubiKey and are no active service account
+[exit 1]
+
+$ radiator> SELECT CASE WHEN 'tacacs' = 'tacacs' THEN user_group END, CASE WHEN 'tacacs' = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = 'alice' AND device_group IN ('core', '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+case | radius_reply
+netadmins | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=15}",OSC-Authorize-Group="deny service=shell cmd=reload",OSC-Authorize-Group="permit service=shell"
+[exit 0]
+
+$ radiator> SELECT CASE WHEN '' = 'tacacs' THEN user_group END, CASE WHEN '' = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = 'alice' AND device_group IN ('core', '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+case | radius_reply
+ | cisco-avpair="shell:priv-lvl=15"
+[exit 0]
+
+$ radiator> SELECT CASE WHEN 'tacacs' = 'tacacs' THEN user_group END, CASE WHEN 'tacacs' = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = 'alice' AND device_group IN ('edge', '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+case | radius_reply
+netadmins | OSC-Authorize-Group="permit service=shell cmd[*=] {priv-lvl=1}",OSC-Authorize-Group="permit service=shell"
+[exit 0]
+
+$ radiator> SELECT CASE WHEN 'tacacs' = 'tacacs' THEN user_group END, CASE WHEN 'tacacs' = 'tacacs' THEN tacacs_reply ELSE radius_reply END FROM access_replies WHERE username = 'bob' AND device_group IN ('core', '*') ORDER BY priv_lvl DESC, device_group = '*', user_group LIMIT 1
+case | radius_reply
+[exit 0]
+
+$ radiator> SELECT password FROM service_accounts WHERE username = 'svc.backup' AND active = 1
+password
+{crypt}$6$<HASH>
+[exit 0]
+
+$ radiator> SELECT password FROM service_accounts WHERE username = 'svc.gen' AND active = 1
+password
+[exit 0]
+
+$ radiator> select label from service_accounts
+ERROR:  permission denied for table service_accounts
+[exit 1]
+
+$ radiator> update service_accounts set active = 1
+ERROR:  permission denied for table service_accounts
+[exit 1]
+
+$ radiator> insert into group_members values ('netadmins', 'mallory')
+ERROR:  permission denied for table group_members
+[exit 1]
+
+$ radiator> update group_access set priv_lvl = 15
+ERROR:  permission denied for table group_access
+[exit 1]
+
+$ radiator> delete from group_rules
+ERROR:  permission denied for table group_rules
+[exit 1]
+
+$ radiator> insert into user_groups values ('x', '')
+ERROR:  permission denied for table user_groups
+[exit 1]
+
+table_name | privilege_type | columns
+access_replies | SELECT | device_group, priv_lvl, radius_reply, tacacs_reply, user_group, username
+service_accounts | SELECT | active, password, username
+
+$ PGHOST=127.0.0.1 PGUSER=<T>_radiator PGPASSWORD=test-only yubikey-db.sh -b pg -d <T>_db group add x
+yubikey-db.sh: error: no write access to the yubikeys table in PostgreSQL database <T>_db (is <T>_radiator a member of <T>_admin?)
+[exit 1]
+
+$ yubikey-db.sh -b pg -d <T>_db service delete svc.backup
+Deleted svc.backup, and took it out of 1 group(s)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db access delete netadmins core
+Group netadmins may no longer use device group core (2 rule(s) deleted)
+[exit 0]
+
+$ yubikey-db.sh -b pg -d <T>_db group delete netadmins
+Deleted group netadmins, with its 1 member(s) and 1 device group(s)
+[exit 0]
+
+user_group | username
+helpdesk | alice
+helpdesk | svc.gen
+rules
+0
+

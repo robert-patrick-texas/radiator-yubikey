@@ -174,9 +174,13 @@ node rad1 rad-setup db1.yk.test,db2.yk.test
 node rad2 rad-setup db2.yk.test,db1.yk.test
 check "DBSource from 'config' (rad1)" \
     "dbi:Pg:dbname=yubikey;host=db1.yk.test,db2.yk.test;port=5432;sslmode=verify-full;sslrootcert=/etc/radiator/pg-ca.crt;connect_timeout=2;target_session_attrs=read-write" \
-    "$(docker exec yk-ha-rad1 awk '/^ +DBSource/ {print $2}' /etc/radiator/conf.d/yubikey.conf)"
-check "Timeouts from 'config'" "Timeout 2|ConnectTimeout 5|FailureBackoffTime 2" \
-    "$(docker exec yk-ha-rad1 awk '/^ +(Timeout|ConnectTimeout|FailureBackoffTime) / {printf "%s%s %s", sep, $1, $2; sep="|"}' \
+    "$(docker exec yk-ha-rad1 awk '/^ +DBSource/ {print $2; exit}' /etc/radiator/conf.d/yubikey.conf)"
+check "Timeouts from 'config' (YubiKeySQL)" "Timeout 2|ConnectTimeout 5|FailureBackoffTime 2" \
+    "$(docker exec yk-ha-rad1 awk '/^<AuthBy SQLYUBIKEY>/ {f = 1} /^<\/AuthBy>/ {f = 0}
+        f && /^ +(Timeout|ConnectTimeout|FailureBackoffTime) / {printf "%s%s %s", sep, $1, $2; sep="|"}' \
+        /etc/radiator/conf.d/yubikey.conf)"
+check "ServiceAccounts and GroupAccess read from any server" "target_session_attrs=any target_session_attrs=any" \
+    "$(docker exec yk-ha-rad1 awk '/^ +DBSource/ {n++} n > 1 && /^ +DBSource/ {sub(/.*;/, "", $2); printf "%s%s", sep, $2; sep=" "}' \
         /etc/radiator/conf.d/yubikey.conf)"
 node rad1 admin add -u alice -P vvccccbbcdef -p 4a6f8e2d1c3b -k 6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d -w s3cr3t >/dev/null
 check "the admin adds alice from rad1 (PGHOST=db1,db2)" "alice" "$(node db1 sql yubikey 'SELECT username FROM yubikeys')"

@@ -29,6 +29,11 @@ These scripts:
 - give every site one anycast address, IPv4 and IPv6, that FRR advertises
   with BGP only while the local Radiator accepts logins
   (`yubikey-anycast.sh`)
+- take logins over TACACS+ as well as RADIUS, add service accounts that log
+  in with a password (`svc.NAME`), and check every login against groups:
+  which accounts may log in to which devices, at which TACACS+ privilege
+  level, with which commands and RADIUS reply attributes
+  (`radiator-groups.example.conf`)
 
 The scripts come as a Debian package, `radiator-yubikey`, which puts them in
 `/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it
@@ -47,8 +52,8 @@ PostgreSQL (on the Radiator server, or a separate server over TLS),
 configuring Radiator, adding accounts, verifying credentials, maintenance,
 moving to PostgreSQL, two database servers with replication and failover,
 three sites with automatic failover, partition mode for a site that is cut
-off, one anycast address for all sites, security, troubleshooting, and a
-reference.
+off, one anycast address for all sites, groups and TACACS+, security,
+troubleshooting, and a reference.
 The same guide is published as a web page at
 <https://robert-patrick-texas.github.io/radiator-yubikey/>, and
 `yubikey-db-guide.html` is that page as a single file for offline use.
