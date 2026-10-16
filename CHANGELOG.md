@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 - 2026-10-16
 
-TACACS+, service accounts and groups. Nothing changes for an installation
+TACACS+, service accounts and groups, and an anycast check that also logs
+in over TACACS+ and renews its own key. Nothing changes for an installation
 that doesn't use them. To use them, run `yubikey-db.sh init` (or `-b pg
 init`), which adds their tables, and follow the guide's new section,
 [Groups and TACACS+](docs/guide.md#groups-and-tacacs). A clause written
