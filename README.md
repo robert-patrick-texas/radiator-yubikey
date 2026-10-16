@@ -37,7 +37,8 @@ These scripts:
 - set up all of that on three sites from one input file: `yubikey-turnkey`
   makes, from `site.toml`, a folder for each server with a `setup.sh` that
   installs and configures everything on it, and the settings for the
-  routers and the devices
+  routers and the devices; `setup.sh --status` then says whether a server
+  works, for you and for monitoring
 
 The scripts come as a Debian package, `radiator-yubikey`, which puts them in
 `/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it

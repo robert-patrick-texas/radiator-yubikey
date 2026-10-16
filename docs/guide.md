@@ -324,7 +324,7 @@ six tests of real Radiator logins:
   package's units neither enabled nor started by the install, restarted by
   an upgrade only while they run, stopped by a removal, and gone after a
   purge.
-- `turnkey.sh`, 96 checks of [the turn-key setup](#turn-key-setup):
+- `turnkey.sh`, 114 checks of [the turn-key setup](#turn-key-setup):
   `yubikey-turnkey` makes the folders from a `site.toml` with two routers
   at West's site, and `setup.sh` runs on three fresh Ubuntu 26.04
   containers (systemd and `iproute2` only) at the same time, installing
@@ -336,7 +336,10 @@ six tests of real Radiator logins:
   by YubiKey and by service account, refused for a group without access to
   the device's group and from an unlisted device (the catch-all) until its
   group has access; West withdrawn from both of its routers when only its
-  TACACS+ login fails, and when its check stops; the firewall (PostgreSQL
+  TACACS+ login fails, and when its check stops; `setup.sh --status` (OK
+  on all three, also without the folder; and what it says with etcd
+  stopped on one server, a router down, the primary moved, West withdrawn,
+  and a folder copied but not set up); the firewall (PostgreSQL
   closed to a machine outside the admin subnets, Patroni's REST API open
   to the admins); `setup.sh` run again (nothing installed or restarted); a
   reboot; a new device added in `site.toml`; new certificates, one server
@@ -352,7 +355,7 @@ Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 145 passed, 0 failed` (and `133 passed` for `groups.sh`),
 `Two database servers: 63 passed, 0 failed`,
 `Three sites: 196 passed, 0 failed`,
-`Package: 49 passed, 0 failed` and `Turnkey: 96 passed, 0 failed`. Run them again with each new
+`Package: 49 passed, 0 failed` and `Turnkey: 114 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
 
@@ -2052,7 +2055,8 @@ Radiator uses: yubikey-cluster.conf
   `partition mode` line gives the time of the copy and ends with
   `cannot read this server's PostgreSQL: ...`, and
   `copy: updated from this server's PostgreSQL again` follows once it
-  answers.
+  answers. While the copy can't be updated, `status` says why, in a line
+  `copy not updated: ...`.
 
 - **Maintenance stays one server at a time.** With two servers down, the
   third logs users in from its copy, with the risks above, until one of them
@@ -2753,6 +2757,10 @@ and the sheets to hand to whoever runs the routers and the devices.
   `setup.sh` stops, fix the cause and run it again: it goes on where it
   stopped. It never removes an etcd cluster or a PostgreSQL cluster with
   databases that it didn't make; `--reset` starts a server over.
+- **One command says whether a server works:** `setup.sh --status` checks
+  its services, the cluster, the anycast check, partition mode, BGP, the
+  firewall, the certificates, the disk and the clock, without changing
+  anything, and sums it up in its first line, for you and for monitoring.
 - **The database's first contents, once.** The first server loads the
   three anycast checks' keys and TACACS+ service accounts, the group
   `anycast-check`, and the groups in `site.toml`, each only if it isn't
@@ -2932,6 +2940,68 @@ install -m 0600 out/admin/pgpass ~/.pgpass      # your own line only, if there a
 cd /opt/radiator-yubikey
 ./yubikey-db.sh import users.csv
 ./yubikey-db.sh member add netadmins alice
+```
+
+### Check a turn-key server
+
+`setup.sh --status` checks the server it runs on, and changes nothing:
+
+```bash
+sudo /root/turnkey/setup.sh --status
+```
+
+```text
+east1: OK
+
+  ok    running: etcd patroni@18-main radiator frr yubikey-anycast yubikey-partition
+  ok    etcd: 3 members healthy
+  ok    Patroni: east1 Leader; east2 Quorum Standby, lag 0 MB; west Quorum Standby, lag 0 MB
+  ok    Radiator: listening on UDP 1812 and 1813 and TCP 49, at 127.0.0.1 and the anycast addresses
+  ok    anycast: advertised since 2026-10-16 13:46:05 UTC; last check: ACCEPT in 32 ms; TACACS+ PASS in 18 ms, 2 s ago
+  ok    the check's key: next renewal on 2027-10-16
+  ok    normal mode since 2026-10-16 13:46:12 UTC; the copy for partition mode: 4 YubiKeys, updated 13:51:12
+  ok    BGP: 192.0.2.1 Established, 2001:db8:31::1 Established
+  ok    firewall: 13 IPv4 and 10 IPv6 rules
+  ok    certificates: this server's until 2029-01-19, the CA's until 2036-10-14
+  ok    disk: 41 GiB free in /var/lib
+  ok    clock synchronized
+  ok    setup.sh: finished 2026-10-16 13:46:20 UTC, radiator-yubikey 1.11.0
+```
+
+Each line is `ok`, `WARN` (it works, but something needs you) or `FAIL`
+(this server doesn't do its part):
+
+| Line | `WARN` | `FAIL` |
+|---|---|---|
+| `running` | | A service isn't running |
+| `etcd` (each member, at its own address) | Two of the three are healthy | No quorum |
+| `Patroni` | Another server isn't streaming, or is more than 16 MB behind; a server needs a restart; the primary isn't the usual one (after a failover) | No primary; this server isn't streaming from it |
+| `Radiator` | | Not listening on RADIUS (UDP 1812, 1813) or TACACS+ (TCP 49), at 127.0.0.1 or an anycast address |
+| `anycast` | Its last check was more than a minute ago | The addresses aren't advertised |
+| `the check's key` | A renewal is due and hasn't worked | Less than a week of OTPs left |
+| partition mode | In partition mode; the copy isn't updated | The service isn't running |
+| `BGP` | A session is down | None is up |
+| `firewall` | The rules aren't loaded | |
+| `certificates` | This server's or the CA's expires within 60 days | This server's has expired |
+| `disk`, `clock` | Less than 10 GiB free in `/var/lib`; the clock isn't synchronized | Less than 1 GiB free |
+| `setup.sh` | It hasn't finished on this server; the folder changed since it last finished (copied, but not run); the folder is for another version of radiator-yubikey | |
+
+The first line is `east1: OK`, or `east1: WARNING - ` or
+`east1: CRITICAL - ` followed by what's wrong, and it exits with 0, 1 or 2:
+what monitoring tools such as Nagios, Icinga or Zabbix expect from a check
+(3, `UNKNOWN`, when it can't check, such as not as root). Run it on each
+server: each sees the cluster from where it is. It takes about a second.
+
+Without the folder, the package's copy does the same, with the copy of
+`server.env` that `setup.sh` keeps in `/etc/yubikey-turnkey`. For a
+monitoring agent that runs as its own user (here `nagios`), allow it that
+one command:
+
+```bash
+echo 'nagios ALL=(root) NOPASSWD: /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status' \
+    | sudo tee /etc/sudoers.d/yubikey-status >/dev/null
+sudo chmod 0440 /etc/sudoers.d/yubikey-status
+sudo -u nagios sudo -n /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status
 ```
 
 ### Change a turn-key setup
@@ -3114,6 +3184,10 @@ doesn't, the problem is in Radiator's configuration or the network.
 | `setup.sh: error: an SSH connection comes from ADDRESS, outside the admin subnets` | Loading the firewall would cut that connection: add its subnet to `[admin] subnets` in `site.toml` and run `yubikey-turnkey` again, or run `setup.sh --no-firewall`. |
 | `setup.sh: error: etcd on this server holds data that setup.sh didn't make`, or `PostgreSQL's cluster 18/main has databases` | `setup.sh` removes only the empty ones that the packages make. If this server may lose them, `setup.sh --reset NAME` starts it over. |
 | `yubikey-turnkey: error: ... secrets.toml is readable by others` | `chmod 600 secrets.toml`. |
+| `setup.sh --status`: `Patroni: the primary is east2, not east1` | After a failover. Once East1 is a `Quorum Standby` again, move the primary back: `sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east1 --force`. |
+| `setup.sh --status`: `setup.sh: /root/turnkey has changed since setup.sh last finished` | A new folder was copied, but `setup.sh` hasn't run with it: run it. |
+| `setup.sh --status`: `partition mode: the copy isn't updated: ...` | `yubikey-partition` can't read this server's PostgreSQL, for the reason given. Expected for a while on a primary that was cut off (Patroni stops its PostgreSQL). Otherwise see `journalctl -u yubikey-partition` and `patronictl list`. |
+| `setup.sh --status`: `the check's key: the renewal of DATE hasn't worked yet` | `journalctl -u yubikey-anycast` says why; see [Run anycast](#run-anycast). The key works until `OTPs left` runs out, and it keeps trying every hour. |
 
 ## Reference
 
@@ -3273,6 +3347,7 @@ It needs Python 3.11 or later and `openssl`.
 
 ```text
 sudo ./setup.sh [--check] [--no-firewall]
+sudo ./setup.sh --status
 sudo ./setup.sh --reset NAME
 ```
 
@@ -3285,12 +3360,14 @@ In each server's folder from `yubikey-turnkey` (the package's
 | (none) | Every step, from where it stopped; each changes only what differs |
 | `-n`, `--check` | Only the preflight checks: the Ubuntu version, the host name and addresses, the clock, the disk, the packages next to it, the ports, the other servers, and SSH connections from outside the admin subnets |
 | `--no-firewall` | Leave the firewall alone this time |
+| `--status` | Check this server, and change nothing (see [Check a turn-key server](#check-a-turn-key-server)); without the folder (as `/opt/radiator-yubikey/yubikey-turnkey-setup.sh`), with the copy of `server.env` in `/etc/yubikey-turnkey` |
 | `--reset NAME` | Stop the services, and remove this server's etcd member, PostgreSQL cluster, anycast key and state (`NAME`: its host name) |
 
 `TURNKEY_WAIT` sets how long it waits for the other servers (default 1800
 seconds). It exits with 0 when the server is set up (`--check`: nothing to
 fix), 1 when something failed (`--check`: something to fix), and 2 for a
-usage error.
+usage error. `--status` exits with 0 (`OK`), 1 (`WARNING`), 2 (`CRITICAL`)
+or 3 (`UNKNOWN`: not as root, or no `server.env`).
 
 ### `install.sh`
 

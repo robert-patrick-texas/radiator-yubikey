@@ -33,14 +33,25 @@
 #   If it stops, fix the cause and run it again: it goes on where it
 #   stopped. It never removes a database, an etcd cluster or a PostgreSQL
 #   cluster that it didn't make, except with --reset.
+#   '--status' shows whether the server works, for people and for
+#   monitoring; it changes nothing.
 #
 # USAGE
 #   sudo ./setup.sh [--check] [--no-firewall]
+#   sudo ./setup.sh --status
 #   sudo ./setup.sh --reset NAME
 #
 # OPTIONS
 #   -n, --check     Only the preflight checks: change nothing
 #   --no-firewall   Leave the firewall alone this time
+#   --status        Check this server's services, the cluster, the anycast
+#                   check, partition mode, BGP, the firewall, the
+#                   certificates, the disk and the clock, and whether
+#                   setup.sh has made what its folder holds. Changes nothing.
+#                   The first line sums it up (OK, WARNING or CRITICAL).
+#                   Without the folder (as the package's
+#                   yubikey-turnkey-setup.sh), it reads the copy of
+#                   server.env in /etc/yubikey-turnkey.
 #   --reset NAME    Start this server over (NAME: its host name): stop the
 #                   services, and remove its etcd member, PostgreSQL cluster,
 #                   anycast key and setup.sh's state. Run it on all three
@@ -63,6 +74,8 @@
 # EXIT STATUS
 #   0 done (--check: nothing to fix); 1 failed (--check: something to fix);
 #   2 a usage error.
+#   --status, as monitoring tools such as Nagios expect: 0 OK, 1 WARNING,
+#   2 CRITICAL, 3 UNKNOWN (it couldn't check: not root, no server.env).
 #
 # ENVIRONMENT
 #   TURNKEY_WAIT   seconds to wait for the other servers (default 1800)
@@ -93,11 +106,16 @@ ADMINS='' ADMIN_SUBNETS='' PARTITION='' FIREWALL=''
 RADIATOR_PASSWORD='' RADIATOR_SCRAM=''
 declare -A ADMIN_SCRAM=()
 
-CHECK=0 NO_FIREWALL=0 RESET=''
+CHECK=0 NO_FIREWALL=0 RESET='' STATUS=0
+ENV_DIR=$HERE       # where server.env is (--status: or $KEEP)
 PROBLEMS=0          # preflight: things to fix
 CHANGED=()          # install_files: the paths it changed
 
-die()  { printf '%s: error: %s\n' "$PROG" "$*" >&2; exit 1; }
+die() {
+    if [[ $STATUS == 1 ]]; then printf 'UNKNOWN - %s\n' "$*"; exit 3; fi
+    printf '%s: error: %s\n' "$PROG" "$*" >&2
+    exit 1
+}
 step() { printf '\n== %s\n' "$*"; }
 ok()   { printf '  ok    %s\n' "$*"; }
 info() { printf '  ..    %s\n' "$*"; }
@@ -107,6 +125,7 @@ bad()  { printf '  FAIL  %s\n' "$*"; PROBLEMS=$((PROBLEMS + 1)); }
 usage() {
     cat <<EOF
 Usage: sudo ./$PROG [--check] [--no-firewall]
+       sudo ./$PROG --status
        sudo ./$PROG --reset NAME
 
 Sets up this server from its folder, made by yubikey-turnkey. Run it on all
@@ -116,6 +135,8 @@ changed. It goes on where it stopped.
 Options:
   -n, --check     Only the preflight checks: change nothing
   --no-firewall   Leave the firewall alone this time
+  --status        Show whether this server works (changes nothing); exits
+                  0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN
   --reset NAME    Start this server over (NAME: its host name)
   -h, --help      Show this help
 EOF
@@ -700,6 +721,19 @@ firewall_step() {
     ok "firewall: $(($(iptables -S INPUT | wc -l) - 1)) IPv4 and $(($(ip6tables -S INPUT | wc -l) - 1)) IPv6 rules"
 }
 
+# bgp_sessions: the BGP sessions, as UP<tab>ALL<tab>"ADDRESS STATE, ...";
+# nothing when FRR doesn't answer.
+bgp_sessions() {
+    timeout 10 vtysh -c 'show bgp summary json' 2>/dev/null | python3 -c '
+import json, sys
+peers = {}
+for af in json.load(sys.stdin).values():
+    for a, p in af.get("peers", {}).items():
+        peers[a] = p.get("state", "?")
+up = sum(s == "Established" for s in peers.values())
+print("%d\t%d\t%s" % (up, len(peers), ", ".join("%s %s" % (a, s) for a, s in sorted(peers.items())) or "none"))' 2>/dev/null
+}
+
 report() {
     local status bgp
     step report
@@ -710,13 +744,7 @@ report() {
     done
     status=$("$PKG/yubikey-anycast.sh" status 2>&1)
     printf '  anycast:  %s\n' "$(head -2 <<<"$status" | paste -sd';' | sed 's/;/; /')"
-    bgp=$(vtysh -c 'show bgp summary json' 2>/dev/null | python3 -c '
-import json, sys
-peers = {}
-for af in json.load(sys.stdin).values():
-    for a, p in af.get("peers", {}).items():
-        peers[a] = p.get("state", "?")
-print(", ".join("%s %s" % (a, s) for a, s in sorted(peers.items())) or "none")' 2>/dev/null)
+    bgp=$(bgp_sessions | cut -f3)
     printf '  BGP:      %s\n' "${bgp:-cannot ask FRR}"
     if ! grep -q '^advertised' <<<"$status"; then
         PROBLEMS=$((PROBLEMS + 1))
@@ -725,6 +753,267 @@ print(", ".join("%s %s" % (a, s) for a, s in sorted(peers.items())) or "none")' 
     if [[ $bgp != *Established* ]]; then
         printf '  No BGP session is up yet: set up the routers (routers.md)\n'
     fi
+}
+
+# --------------------------------------------------------------------------
+# --status
+# --------------------------------------------------------------------------
+
+LAG_MB=16           # a standby further behind (in MB) is a warning
+S_LINES=() S_WARN=() S_FAIL=()
+s_ok()   { S_LINES+=("  ok    $*"); }
+s_warn() { S_LINES+=("  WARN  $*"); S_WARN+=("$*"); }
+s_fail() { S_LINES+=("  FAIL  $*"); S_FAIL+=("$*"); }
+
+# folder_sum: a checksum of this folder (of the packages, their names only).
+folder_sum() {
+    (cd "$HERE" && { find . -type f ! -name '*.deb' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; ls -1 -- *.deb 2>/dev/null; }) \
+        | sha256sum | cut -d' ' -f1
+}
+
+# cert_end FILE: the day the certificate in FILE expires (YYYY-MM-DD).
+cert_end() {
+    openssl x509 -noout -enddate -dateopt iso_8601 -in "$1" 2>/dev/null | sed -n 's/^notAfter=\([0-9-]\{10\}\).*/\1/p'
+}
+
+status_services() {
+    local u down=() units=(etcd "$PATRONI_UNIT" radiator frr yubikey-anycast)
+    [[ $PARTITION == 1 ]] && units+=(yubikey-partition)
+    for u in "${units[@]}"; do systemctl -q is-active "$u" || down+=("$u"); done
+    if [[ ${#down[@]} -gt 0 ]]; then
+        s_fail "not running: ${down[*]} (systemctl status ${down[0]})"
+    else
+        s_ok "running: ${units[*]}"
+    fi
+}
+
+# The three members, at their own addresses: this server's may be the one
+# that is down.
+status_etcd() {
+    local ip eps='' out n=0 i=0 down=() names
+    read -ra names <<<"$SERVERS"
+    for ip in $IPV4S; do eps+=${eps:+,}https://$ip:2379; done
+    out=$(timeout 15 etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt \
+              --key /etc/etcd/tls/server.key --endpoints "$eps" --dial-timeout 2s --command-timeout 4s \
+              endpoint health 2>&1)
+    for ip in $IPV4S; do
+        if grep -qF "https://$ip:2379 is healthy" <<<"$out"; then n=$((n + 1)); else down+=("${names[i]}"); fi
+        i=$((i + 1))
+    done
+    case $n in
+        3) s_ok "etcd: 3 members healthy" ;;
+        2) s_warn "etcd: 2 of 3 members healthy (not ${down[*]})" ;;
+        *) s_fail "etcd: no quorum ($n of 3 members healthy)" ;;
+    esac
+}
+
+# The primary, each member's state and lag, and pending restarts.
+status_patroni() {
+    local out level='' text=''
+    if ! out=$(timeout 15 patronictl -c $PATRONI list -e -f json 2>/dev/null); then
+        s_fail "Patroni: cannot list the cluster (patronictl -c $PATRONI list)"
+        return
+    fi
+    IFS=$'\t' read -r level text < <(python3 -c '
+import json, sys
+me, first, names, most = sys.argv[1], sys.argv[2], sys.argv[3].split(), int(sys.argv[4])
+ms = {m["Member"]: m for m in json.load(sys.stdin)}
+fail, warn, parts = [], [], []
+leader = [n for n, m in ms.items() if m["Role"] == "Leader" and m["State"] == "running"]
+if not leader:
+    fail.append("no primary")
+elif leader[0] != first:
+    warn.append("the primary is %s, not %s (patronictl switchover --candidate %s)" % (leader[0], first, first))
+for n in names:
+    m = ms.get(n)
+    if m is None:
+        (fail if n == me else warn).append("%s is missing" % n)
+        continue
+    good = m["State"] == ("running" if m["Role"] == "Leader" else "streaming")
+    lags = [v for v in (m.get("Receive Lag"), m.get("Replay Lag")) if isinstance(v, int)]
+    lag = max(lags) if lags and m["Role"] != "Leader" else None
+    parts.append("%s %s%s%s" % (n, m["Role"], "" if good else ", " + m["State"],
+                                "" if lag is None else ", lag %d MB" % lag))
+    if not good:
+        (fail if n == me else warn).append("%s is %s" % (n, m["State"]))
+    elif lag is not None and lag > most:
+        warn.append("%s is %d MB behind" % (n, lag))
+    if m.get("Pending restart"):
+        why = str(m.get("Pending restart reason") or "").replace("\n", ", ")
+        warn.append("%s needs a restart%s" % (n, " (%s)" % why if why else ""))
+text = "; ".join(parts)
+if fail or warn:
+    text = "%s (%s)" % ("; ".join(fail + warn), text)
+print("%s\tPatroni: %s" % ("fail" if fail else "warn" if warn else "ok", text))' "$NAME" "$FIRST" "$SERVERS" "$LAG_MB" <<<"$out" 2>/dev/null)
+    case $level in
+        ok|warn|fail) "s_$level" "$text" ;;
+        *) s_fail "Patroni: cannot read patronictl's list" ;;
+    esac
+}
+
+# UDP 1812 and 1813 and TCP 49, at 127.0.0.1 (the anycast check) and at the
+# anycast addresses (the devices).
+status_radiator() {
+    local a p udp tcp miss=()
+    udp=$(ss -Hlun 2>/dev/null | awk '{ print $4 }')
+    tcp=$(ss -Hltn 2>/dev/null | awk '{ print $4 }')
+    for a in 127.0.0.1 ${ANYCAST4:+"$ANYCAST4"} ${ANYCAST6:+"[$ANYCAST6]"}; do
+        for p in 1812 1813; do grep -qxF "$a:$p" <<<"$udp" || miss+=("UDP $a:$p"); done
+        grep -qxF "$a:49" <<<"$tcp" || miss+=("TCP $a:49")
+    done
+    if [[ ${#miss[@]} -gt 0 ]]; then
+        s_fail "Radiator: not listening on $(printf '%s, ' "${miss[@]}" | sed 's/, $//') ($RAD_LOG)"
+    else
+        s_ok "Radiator: listening on UDP 1812 and 1813 and TCP 49, at 127.0.0.1 and the anycast addresses"
+    fi
+}
+
+# Whether the anycast addresses are advertised, the last check, and the
+# check's key.
+status_anycast() {
+    local out rc first last ago key days level=ok
+    out=$("$PKG/yubikey-anycast.sh" status 2>&1); rc=$?
+    first=$(head -1 <<<"$out")
+    last=$(sed -n 's/^last check: //p' <<<"$out")
+    ago=$(sed -nE 's/.*, ([0-9]+) s ago$/\1/p' <<<"$last")
+    if [[ $rc != 0 ]]; then
+        level=fail
+    elif [[ -n $ago && $ago -gt 60 ]]; then
+        level=warn
+    fi
+    "s_$level" "anycast: $first${last:+; last check: $last}"
+    key=$(sed -n 's/^key: //p' <<<"$out")
+    days=$(sed -nE 's/^OTPs left: [0-9]+ \(([0-9]+) days .*/\1/p' <<<"$out")
+    if [[ -n $days && $days -lt 7 ]]; then
+        s_fail "the check's key: OTPs for $days days left${key:+ ($key)}"
+    elif [[ $key =~ ^next\ renewal\ on\ ([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+        if [[ ${BASH_REMATCH[1]} < $(date +%F) ]]; then
+            s_warn "the check's key: the renewal of ${BASH_REMATCH[1]} hasn't worked yet (journalctl -u yubikey-anycast)"
+        else
+            s_ok "the check's key: $key"
+        fi
+    elif [[ -n $key ]]; then
+        s_warn "the check's key: $key"
+    fi
+}
+
+status_partition() {
+    local out rc first copy failed
+    if [[ $PARTITION != 1 ]]; then s_ok "partition mode: off in site.toml"; return; fi
+    out=$("$PKG/yubikey-partition.sh" status 2>&1); rc=$?
+    first=$(head -1 <<<"$out")
+    copy=$(sed -n 's/^copy: //p' <<<"$out")
+    failed=$(sed -n 's/^copy not updated: //p' <<<"$out")
+    if [[ $first == *'not running'* ]]; then
+        s_fail "partition mode: $first"
+    elif [[ $rc != 0 ]]; then
+        s_warn "$first: Radiator uses this server's copy (${copy:-?}); journalctl -u yubikey-partition"
+    else
+        s_ok "$first; the copy for partition mode: ${copy:-?}"
+    fi
+    if [[ -n $failed ]]; then s_warn "partition mode: the copy isn't updated: $failed"; fi
+}
+
+status_bgp() {
+    local up total text
+    IFS=$'\t' read -r up total text <<<"$(bgp_sessions)"
+    if [[ -z $up ]]; then
+        s_fail "BGP: cannot ask FRR (vtysh -c 'show bgp summary')"
+    elif [[ $up == "$total" && $total -gt 0 ]]; then
+        s_ok "BGP: $text"
+    elif [[ $up -gt 0 ]]; then
+        s_warn "BGP: $text"
+    else
+        s_fail "BGP: no session up ($text): no router sends devices here"
+    fi
+}
+
+status_firewall() {
+    if [[ $FIREWALL != 1 ]]; then s_ok "firewall: off in site.toml"; return; fi
+    if [[ $(iptables -S INPUT 2>/dev/null | head -1) == "-P INPUT DROP" \
+          && $(ip6tables -S INPUT 2>/dev/null | head -1) == "-P INPUT DROP" ]]; then
+        s_ok "firewall: $(($(iptables -S INPUT | wc -l) - 1)) IPv4 and $(($(ip6tables -S INPUT | wc -l) - 1)) IPv6 rules"
+    else
+        s_warn "firewall: not loaded (setup.sh loads it)"
+    fi
+}
+
+# The server's certificate (etcd, Patroni and PostgreSQL use the same) and
+# the CA's.
+status_certs() {
+    local crt=/etc/patroni/tls/server.crt ca=/etc/patroni/tls/ca.crt end ca_end
+    end=$(cert_end "$crt") ca_end=$(cert_end "$ca")
+    if [[ -z $end || -z $ca_end ]]; then
+        s_fail "certificates: cannot read $crt or $ca"
+    elif ! openssl x509 -noout -checkend 0 -in "$crt" >/dev/null; then
+        s_fail "certificates: this server's expired on $end (yubikey-turnkey --renew-certs, then setup.sh on each server)"
+    elif ! openssl x509 -noout -checkend $((60 * 86400)) -in "$crt" >/dev/null; then
+        s_warn "certificates: this server's expires on $end (yubikey-turnkey --renew-certs, then setup.sh on each server)"
+    elif ! openssl x509 -noout -checkend $((60 * 86400)) -in "$ca" >/dev/null; then
+        s_warn "certificates: the CA's expires on $ca_end"
+    else
+        s_ok "certificates: this server's until $end, the CA's until $ca_end"
+    fi
+}
+
+status_system() {
+    local avail
+    avail=$(df -P -k /var/lib 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+    if [[ -z $avail ]]; then
+        s_warn "disk: cannot tell how much of /var/lib is free"
+    elif ((avail < 1)); then
+        s_fail "disk: less than 1 GiB free in /var/lib"
+    elif ((avail < 10)); then
+        s_warn "disk: $avail GiB free in /var/lib (PostgreSQL keeps up to 8 GB of WAL for a standby that is down)"
+    else
+        s_ok "disk: $avail GiB free in /var/lib"
+    fi
+    case $(timedatectl show -p NTPSynchronized --value 2>/dev/null) in
+        yes) s_ok "clock synchronized" ;;
+        no)  s_warn "the clock isn't synchronized (NTP)" ;;
+        *)   s_warn "cannot tell whether the clock is synchronized (timedatectl)" ;;
+    esac
+}
+
+# Whether setup.sh finished, with this folder and this version.
+status_setup() {
+    local have
+    have=$(pkg_version radiator-yubikey)
+    if ! done_ setup; then
+        s_warn "setup.sh hasn't finished on this server: run it"
+    elif [[ $have != "$VERSION" ]]; then
+        s_warn "setup.sh: the folder is for radiator-yubikey $VERSION, but ${have:-none} is installed: run setup.sh"
+    elif [[ $ENV_DIR == "$HERE" && $(folder_sum) != "$(cat "$STATE/folder" 2>/dev/null)" ]]; then
+        s_warn "setup.sh: $HERE has changed since setup.sh last finished: run it"
+    else
+        s_ok "setup.sh: finished $(cat "$STATE/setup"), radiator-yubikey $VERSION"
+    fi
+}
+
+status() {
+    local rc=0 summary=OK
+    status_services
+    status_etcd
+    status_patroni
+    status_radiator
+    status_anycast
+    status_partition
+    status_bgp
+    status_firewall
+    status_certs
+    status_system
+    status_setup
+    if [[ ${#S_FAIL[@]} -gt 0 ]]; then
+        rc=2 summary=CRITICAL
+    elif [[ ${#S_WARN[@]} -gt 0 ]]; then
+        rc=1 summary=WARNING
+    fi
+    if [[ $rc != 0 ]]; then
+        summary+=" - $(printf '%s; ' "${S_FAIL[@]}" "${S_WARN[@]}" | sed 's/; $//')"
+    fi
+    printf '%s: %s\n\n' "$NAME" "$summary"
+    printf '%s\n' "${S_LINES[@]}"
+    exit "$rc"
 }
 
 reset() {
@@ -751,10 +1040,24 @@ main() {
             -n|--check)    CHECK=1; shift ;;
             --no-firewall) NO_FIREWALL=1; shift ;;
             --reset)       RESET=${2:?--reset needs this server\'s host name}; shift 2 ;;
+            --status)      STATUS=1; shift ;;
             -h|--help)     usage; exit 0 ;;
             *) printf '%s: unknown option %s (see --help)\n' "$PROG" "$1" >&2; exit 2 ;;
         esac
     done
+    if [[ $STATUS == 1 ]]; then
+        if [[ $CHECK == 1 || $NO_FIREWALL == 1 || -n $RESET ]]; then
+            printf '%s: --status goes alone (see --help)\n' "$PROG" >&2
+            exit 2
+        fi
+        [[ $(id -u) == 0 ]] || die "run it as root (sudo $0 --status)"
+        # The folder's server.env, or the copy that setup.sh keeps.
+        [[ -f $HERE/server.env ]] || ENV_DIR=$KEEP
+        [[ -f $ENV_DIR/server.env ]] || die "no server.env next to $0 or in $KEEP: setup.sh hasn't run on this server"
+        read_env "$ENV_DIR/server.env"
+        [[ -n $NAME && -n $VERSION ]] || die "$ENV_DIR/server.env is incomplete"
+        status
+    fi
     read_env "$HERE/server.env"
     read_env "$HERE/secrets.env"
     [[ -n $NAME && -n $VERSION ]] || die "$HERE/server.env is incomplete"
@@ -781,6 +1084,9 @@ main() {
     partition_step
     anycast_step
     firewall_step
+    # Every step is done, with this folder (for --status).
+    mark setup
+    folder_sum >"$STATE/folder"
     report
     if [[ $PROBLEMS == 0 ]]; then
         printf '\n%s is set up.\n' "$NAME"

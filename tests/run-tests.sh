@@ -2299,6 +2299,9 @@ EOF
     peer_down
     wait_mode partition
     copy_rows
+    # status says why the copy isn't updated.
+    for _ in $(seq 30); do grep -q '^failed=.' run/status 2>/dev/null && break; sleep 0.1; done
+    part status | sed -E 's/since .* UTC/since <TIME>/; s/updated [0-9:]+/updated <TIME>/'
     rm local-down
     sleep 2.5
     copy_rows
@@ -2796,6 +2799,14 @@ tk() {
 
 tk_version() { sed "s/${VERSION//./\\.}/<VERSION>/g"; }
 
+# setup_sh ARG...: run east1's setup.sh (from yubikey-turnkey's output), and
+# record the command, its output and its exit status.
+setup_sh() {
+    local out rc=0
+    out=$("$WORK/out/east1/setup.sh" "$@" </dev/null 2>&1) || rc=$?
+    printf '$ setup.sh %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc" | sed "s|$WORK/|<WORK>/|g"
+}
+
 # show FILE...: each file of WORK, with its mode.
 show() {
     local f
@@ -2886,6 +2897,11 @@ scenario_turnkey() {
     echo
     tk site.toml
     tk --check site.toml
+    # setup.sh --status: as root only (tests/radiator/turnkey.sh runs it on
+    # servers), and alone.
+    setup_sh --status
+    setup_sh --status --check
+    setup_sh --help
 
     show out/east1/server.env out/east1/secrets.env out/east1/hosts out/east1/files.list \
          out/east1/db/anycast.csv out/east1/db/services out/east1/db/groups

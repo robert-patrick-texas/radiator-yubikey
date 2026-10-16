@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `setup.sh --status` (and the package's `yubikey-turnkey-setup.sh
+  --status`, without the folder): checks a turn-key server without
+  changing anything (its services, etcd, Patroni, Radiator's listeners,
+  the anycast check and its key, partition mode, BGP, the firewall, the
+  certificates, the disk, the clock, and whether `setup.sh` has made what
+  its folder holds) and sums it up in its first line, `OK`, `WARNING` or
+  `CRITICAL`, with the exit status that monitoring tools expect (0, 1, 2;
+  3 when it can't check). See the guide's
+  [Check a turn-key server](docs/guide.md#check-a-turn-key-server).
+
+### Changed
+
+- `yubikey-partition.sh status` says why the copy isn't updated, while it
+  isn't (`copy not updated: ...`).
+
+### Tests
+
+- `tests/radiator/turnkey.sh` (114 checks): `setup.sh --status` on
+  the three servers, from the package without the folder, and not as root;
+  and what it says with etcd stopped on one server, a router down, the
+  primary moved, the anycast addresses withdrawn, and a folder copied but
+  not set up.
+- `tests/run-tests.sh`: `turnkey` runs `setup.sh --status` as a normal user
+  and with another option; `pg_partition` shows the copy that isn't
+  updated.
+
 ## 1.11.0 - 2026-10-16
 
 The turn-key setup: three sites, with partition mode, anycast, groups and

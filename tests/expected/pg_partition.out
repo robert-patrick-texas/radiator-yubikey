@@ -99,6 +99,15 @@ username | tokenId | active | counter | low
 carol | vvccccdddddd | 1 | 6 | 2
 test.user | cbdefghijkln | 1 | 14 | 0
 test.user2 | cbdefghijklr | 0 | 7 | 7
+$ yubikey-partition.sh status
+partition mode since <TIME>
+peers answering: none
+copy: 3 YubiKeys, updated <TIME>
+copy not updated: cannot read this server's PostgreSQL: psql: error: FATAL:  the database system is shutting down
+Radiator uses: yubikey-partition.conf
+counters to copy to the primary: yes
+[exit 1]
+
 # the copy:
 username | tokenId | active | counter | low
 carol | vvccccdddddd | 1 | 6 | 2

@@ -437,6 +437,7 @@ cmd_status() {
         printf '%s mode since %s\n' "$m" "$(date -d "@${st[since]}" '+%F %T %Z')"
         printf 'peers answering: %s\n' "${st[peers]:-none}"
         printf 'copy: %s\n' "${st[copy]}"
+        if [[ -n ${st[failed]-} ]]; then printf 'copy not updated: %s\n' "${st[failed]}"; fi
     else
         printf '%s mode; the service is not running\n' "$m"
     fi
@@ -513,7 +514,7 @@ cmd_run() {
                 m=normal since=$(date +%s) lonely=0 fresh=1 synced=''
             fi
         fi
-        printf '%s\n' "since=$since" "peers=$peers" "copy=$copy" \
+        printf '%s\n' "since=$since" "peers=$peers" "copy=$copy" "failed=${failed//$'\n'/ }" \
             >"$RUN_DIR/status.new" && mv -f "$RUN_DIR/status.new" "$RUN_DIR/status"
         if ((SECONDS - start < INTERVAL)); then
             sleep $((INTERVAL - (SECONDS - start))) &

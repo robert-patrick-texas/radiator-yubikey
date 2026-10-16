@@ -119,6 +119,32 @@ $ yubikey-turnkey --check site.toml
 out: up to date
 [exit 0]
 
+$ setup.sh --status
+UNKNOWN - run it as root (sudo <WORK>/out/east1/setup.sh --status)
+[exit 3]
+
+$ setup.sh --status --check
+setup.sh: --status goes alone (see --help)
+[exit 2]
+
+$ setup.sh --help
+Usage: sudo ./setup.sh [--check] [--no-firewall]
+       sudo ./setup.sh --status
+       sudo ./setup.sh --reset NAME
+
+Sets up this server from its folder, made by yubikey-turnkey. Run it on all
+three servers at about the same time; run it again whenever the folder
+changed. It goes on where it stopped.
+
+Options:
+  -n, --check     Only the preflight checks: change nothing
+  --no-firewall   Leave the firewall alone this time
+  --status        Show whether this server works (changes nothing); exits
+                  0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN
+  --reset NAME    Start this server over (NAME: its host name)
+  -h, --help      Show this help
+[exit 0]
+
 --- out/east1/server.env (600)
 # server.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
 # lines, which setup.sh reads (never runs as shell code).

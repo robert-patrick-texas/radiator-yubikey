@@ -30,8 +30,10 @@
 # as a YubiKey user and a service account, refused for a group without
 # access to the device's group and from an unknown device (the catch-all);
 # West withdrawn from both of its routers when only its TACACS+ login
-# fails, and when its check stops; the firewall; setup.sh run again
-# (nothing changes or restarts); a reboot; a new device from site.toml.
+# fails, and when its check stops; setup.sh --status, when all is well and
+# when etcd, a router, the primary, the anycast check or the folder isn't;
+# the firewall; setup.sh run again (nothing changes or restarts); a
+# reboot; a new device from site.toml.
 #
 # Needs Docker, usable without sudo. KEEP=1 leaves the containers running.
 # Exits 0 when every check passes.
@@ -111,6 +113,31 @@ until_eq() {
         sleep 1
     done
     printf '%s\n' "$got"
+}
+
+# until_match SECONDS REGEX COMMAND: the same, until it matches REGEX.
+until_match() {
+    local secs=$1 re=$2 got=''
+    shift 2
+    for _ in $(seq "$secs"); do
+        got=$("$@" 2>/dev/null)
+        [[ $got =~ $re ]] && break
+        sleep 1
+    done
+    printf '%s\n' "$got"
+}
+
+# status NAME: setup.sh --status on NAME, as "EXIT-STATUS FIRST-LINE" (all
+# of it in NAME's /tmp/status.out).
+status() { on "$1" '/root/turnkey/setup.sh --status >/tmp/status.out 2>&1; echo "$? $(head -1 /tmp/status.out)"'; }
+
+# check_status LABEL NAME REGEX: wait up to 60 s for NAME's --status to
+# match REGEX; show all of it when it doesn't.
+check_status() {
+    local got
+    got=$(until_match 60 "$3" status "$2")
+    check_match "$1" "$3" "$got"
+    [[ $got =~ $3 ]] || on "$2" 'cat /tmp/status.out'
 }
 
 echo "Building $BASE (a fresh Ubuntu 26.04 server: systemd, iproute2) ..."
@@ -392,6 +419,19 @@ check "rtr1: BGP and BFD with the three servers, IPv4 and IPv6" "BGP 6, BFD 6" "
 check "west: BGP sessions with both routers" "BGP 4, BFD 4" "$(until_eq 30 "BGP 4, BFD 4" sessions west)"
 
 echo
+echo "== setup.sh --status"
+for n in "${SITES[@]}"; do check_status "$n: --status: all is well" "$n" "^0 $n: OK\$"; done
+on east1 'cat /tmp/status.out' | sed 's/^/east1: /'
+echo "(east1's --status took $(on east1 's=$(date +%s%N); /root/turnkey/setup.sh --status >/dev/null; echo $((($(date +%s%N) - s) / 1000000))') ms)"
+check "every line ok" 0 "$(on east1 'tail -n +3 /tmp/status.out | grep -cv "^  ok    "')"
+check "west: the package's copy, without the folder" "0 west: OK" \
+    "$(on west 'mv /root/turnkey /root/turnkey.away
+                /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status >/tmp/status.out 2>&1; echo "$? $(head -1 /tmp/status.out)"
+                mv /root/turnkey.away /root/turnkey')"
+check "not as root: UNKNOWN" "3 UNKNOWN - run it as root (sudo /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status)" \
+    "$(on west 'out=$(runuser -u nobody -- /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status); echo "$? $out"')"
+
+echo
 echo "== Logins at the anycast addresses"
 # The admin, from the device's machine (in the admin subnet), with the files
 # from out/admin.
@@ -452,6 +492,7 @@ check "rtr1: West gone" "east1,east2 east1,east2" "$(until_eq 40 "east1,east2 ea
 check "rtr2: West gone" "- -" "$(until_eq 10 "- -" routes rtr2)"
 check_match "west's check: RADIUS works, TACACS+ refused" '^ACCEPT in [0-9]+ ms; TACACS\+ FAIL in [0-9]+ ms: No such user' \
     "$(on west '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+check_status "west: --status: CRITICAL, withdrawn" west '^2 west: CRITICAL - anycast: withdrawn since .*TACACS\+ FAIL'
 otp "${ALICE[@]}"
 check "RADIUS at the anycast address: East1 answers" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
 admin 'service enable svc.anycast-west' >/dev/null 2>&1 </dev/null
@@ -461,6 +502,27 @@ on west 'systemctl stop yubikey-anycast'
 check "West's check stopped: gone from rtr2 at once" "- -" "$(until_eq 10 "- -" routes rtr2)"
 on west 'systemctl start yubikey-anycast'
 check "and back" "west west" "$(until_eq 30 "west west" routes rtr2)"
+
+echo
+echo "== What --status sees"
+on east2 'systemctl stop etcd'
+check_status "etcd stopped on east2: east1 warns" east1 '^1 east1: WARNING - etcd: 2 of 3 members healthy \(not east2\)$'
+check_status "east2: CRITICAL" east2 '^2 east2: CRITICAL - not running: etcd .*etcd: 2 of 3 members healthy \(not east2\)'
+on east2 'systemctl start etcd'
+check_status "etcd started: east2 OK" east2 '^0 east2: OK$'
+on rtr2 'systemctl stop frr'
+check_status "rtr2 stopped: west warns" west '^1 west: WARNING - BGP: .*Established.*(Active|Connect|Idle)'
+on rtr2 'systemctl start frr'
+check_status "rtr2 back: west OK" west '^0 west: OK$'
+on east1 'patronictl -c /etc/patroni/18-main.yml switchover --candidate east2 --force >/dev/null 2>&1'
+check "the primary moved to east2" "east1=quorum east2=leader west=quorum" \
+    "$(until_eq 60 "east1=quorum east2=leader west=quorum" members)"
+check_status "east1 warns: the primary isn't east1" east1 \
+    '^1 east1: WARNING - Patroni: the primary is east2, not east1 \(patronictl switchover --candidate east1\)'
+on east1 'patronictl -c /etc/patroni/18-main.yml switchover --candidate east1 --force >/dev/null 2>&1'
+check "and back to east1" "east1=leader east2=quorum west=quorum" \
+    "$(until_eq 60 "east1=leader east2=quorum west=quorum" members)"
+check_status "east1: OK" east1 '^0 east1: OK$'
 
 echo
 echo "== The firewall"
@@ -503,10 +565,15 @@ check_match "the generator writes the new device's file" 'clients.d/lab2.conf' "
 LAB2_KEY=$(secret 'device|172.31.100.20|tacacs_key')
 for n in "${SITES[@]}"; do
     on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
+    if [[ $n == west ]]; then
+        check "west: --status: the folder isn't set up yet" \
+            "1 west: WARNING - setup.sh: /root/turnkey has changed since setup.sh last finished: run it" "$(status west)"
+    fi
     out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
     check "$n: setup.sh with the new device" "0 $n is set up." "$rc $(tail -1 <<<"$out")"
     [[ $rc == 0 ]] || printf '%s\n' "$out"
 done
+check_status "west: --status: OK again" west '^0 west: OK$'
 check "the new device, in device group lab2: no access yet" FAIL \
     "$(tac "$ANY4" "$LAB2_KEY" 172.31.100.20 authen svc.backup backup-password-1234)"
 admin 'access set backup lab2 1' >/dev/null 2>&1 </dev/null
