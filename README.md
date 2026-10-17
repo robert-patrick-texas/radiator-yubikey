@@ -46,7 +46,8 @@ These scripts:
   from its folder (two lost: `setup.sh --alone` on the third first), or
   replaced with new addresses or a new name; `yubikey-turnkey --rotate`
   makes new passwords and keys, which `setup.sh` puts in place in an order
-  that keeps the cluster working
+  that keeps the cluster working; and upgrades go one server at a time
+  (radiator-yubikey, Radiator's patch releases, Ubuntu's updates)
 
 The scripts come as a Debian package, `radiator-yubikey`, which puts them in
 `/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it
@@ -165,7 +166,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 
 ```bash
 tests/run-tests.sh                           # 49 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 145 + 133 + 63 + 212 + 49 + 334 checks with real Radiator, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 145 + 133 + 63 + 212 + 49 + 334 + 59 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

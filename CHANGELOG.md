@@ -89,6 +89,18 @@
   rotated: their logins work only from the server itself, and each check
   renews its key by itself. See the guide's
   [Rotate passwords and keys](docs/guide.md#rotate-passwords-and-keys).
+- Turn-key upgrades: `setup.sh` installs Radiator's packages from its
+  folder when they are newer than those installed (a patch release): the
+  newest of each (a folder copied over the one before keeps the old ones),
+  over the old ones, keeping the server's `radiator.conf` (the package's
+  new sample goes beside it, as `radiator.conf.dpkg-dist`), and restarts
+  Radiator; never older ones. Its own `apt-get` runs keep `needrestart`,
+  which Ubuntu Server has, to listing the services to restart: it would
+  restart Patroni, which on the primary is a failover. The guide's
+  [Upgrade a turn-key setup](docs/guide.md#upgrade-a-turn-key-setup) says
+  how to upgrade radiator-yubikey (from 1.11.0), Radiator and Ubuntu's
+  packages, one server at a time, and what Ubuntu's automatic updates and
+  `needrestart` do to the cluster (left as Ubuntu has them).
 
 ### Changed
 
@@ -118,6 +130,20 @@
 
 ### Tests
 
+- `tests/radiator/upgrade.sh` (59 checks), new, run by `run.sh` as
+  `upgrade`: in `turnkey.sh`'s lab, three servers set up with
+  radiator-yubikey 1.11.0 from its git tag, then upgraded to this version
+  (built from the working tree, as 1.11.0.1 before the release), the
+  primary first; a newer Radiator (4.30-1 again as 4.30-1+lab1, with a
+  changed sample `radiator.conf`) on each; PostgreSQL updated on each with
+  `needrestart` installed, the primary after a switchover, and on the
+  primary without one (a failover); a TACACS+ login every second all
+  along (one missed, for a second, while Radiator restarted in the
+  upgrade).
+- `tests/radiator/turnkey.sh`: its lab is in
+  `tests/radiator/turnkey-lib.sh`, which `upgrade.sh` shares; the servers
+  have `SYS_PTRACE`, as root has on a server (`needrestart` needs it to
+  see other users' processes).
 - `tests/radiator/turnkey.sh` (334 checks): `setup.sh --status` on
   the three servers, from the package without the folder, and not as root;
   and what it says with etcd stopped on one server, a router down, the

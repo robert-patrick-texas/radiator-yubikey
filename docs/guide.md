@@ -377,16 +377,28 @@ six tests of real Radiator logins:
   switchover, the admin's old and new passwords and their own kept, a
   device's new TACACS+ key).
 
+- `upgrade.sh`, 59 checks of [upgrades](#upgrade-a-turn-key-setup), in
+  `turnkey.sh`'s lab: three servers set up with radiator-yubikey 1.11.0
+  (its `yubikey-turnkey` and package, from the git tag `v1.11.0`), then
+  upgraded to this version (built from the working tree, as `1.11.0.1`
+  while `VERSION` is still `1.11.0`), the primary first, with `--status`
+  OK after; a newer Radiator (4.30-1 again, as 4.30-1+lab1, with a changed
+  sample `radiator.conf`: the server's stays) on each; and PostgreSQL
+  updated on each with `needrestart` installed (the standbys, a
+  switchover, the old primary), and on the primary without the
+  switchover, which fails over. A TACACS+ login every second all along.
+
 ```bash
-tests/radiator/run.sh ~/radiator-packages        # all six, about 50 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)
+tests/radiator/run.sh ~/radiator-packages        # all seven, about 65 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 145 passed, 0 failed` (and `133 passed` for `groups.sh`),
 `Two database servers: 63 passed, 0 failed`,
 `Three sites: 212 passed, 0 failed`,
-`Package: 49 passed, 0 failed` and `Turnkey: 334 passed, 0 failed`. Run them again with each new
+`Package: 49 passed, 0 failed`, `Turnkey: 334 passed, 0 failed` and
+`Upgrade: 59 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
 
@@ -2910,7 +2922,8 @@ and the sheets to hand to whoever runs the routers and the devices.
   `secrets.toml.cms`.
 - **`setup.sh` does the steps of the sections above,** in order: the
   packages (PostgreSQL, Patroni, etcd and FRR from Ubuntu; Radiator and
-  radiator-yubikey from the packages next to it), `/etc/hosts` and the
+  radiator-yubikey from the packages next to it, and later ones over them:
+  see [Upgrade a turn-key setup](#upgrade-a-turn-key-setup)), `/etc/hosts` and the
   kernel settings, the cluster's TLS files, etcd, Patroni, the database,
   Radiator (`radiator-groups.example.conf` with the server's addresses and
   devices), partition mode, FRR and the anycast check, the backups, and
@@ -3592,6 +3605,93 @@ the anycast addresses for about 10 seconds while the other two answer.
   `--rotate admin:LOGIN`, and a device's old TACACS+ key refused once the
   servers have the new one.
 
+### Upgrade a turn-key setup
+
+One server at a time, while the other two answer: `setup.sh` restarts
+only what changed on the server it runs on.
+
+**A new release of radiator-yubikey.** Read its CHANGELOG first: new
+settings in `site.toml` stay off until you add them. On the admins'
+machine, run the new release's `yubikey-turnkey` with the same
+`site.toml` and `secrets.toml`, and its package in the packages folder
+(`-p`, with Radiator's packages as before). It keeps every secret, and
+makes what the new release needs; from 1.11.0:
+
+```text
+secrets.toml: new replicator's SCRAM verifier, rewinder's SCRAM verifier
+```
+
+Copy the folders, and run `setup.sh` on the primary first (its
+`yubikey-db.sh init` brings the database up to date before the other
+servers' Radiator needs it), then on the other two, one at a time. Each
+installs the new package with its `install.sh`:
+
+```text
+== packages
+  ..    installing radiator-yubikey 1.12.0 with its install.sh (its output is in /var/log/yubikey-turnkey.log)
+```
+
+Then `setup.sh --status` on each.
+
+**A newer Radiator** (a patch release from Radiator Software): its
+packages instead of the old ones in the packages folder, `yubikey-turnkey
+-p` again, copy the folders, and `setup.sh` on each server, one at a time.
+It installs the newer packages over the old ones (never older ones), keeps
+the server's `radiator.conf` (the package's new sample is beside it, as
+`radiator.conf.dpkg-dist`), and restarts Radiator:
+
+```text
+  ..    radiator 4.30-1: replaced by the folder's 4.30-1+lab1
+```
+
+(That is the test's: Radiator 4.30-1 again, as 4.30-1+lab1.) A folder
+copied over the one before keeps the old packages too; `setup.sh` takes
+the newest of each.
+
+**Ubuntu's updates.** Ubuntu Server comes with `unattended-upgrades`,
+which installs the security updates by itself every day, from 06:00 to an
+hour later, on each server on its own; and with `needrestart`, which
+after each `apt` run restarts the services that use what it replaced.
+`setup.sh` leaves both as Ubuntu has them. So after an update of
+PostgreSQL (or Python), `needrestart` restarts Patroni, which restarts
+PostgreSQL: on a standby, it streams again a few seconds later; on the
+primary, Patroni stops PostgreSQL and another server takes over, and the
+primary is then not the first server (`setup.sh --status` warns) until you
+move it back. Logins go on: in the test, a TACACS+ login every second
+missed none, through the planned updates and the failover. (`setup.sh`'s
+own `apt-get` runs with `NEEDRESTART_MODE=l`, so that `needrestart` only
+lists: `setup.sh` restarts what it installs.)
+
+Planned updates, and a new kernel (which needs a reboot), one server at a
+time, the primary last:
+
+1. On each standby:
+
+   ```bash
+   sudo apt-get update && sudo apt-get upgrade
+   sudo /root/turnkey/setup.sh --status     # OK once it streams again
+   ```
+
+   If `/run/reboot-required` exists, reboot it, and run `--status` again.
+2. Move the primary to an updated standby:
+
+   ```bash
+   sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east2 --force
+   ```
+
+3. Update the old primary as in step 1.
+4. Move the primary back to the first server.
+
+Not covered yet: PostgreSQL's next major version, Ubuntu's next release,
+and a new CA.
+
+- `tests/radiator/upgrade.sh` sets up three servers with 1.11.0 (from its
+  git tag), upgrades them to this version, then to a newer Radiator, and
+  then updates PostgreSQL on each (with `needrestart`) as above, and on the
+  primary without the switchover, as the automatic updates do, with a
+  TACACS+ login every second: in the upgrade one missed, for a second,
+  while Radiator restarted; none in the updates or the failover.
+
 ### Change a turn-key setup
 
 - **Devices, groups to start with, admin subnets, partition mode, the
@@ -3781,6 +3881,7 @@ doesn't, the problem is in Radiator's configuration or the network.
 | `password authentication failed for user "radiator"` | A `DBAuth` line doesn't match the password set with `init-pg --set-password` (`config` writes three: one for each clause). |
 | `setup.sh` keeps `waiting for etcd on all three servers` | Run `setup.sh` on the other servers too. If it runs there, the servers can't reach each other on TCP 2379 and 2380: a firewall on the way, or a wrong address in `site.toml`. |
 | `setup.sh` keeps `waiting for the primary, NAME, to add this server's anycast check` | A server replaced, with a new name: run `setup.sh` with the new folder on the primary (see [Replace a turn-key server](#replace-a-turn-key-server)). |
+| `setup.sh` says `radiator X is newer than the folder's Y: left as it is` | The folder has older Radiator packages than the server: copy a folder made with the newer ones (`yubikey-turnkey -p`), or leave it so (see [Upgrade a turn-key setup](#upgrade-a-turn-key-setup)) |
 | `setup.sh` keeps `waiting for the primary, NAME, to have the new passwords of replicator and rewinder` (or `radiator's new password`) | After `yubikey-turnkey --rotate`, `setup.sh` ran here before it ran on the primary: run it on the primary, and this one goes on (see [Rotate passwords and keys](#rotate-passwords-and-keys)) |
 | `setup.sh: error: etcd: the cluster has the member of NAME (URL), which isn't one of the three servers in this folder, and it runs` | The server this one replaces still runs etcd: stop it first (`setup.sh --reset NAME` on it). |
 | `setup.sh` keeps `waiting for east1 to create the database` | `setup.sh` on the first server hasn't got that far, or stopped: see its output, fix the cause, and run it again there. |

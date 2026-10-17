@@ -2,7 +2,7 @@
 #
 # run.sh - Test yubikey-db.sh against a real Radiator, in a Docker container.
 #
-# Usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package|turnkey]
+# Usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package|turnkey|upgrade]
 #   DIR holds the Radiator packages from Radiator Software, which are not part
 #   of this repository: radiator_<version>_all.deb and
 #   radiator-radius-utilxs_<version>_amd64.deb.
@@ -24,8 +24,11 @@
 #   turnkey  turnkey.sh: yubikey-turnkey's setup.sh on three fresh Ubuntu
 #        26.04 servers at once, with two routers and a device: logins at the
 #        anycast addresses over RADIUS and TACACS+, the firewall, a second
-#        run, a reboot, a new device (about 10 min; apt-get needs network
-#        access)
+#        run, a reboot, a new device, backups, servers rebuilt and replaced,
+#        new passwords (about 30 min; apt-get needs network access)
+#   upgrade  upgrade.sh: the same lab, set up with radiator-yubikey 1.11.0
+#        (from its git tag), then upgraded to this version, to a newer
+#        Radiator, and Ubuntu's updates one server at a time (about 15 min)
 # Needs Docker, usable without sudo (membership of the docker group). Exits 0
 # when every check passes.
 
@@ -37,8 +40,8 @@ die() { printf 'run.sh: error: %s\n' "$*" >&2; exit 1; }
 
 dir=${1:-}
 which=${2:-all}
-[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package|turnkey] (DIR: the directory with the Radiator .deb packages)"
-[[ $which =~ ^(all|e2e|groups|ha|geo|package|turnkey)$ ]] || die "unknown test '$which' (e2e, groups, ha, geo, package or turnkey)"
+[[ -n $dir && -d $dir ]] || die "usage: tests/radiator/run.sh DIR [e2e|groups|ha|geo|package|turnkey|upgrade] (DIR: the directory with the Radiator .deb packages)"
+[[ $which =~ ^(all|e2e|groups|ha|geo|package|turnkey|upgrade)$ ]] || die "unknown test '$which' (e2e, groups, ha, geo, package, turnkey or upgrade)"
 shopt -s nullglob
 rad=("$dir"/radiator_*_all.deb)
 utilxs=("$dir"/radiator-radius-utilxs_*.deb)
@@ -77,5 +80,9 @@ fi
 if [[ $which == all || $which == turnkey ]]; then
     [[ $which == all ]] && echo
     "$here/turnkey.sh" "$image" "$dir" || status=1
+fi
+if [[ $which == all || $which == upgrade ]]; then
+    [[ $which == all ]] && echo
+    "$here/upgrade.sh" "$image" "$dir" || status=1
 fi
 exit $status

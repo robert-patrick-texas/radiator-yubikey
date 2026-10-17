@@ -676,7 +676,7 @@ it.</p>
 Patroni, etcd and FRR (and debhelper and lintian, to build and check the
 package) added, and runs six tests of real Radiator logins:</p>
 <ul>
-<li><code>e2e.sh</code>, 145 checks in a throwaway container: SQLite
+<li><p><code>e2e.sh</code>, 145 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
 socket and over TLS, the example wrapper, a user with two YubiKeys (each
 with its own counters, PIN and <code>active</code>; another user's
@@ -690,8 +690,8 @@ stored for the username <code>DEFAULT</code>, which logs in no one else,
 and the anycast check renewing its key with Radiator's login over TLS,
 then logging in with the new key (Radiator refuses the old one). For
 each login it checks Radiator's answer and the reason it logs, and that
-<code>verify</code> agrees.</li>
-<li><code>groups.sh</code>, 133 checks in a throwaway container, with
+<code>verify</code> agrees.</p></li>
+<li><p><code>groups.sh</code>, 133 checks in a throwaway container, with
 <code>radiator-groups.example.conf</code> and devices at addresses in
 127.0.0.0/8: logins over TACACS+ (with a small client on Radiator's own
 modules, and with Radiator's <code>tacacsplustest</code>) and RADIUS, by
@@ -707,33 +707,33 @@ TACACS+, set up as in <a href="#set-up-anycast-on-each-server">Set up
 anycast on each server</a>, step 5, with its service account disabled,
 its group's access taken away, another password in the database, a wrong
 key, a wrong port and an address Radiator doesn't listen on; and that
-its accounts can't log in from a device.</li>
-<li><code>ha.sh</code>, 63 checks with four containers: two PostgreSQL
-servers (primary and streaming standby, over TLS) and two Radiator
-servers, through a dead primary, a hung primary, failovers, an old
-primary coming back, a planned switchover (a login held until the
+its accounts can't log in from a device.</p></li>
+<li><p><code>ha.sh</code>, 63 checks with four containers: two
+PostgreSQL servers (primary and streaming standby, over TLS) and two
+Radiator servers, through a dead primary, a hung primary, failovers, an
+old primary coming back, a planned switchover (a login held until the
 standby is promoted, and one held for 5 s, then rejected, when none is),
 the replay window (see <a href="#two-database-servers">Two database
 servers</a>), and the same OTP sent to both Radiator servers at the same
-moment.</li>
-<li><code>geo.sh</code>, 212 checks with three containers, one per site,
-each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
-and <code>yubikey-anycast.sh</code> from the package, set up as in <a
-href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
-with traffic control adding the WAN delays (55 ms between West and East,
-4 ms between the East sites). A fourth container stands in for West's
-router (FRR), and a fifth, behind it, is a RADIUS client that logs in at
-the anycast addresses, over IPv4 and IPv6. It measures login times,
-switches the primary over twice while four users at each site log in at
-the same time, then stops West's Radiator and West's check, reboots each
-server in turn, cuts West's and then the primary's power, kills Patroni
-on the primary, cuts West off, cuts the primary's site off, breaks the
-link between the East sites, copies a standby again, and takes two
-servers down at once. Then it sets up <a
-href="#partition-mode">partition mode</a>, has West's check renew its
-key under systemd (and West's copy get it), and cuts West off, cuts the
-primary's site off, takes two servers down at once, and breaks the link
-between the East sites again. Each time it checks which logins are
+moment.</p></li>
+<li><p><code>geo.sh</code>, 212 checks with three containers, one per
+site, each running systemd with etcd, PostgreSQL under Patroni,
+Radiator, FRR and <code>yubikey-anycast.sh</code> from the package, set
+up as in <a href="#three-sites">Three sites</a> and <a
+href="#anycast">Anycast</a>, with traffic control adding the WAN delays
+(55 ms between West and East, 4 ms between the East sites). A fourth
+container stands in for West's router (FRR), and a fifth, behind it, is
+a RADIUS client that logs in at the anycast addresses, over IPv4 and
+IPv6. It measures login times, switches the primary over twice while
+four users at each site log in at the same time, then stops West's
+Radiator and West's check, reboots each server in turn, cuts West's and
+then the primary's power, kills Patroni on the primary, cuts West off,
+cuts the primary's site off, breaks the link between the East sites,
+copies a standby again, and takes two servers down at once. Then it sets
+up <a href="#partition-mode">partition mode</a>, has West's check renew
+its key under systemd (and West's copy get it), and cuts West off, cuts
+the primary's site off, takes two servers down at once, and breaks the
+link between the East sites again. Each time it checks which logins are
 accepted, which OTPs are replays, that the cluster recovers, which
 servers the router has anycast routes from, and which server answers the
 client. Last, it sets up the <a href="#automatic-backups">automatic
@@ -747,8 +747,8 @@ network), but aren't privileged. Docker sets the two kernel settings of
 <a href="#set-up-anycast-on-each-server">Set up anycast on each
 server</a>, step 2, in the containers (<code>--sysctl</code>); the
 step's commands themselves were run in a container whose kernel settings
-it could change for its own network only.</li>
-<li><code>package.sh</code>, 49 checks of the package and
+it could change for its own network only.</p></li>
+<li><p><code>package.sh</code>, 49 checks of the package and
 <code>install.sh</code>: the package builds the same twice, lintian
 finds nothing in it, and it puts nothing outside
 <code>/opt/radiator-yubikey</code> but its units. Then, on fresh Ubuntu
@@ -764,10 +764,11 @@ said before the package, replaced with <code>install.sh</code>'s
 commands; the package's units (and the backups' timer) neither enabled
 nor started by the install, and found sound by
 <code>systemd-analyze verify</code>, restarted by an upgrade only while
-they run, stopped by a removal, and gone after a purge.</li>
-<li><code>turnkey.sh</code>, 334 checks of <a href="#turn-key-setup">the
-turn-key setup</a>: <code>yubikey-turnkey</code> makes the folders from
-a <code>site.toml</code> with two routers at West's site, and
+they run, stopped by a removal, and gone after a purge.</p></li>
+<li><p><code>turnkey.sh</code>, 334 checks of <a
+href="#turn-key-setup">the turn-key setup</a>:
+<code>yubikey-turnkey</code> makes the folders from a
+<code>site.toml</code> with two routers at West's site, and
 <code>setup.sh</code> runs on three fresh Ubuntu 26.04 containers
 (systemd and <code>iproute2</code> only) at the same time, installing
 everything with <code>apt-get</code> (it needs network access). Two more
@@ -810,18 +811,32 @@ replaced by a server of a new name and addresses, which then becomes the
 primary); and new passwords and keys (<code>--rotate</code>: a standby
 run first waits for the primary, logins every second all along,
 replication with the new password, a switchover, the admin's old and new
-passwords and their own kept, a device's new TACACS+ key).</li>
+passwords and their own kept, a device's new TACACS+ key).</p></li>
+<li><p><code>upgrade.sh</code>, 59 checks of <a
+href="#upgrade-a-turn-key-setup">upgrades</a>, in
+<code>turnkey.sh</code>'s lab: three servers set up with
+radiator-yubikey 1.11.0 (its <code>yubikey-turnkey</code> and package,
+from the git tag <code>v1.11.0</code>), then upgraded to this version
+(built from the working tree, as <code>1.11.0.1</code> while
+<code>VERSION</code> is still <code>1.11.0</code>), the primary first,
+with <code>--status</code> OK after; a newer Radiator (4.30-1 again, as
+4.30-1+lab1, with a changed sample <code>radiator.conf</code>: the
+server's stays) on each; and PostgreSQL updated on each with
+<code>needrestart</code> installed (the standbys, a switchover, the old
+primary), and on the primary without the switchover, which fails over. A
+TACACS+ login every second all along.</p></li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 50 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all seven, about 65 minutes
+tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 145 passed, 0 failed</code> (and
 <code>133 passed</code> for <code>groups.sh</code>),
 <code>Two database servers: 63 passed, 0 failed</code>,
 <code>Three sites: 212 passed, 0 failed</code>,
-<code>Package: 49 passed, 0 failed</code> and
-<code>Turnkey: 334 passed, 0 failed</code>. Run them again with each new
+<code>Package: 49 passed, 0 failed</code>,
+<code>Turnkey: 334 passed, 0 failed</code> and
+<code>Upgrade: 59 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -3646,7 +3661,9 @@ in), <code>routers.md</code>, <code>devices.md</code>,
 <li><strong><code>setup.sh</code> does the steps of the sections
 above,</strong> in order: the packages (PostgreSQL, Patroni, etcd and
 FRR from Ubuntu; Radiator and radiator-yubikey from the packages next to
-it), <code>/etc/hosts</code> and the kernel settings, the cluster's TLS
+it, and later ones over them: see <a
+href="#upgrade-a-turn-key-setup">Upgrade a turn-key setup</a>),
+<code>/etc/hosts</code> and the kernel settings, the cluster's TLS
 files, etcd, Patroni, the database, Radiator
 (<code>radiator-groups.example.conf</code> with the server's addresses
 and devices), partition mode, FRR and the anycast check, the backups,
@@ -4366,6 +4383,79 @@ admin's own password kept until <code>--rotate admin:LOGIN</code>, and a
 device's old TACACS+ key refused once the servers have the new one.</li>
 </ul>
 </section>
+<section id="upgrade-a-turn-key-setup" class="level3">
+<h3>Upgrade a turn-key setup</h3>
+<p>One server at a time, while the other two answer:
+<code>setup.sh</code> restarts only what changed on the server it runs
+on.</p>
+<p><strong>A new release of radiator-yubikey.</strong> Read its
+CHANGELOG first: new settings in <code>site.toml</code> stay off until
+you add them. On the admins' machine, run the new release's
+<code>yubikey-turnkey</code> with the same <code>site.toml</code> and
+<code>secrets.toml</code>, and its package in the packages folder
+(<code>-p</code>, with Radiator's packages as before). It keeps every
+secret, and makes what the new release needs; from 1.11.0:</p>
+<pre class="text"><code>secrets.toml: new replicator&#39;s SCRAM verifier, rewinder&#39;s SCRAM verifier</code></pre>
+<p>Copy the folders, and run <code>setup.sh</code> on the primary first
+(its <code>yubikey-db.sh init</code> brings the database up to date
+before the other servers' Radiator needs it), then on the other two, one
+at a time. Each installs the new package with its
+<code>install.sh</code>:</p>
+<pre class="text"><code>== packages
+  ..    installing radiator-yubikey 1.12.0 with its install.sh (its output is in /var/log/yubikey-turnkey.log)</code></pre>
+<p>Then <code>setup.sh --status</code> on each.</p>
+<p><strong>A newer Radiator</strong> (a patch release from Radiator
+Software): its packages instead of the old ones in the packages folder,
+<code>yubikey-turnkey -p</code> again, copy the folders, and
+<code>setup.sh</code> on each server, one at a time. It installs the
+newer packages over the old ones (never older ones), keeps the server's
+<code>radiator.conf</code> (the package's new sample is beside it, as
+<code>radiator.conf.dpkg-dist</code>), and restarts Radiator:</p>
+<pre class="text"><code>  ..    radiator 4.30-1: replaced by the folder&#39;s 4.30-1+lab1</code></pre>
+<p>(That is the test's: Radiator 4.30-1 again, as 4.30-1+lab1.) A folder
+copied over the one before keeps the old packages too;
+<code>setup.sh</code> takes the newest of each.</p>
+<p><strong>Ubuntu's updates.</strong> Ubuntu Server comes with
+<code>unattended-upgrades</code>, which installs the security updates by
+itself every day, from 06:00 to an hour later, on each server on its
+own; and with <code>needrestart</code>, which after each
+<code>apt</code> run restarts the services that use what it replaced.
+<code>setup.sh</code> leaves both as Ubuntu has them. So after an update
+of PostgreSQL (or Python), <code>needrestart</code> restarts Patroni,
+which restarts PostgreSQL: on a standby, it streams again a few seconds
+later; on the primary, Patroni stops PostgreSQL and another server takes
+over, and the primary is then not the first server
+(<code>setup.sh --status</code> warns) until you move it back. Logins go
+on: in the test, a TACACS+ login every second missed none, through the
+planned updates and the failover. (<code>setup.sh</code>'s own
+<code>apt-get</code> runs with <code>NEEDRESTART_MODE=l</code>, so that
+<code>needrestart</code> only lists: <code>setup.sh</code> restarts what
+it installs.)</p>
+<p>Planned updates, and a new kernel (which needs a reboot), one server
+at a time, the primary last:</p>
+<ol type="1">
+<li><p>On each standby:</p>
+<pre class="bash"><code>sudo apt-get update &amp;&amp; sudo apt-get upgrade
+sudo /root/turnkey/setup.sh --status     # OK once it streams again</code></pre>
+<p>If <code>/run/reboot-required</code> exists, reboot it, and run
+<code>--status</code> again.</p></li>
+<li><p>Move the primary to an updated standby:</p>
+<pre class="bash"><code>sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east2 --force</code></pre></li>
+<li><p>Update the old primary as in step 1.</p></li>
+<li><p>Move the primary back to the first server.</p></li>
+</ol>
+<p>Not covered yet: PostgreSQL's next major version, Ubuntu's next
+release, and a new CA.</p>
+<ul>
+<li><code>tests/radiator/upgrade.sh</code> sets up three servers with
+1.11.0 (from its git tag), upgrades them to this version, then to a
+newer Radiator, and then updates PostgreSQL on each (with
+<code>needrestart</code>) as above, and on the primary without the
+switchover, as the automatic updates do, with a TACACS+ login every
+second: in the upgrade one missed, for a second, while Radiator
+restarted; none in the updates or the failover.</li>
+</ul>
+</section>
 <section id="change-a-turn-key-setup" class="level3">
 <h3>Change a turn-key setup</h3>
 <ul>
@@ -4933,6 +5023,14 @@ firewall on the way, or a wrong address in <code>site.toml</code>.</td>
 <td>A server replaced, with a new name: run <code>setup.sh</code> with
 the new folder on the primary (see <a
 href="#replace-a-turn-key-server">Replace a turn-key server</a>).</td>
+</tr>
+<tr>
+<td><code>setup.sh</code> says
+<code>radiator X is newer than the folder's Y: left as it is</code></td>
+<td>The folder has older Radiator packages than the server: copy a
+folder made with the newer ones (<code>yubikey-turnkey -p</code>), or
+leave it so (see <a href="#upgrade-a-turn-key-setup">Upgrade a turn-key
+setup</a>)</td>
 </tr>
 <tr>
 <td><code>setup.sh</code> keeps

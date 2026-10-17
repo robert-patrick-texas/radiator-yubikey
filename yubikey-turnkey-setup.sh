@@ -142,6 +142,7 @@ CHECK=0 NO_FIREWALL=0 RESET='' STATUS=0 ALONE=0 YES=0
 ENV_DIR=$HERE       # where server.env is (--status: or $KEEP)
 PROBLEMS=0          # preflight: things to fix
 REJOIN=0            # etcd: this server's member was added again
+RADIATOR_NEW=0      # packages: a newer Radiator installed over the old one
 REMOVED=0           # etcd: refused, as a member the cluster had removed
 LEARNER=''          # etcd: this server's member, while a learner
 START=$EPOCHSECONDS
@@ -402,37 +403,72 @@ preflight() {
 
 packages() {
     local -a want=(postgresql postgresql-client libdbd-pg-perl etcd-server etcd-client patroni python3-etcd
-                   frr sqlite3 iproute2 curl openssl ca-certificates) missing=() debs=()
-    local p
+                   frr sqlite3 iproute2 curl openssl ca-certificates) missing=() debs=() newer=()
+    local p name new cur
     step packages
     if [[ $FIREWALL == 1 && $NO_FIREWALL == 0 ]]; then want+=(iptables iptables-persistent); fi
     for p in "${want[@]}"; do pkg_installed "$p" || missing+=("$p"); done
     if ! pkg_installed radiator && ! pkg_installed radiator-locked; then
-        debs=("$HERE"/radiator_*_all.deb "$HERE"/radiator-locked_*_all.deb "$HERE"/radiator-radius-utilxs_*.deb)
-        mapfile -t debs < <(for p in "${debs[@]}"; do [[ -f $p ]] && echo "$p"; done)
+        mapfile -t debs < <(radiator_debs)
+    else
+        # Radiator's packages in the folder, when newer than those installed
+        # (a patch release): over them, keeping this server's settings, and
+        # Radiator restarts with them. Never older ones.
+        while IFS= read -r p; do
+            name=$(dpkg-deb -f "$p" Package) new=$(dpkg-deb -f "$p" Version)
+            cur=$(pkg_version "$name")
+            [[ -n $cur ]] || continue
+            if dpkg --compare-versions "$new" gt "$cur"; then
+                newer+=("$p")
+                info "$name $cur: replaced by the folder's $new"
+                RADIATOR_NEW=1
+            elif dpkg --compare-versions "$new" lt "$cur"; then
+                info "$name $cur is newer than the folder's $new: left as it is"
+            fi
+        done < <(radiator_debs)
     fi
-    if [[ ${#missing[@]} -gt 0 || ${#debs[@]} -gt 0 ]]; then
-        info "installing ${missing[*]} ${debs[*]##*/} (apt-get's output is in $LOG)"
+    if [[ ${#missing[@]} -gt 0 || ${#debs[@]} -gt 0 || ${#newer[@]} -gt 0 ]]; then
+        info "installing ${missing[*]} ${debs[*]##*/}${newer[*]##*/} (apt-get's output is in $LOG)"
         # iptables-persistent would save the rules loaded now; setup.sh
         # writes its own.
         printf '%s\n' 'iptables-persistent iptables-persistent/autosave_v4 boolean false' \
                       'iptables-persistent iptables-persistent/autosave_v6 boolean false' | debconf-set-selections
+        # (needrestart, which Ubuntu Server has, only lists the services that
+        # use what apt replaced: it would restart them, Patroni's too, which on
+        # the primary is a failover. setup.sh restarts what it installs.)
         quiet env DEBIAN_FRONTEND=noninteractive apt-get -q update || die "apt-get update failed"
-        quiet env DEBIAN_FRONTEND=noninteractive apt-get -q -y install "${missing[@]}" "${debs[@]}" \
-            || die "apt-get install failed"
+        quiet env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -q -y \
+            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+            install "${missing[@]}" "${debs[@]}" "${newer[@]}" || die "apt-get install failed"
         # Radiator's sample configuration accepts logins without checking a
         # password: off until the radiator step installs this server's.
         if [[ ${#debs[@]} -gt 0 ]]; then systemctl disable --now radiator 2>/dev/null; fi
     fi
     if [[ $(pkg_version radiator-yubikey) != "$VERSION" ]]; then
         info "installing radiator-yubikey $VERSION with its install.sh (its output is in $LOG)"
-        quiet bash "$HERE/install.sh" --yes "$HERE/radiator-yubikey_${VERSION}_all.deb" \
+        quiet env NEEDRESTART_MODE=l bash "$HERE/install.sh" --yes "$HERE/radiator-yubikey_${VERSION}_all.deb" \
             || die "install.sh failed"
     fi
     for p in yubikey-db.sh yubikey-anycast.sh yubikey-partition.sh yubikey-backup.sh dictionary.yubikey; do
         [[ -f $PKG/$p ]] || die "$PKG/$p is missing (radiator-yubikey isn't installed properly)"
     done
     ok "packages: Radiator $(pkg_version radiator)$(pkg_version radiator-locked), radiator-yubikey $VERSION, PostgreSQL $(pkg_version postgresql), Patroni $(pkg_version patroni), etcd $(pkg_version etcd-server), FRR $(pkg_version frr)"
+}
+
+# radiator_debs: Radiator's packages in the folder, the newest of each (a
+# folder copied over the one before keeps the old ones too).
+radiator_debs() {
+    local p name ver
+    local -A best=() bestv=()
+    for p in "$HERE"/radiator_*_all.deb "$HERE"/radiator-locked_*_all.deb "$HERE"/radiator-radius-utilxs_*.deb; do
+        [[ -f $p ]] || continue
+        name=$(dpkg-deb -f "$p" Package 2>/dev/null) ver=$(dpkg-deb -f "$p" Version 2>/dev/null)
+        [[ -n $name && -n $ver ]] || continue
+        if [[ -z ${bestv[$name]-} ]] || dpkg --compare-versions "$ver" gt "${bestv[$name]}"; then
+            best[$name]=$p bestv[$name]=$ver
+        fi
+    done
+    for name in "${!best[@]}"; do printf '%s\n' "${best[$name]}"; done
 }
 
 system_step() {
@@ -982,7 +1018,7 @@ radiator_step() {
     fi
     if put /etc/radiator/dictionary.yubikey 0644 root:root <"$PKG/dictionary.yubikey"; then restart=1; fi
     install_files radiator
-    [[ ${#CHANGED[@]} -gt 0 ]] && restart=1
+    [[ ${#CHANGED[@]} -gt 0 || $RADIATOR_NEW == 1 ]] && restart=1
     # Devices that are no longer in site.toml.
     for f in /etc/radiator/clients.d/*.conf; do
         [[ -f $f ]] || continue
