@@ -855,7 +855,7 @@ cmd_status() {
 
 cmd_run() {
     local counter session=0 skip=0 good_n=0 bad_n=0 state=withdrawn since last='' result kind
-    local start now elapsed left sleeper='' all next_try=0 last_try=0 renew_off='' due rc
+    local start now elapsed left pause sleeper='' all next_try=0 last_try=0 renew_off='' due rc
     load_conf
     lock
     load_key
@@ -867,7 +867,9 @@ cmd_run() {
         die "net.ipv6.ip_nonlocal_bind is not 1: Radiator could not listen on ${ADDR6[*]} while it is not on lo"
     fi
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
-    trap take_off_lo EXIT
+    # In this shell only: bash also runs it in a child that gets TERM while
+    # it still expands its words (as stop's kill of the sleep can find it).
+    trap '((BASHPID == $$)) && take_off_lo' EXIT
     read_counter
     counter=$((COUNTER + 1))
     ((counter <= MAX_COUNTER)) || die "this key has no OTPs left: run '$PROG enroll'"
@@ -979,7 +981,8 @@ cmd_run() {
         now=${EPOCHREALTIME/[.,]/}
         elapsed=$((now - start))
         if ((elapsed < INTERVAL * 1000000)); then
-            sleep "$(printf '%d.%06d' $(((INTERVAL * 1000000 - elapsed) / 1000000)) $(((INTERVAL * 1000000 - elapsed) % 1000000)))" 9>&- &
+            printf -v pause '%d.%06d' $(((INTERVAL * 1000000 - elapsed) / 1000000)) $(((INTERVAL * 1000000 - elapsed) % 1000000))
+            sleep "$pause" 9>&- &
             sleeper=$!
             wait "$sleeper"
             sleeper=

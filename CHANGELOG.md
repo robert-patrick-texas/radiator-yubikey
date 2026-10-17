@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- `yubikey-anycast.sh run`: at a stop, it sometimes took the anycast
+  addresses off `lo` twice at once, the second time logging `error: cannot
+  remove ADDRESS from lo` (they were removed either way). Bash also ran
+  its exit trap in the background `sleep` between two checks, when the
+  stop's TERM reached that child while it was still working out how long
+  to sleep. The trap now runs only in the check's own shell, and the time
+  is worked out before the `sleep` starts. `tests/run-tests.sh`'s
+  `anycast_run` failed on it once; a stress test of its stop, 2 times in
+  150.
+
 ### Tests
 
 - `tests/radiator/upgrade.sh` starts from 1.12.0 (its git tag), not
