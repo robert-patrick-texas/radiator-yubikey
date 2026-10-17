@@ -1327,6 +1327,23 @@ says what the others mean, and how monitoring can run it).
 sudo /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status
 ```
 {backup_steps}
+## A server lost
+
+Set up a new one with the same name and addresses (as in step 1), copy
+its folder (step 2), and run setup.sh on it alone, while the other two
+run: it joins them again, and its anycast check goes on with its key from
+the database. To start a broken server over in place instead: `setup.sh
+--reset NAME` on it, then setup.sh. If it was {first['name']}, it is a standby
+then: the guide's "Rebuild a turn-key server" says how to move the
+primary back.
+
+## Two servers lost
+
+Only when both are lost for good, not cut off: on the third, `setup.sh
+--alone` makes it the cluster alone (it asks first). Then set up the
+other two again as above, and run setup.sh on both; the guide's "Two
+servers lost" says the rest.
+
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and

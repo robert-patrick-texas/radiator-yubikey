@@ -146,6 +146,7 @@ $ setup.sh --help
 Usage: sudo ./setup.sh [--check] [--no-firewall]
        sudo ./setup.sh --status
        sudo ./setup.sh --reset NAME
+       sudo ./setup.sh --alone [--yes]
 
 Sets up this server from its folder, made by yubikey-turnkey. Run it on all
 three servers at about the same time; run it again whenever the folder
@@ -157,8 +158,22 @@ Options:
   --status        Show whether this server works (changes nothing); exits
                   0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN
   --reset NAME    Start this server over (NAME: its host name)
+  --alone         The other two servers are lost for good: make this one
+                  the cluster alone (asks first; --yes: doesn't)
   -h, --help      Show this help
 [exit 0]
+
+$ setup.sh --alone
+setup.sh: error: run it as root (sudo ./setup.sh)
+[exit 1]
+
+$ setup.sh --alone --check
+setup.sh: --alone goes alone, or with --yes (see --help)
+[exit 2]
+
+$ setup.sh --yes
+setup.sh: --yes goes with --alone (see --help)
+[exit 2]
 
 --- out/east1/server.env (600)
 # server.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
@@ -757,6 +772,23 @@ yubikey-backup.sh check --key backup.key yubikey-db.cms.0
 ```
 
 To restore one, see the guide's "Turn-key backups".
+
+## A server lost
+
+Set up a new one with the same name and addresses (as in step 1), copy
+its folder (step 2), and run setup.sh on it alone, while the other two
+run: it joins them again, and its anycast check goes on with its key from
+the database. To start a broken server over in place instead: `setup.sh
+--reset NAME` on it, then setup.sh. If it was east1, it is a standby
+then: the guide's "Rebuild a turn-key server" says how to move the
+primary back.
+
+## Two servers lost
+
+Only when both are lost for good, not cut off: on the third, `setup.sh
+--alone` makes it the cluster alone (it asks first). Then set up the
+other two again as above, and run setup.sh on both; the guide's "Two
+servers lost" says the rest.
 
 ## Keep
 

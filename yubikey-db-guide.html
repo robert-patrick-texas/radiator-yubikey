@@ -765,7 +765,7 @@ commands; the package's units (and the backups' timer) neither enabled
 nor started by the install, and found sound by
 <code>systemd-analyze verify</code>, restarted by an upgrade only while
 they run, stopped by a removal, and gone after a purge.</li>
-<li><code>turnkey.sh</code>, 155 checks of <a href="#turn-key-setup">the
+<li><code>turnkey.sh</code>, 255 checks of <a href="#turn-key-setup">the
 turn-key setup</a>: <code>yubikey-turnkey</code> makes the folders from
 a <code>site.toml</code> with two routers at West's site, and
 <code>setup.sh</code> runs on three fresh Ubuntu 26.04 containers
@@ -793,9 +793,18 @@ standby); the firewall (PostgreSQL closed to a machine outside the admin
 subnets, Patroni's REST API open to the admins); <code>setup.sh</code>
 run again (nothing installed or restarted); a reboot; a new device added
 in <code>site.toml</code>; new certificates, one server at a time (etcd,
-Patroni and PostgreSQL present them); and <code>--reset</code> on all
-three, then <code>setup.sh</code> again, and the last backup restored
-into the new cluster.</li>
+Patroni and PostgreSQL present them); servers rebuilt with the same
+names and addresses (West, whose check renewed its key, and East1, lost
+while it was the primary, on new containers, with logins going on
+meanwhile, the database's key and counter for the check, and the primary
+moved back; East2 started over in place with <code>--reset</code>),
+<code>setup.sh</code> stopping at etcd while East2's is stopped, and
+joining when all three's was; two servers lost (East1 and East2: logins
+through West from its copy, <code>setup.sh --alone</code> on West, the
+two set up again at the same time, the OTP used on West alone refused
+after); and <code>--reset</code> on all three, then
+<code>setup.sh</code> again, and the last backup restored into the new
+cluster.</li>
 </ul>
 <pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 35 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)</code></pre>
@@ -806,7 +815,7 @@ and ends with a count, such as
 <code>Two database servers: 63 passed, 0 failed</code>,
 <code>Three sites: 212 passed, 0 failed</code>,
 <code>Package: 49 passed, 0 failed</code> and
-<code>Turnkey: 155 passed, 0 failed</code>. Run them again with each new
+<code>Turnkey: 255 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -3646,6 +3655,14 @@ changed. If <code>setup.sh</code> stops, fix the cause and run it again:
 it goes on where it stopped. It never removes an etcd cluster or a
 PostgreSQL cluster with databases that it didn't make;
 <code>--reset</code> starts a server over.</li>
+<li><strong>A lost server comes back from its folder.</strong> On a new
+server with the same name and addresses, or after <code>--reset</code>
+on it alone, <code>setup.sh</code> joins the other two: it adds the
+server's etcd member again, Patroni copies the database, and the anycast
+check takes its key and counter from the database (see <a
+href="#rebuild-a-turn-key-server">Rebuild a turn-key server</a>). With
+two lost, <code>--alone</code> makes the third the cluster alone first
+(see <a href="#two-servers-lost">Two servers lost</a>).</li>
 <li><strong>One command says whether a server works:</strong>
 <code>setup.sh --status</code> checks its services, the cluster, the
 anycast check, partition mode, BGP, the backups, the firewall, the
@@ -4000,6 +4017,169 @@ no backups (<code>yubikey-turnkey</code> says so), and
 already made stay.</p></li>
 </ul>
 </section>
+<section id="rebuild-a-turn-key-server" class="level3">
+<h3>Rebuild a turn-key server</h3>
+<p>When a server is lost (its disk, say, or Ubuntu installed anew), set
+it up again with the same name and addresses while the other two run. In
+the meantime the other two sites log users in, and the routers send the
+lost site's devices to them; if it was the primary, Patroni has made
+East2 the primary within about 30 s.</p>
+<p><strong>1. A server with the same name and addresses:</strong> Ubuntu
+26.04 LTS, with its host name and its IPv4 and IPv6 addresses as in
+<code>site.toml</code> (step 1 of the runbook). For a server whose disk
+is fine but whose etcd or PostgreSQL is broken, start it over in place
+instead: <code>sudo /root/turnkey/setup.sh --reset NAME</code>.</p>
+<p><strong>2. Its folder,</strong> as <code>yubikey-turnkey</code> last
+made it, with the packages: copy it as in step 2 of the runbook.</p>
+<p><strong>3. Run <code>setup.sh</code> on it alone:</strong></p>
+<pre class="bash"><code>sudo /root/turnkey/setup.sh</code></pre>
+<p>It sets up the server as a new one, except:</p>
+<ul>
+<li><strong>etcd:</strong> the cluster still has the server's member
+from before, without its data. <code>setup.sh</code> removes that member
+and adds it again, through the other two (both must run etcd), as a
+learner, which counts for no quorum until it has caught up; the server's
+etcd joins the cluster that runs, and <code>setup.sh</code> then makes
+it a voting member.</li>
+<li><strong>Patroni</strong> copies the database from the primary, as a
+standby: the first server's too, which then isn't the primary (step
+5).</li>
+<li><strong>The database</strong> is left as it is: the first server
+loads nothing from <code>db/</code> again.</li>
+<li><strong>The anycast check</strong> takes its key and its counter
+from the database, so it goes on with a key it renewed since (the folder
+has the one from before), and its first OTP is above the last one the
+database saw.</li>
+</ul>
+<p>On West, whose check had renewed its key (in the lab):</p>
+<pre class="text"><code>== etcd
+  ..    installed /etc/etcd/tls/ca.crt /etc/etcd/tls/server.crt /etc/etcd/tls/server.key /etc/default/etcd
+  ..    etcd: removed this server&#39;s member from before (512d880f0d6ebf0e), to add it again
+  ..    etcd: added this server&#39;s member again (9ac3382badfb3812), as a learner until it has caught up
+  ..    etcd: promoted this server&#39;s member, which has caught up
+  ok    etcd: joined the cluster again; 3 members healthy
+
+== patroni
+  ..    removed the postgresql package&#39;s empty cluster 18/main
+  ..    installed /etc/patroni/tls/ca.crt /etc/patroni/tls/server.crt /etc/patroni/tls/server.key /etc/patroni/18-main.yml /etc/systemd/system/patroni@18-main.service.d/restart.conf
+  ..    waiting for this server to copy the database and stream from the primary (11 s)
+  ok    Patroni: east1=Leader/running east2=Quorum_Standby/streaming west=Replica/streaming
+
+== database
+  ok    the database has this server&#39;s anycast check
+...
+== anycast
+  ..    installed /var/lib/yubikey-anycast/key
+  ..    the anycast check&#39;s key from the database: renewed on 2026-10-17
+  ..    installed /var/lib/yubikey-anycast/counter
+  ..    installed /etc/radiator/anycast.conf /var/lib/yubikey-anycast/tacacs /etc/frr/frr.conf
+  ok    the anycast check: ACCEPT in 73 ms; TACACS+ PASS in 54 ms</code></pre>
+<p>On the first server, Patroni says
+<code>the cluster exists, with east2 as its primary: this server copies it, as a standby</code>,
+and the database
+<code>this server's PostgreSQL isn't the primary now: the database was made before; left as it is</code>.</p>
+<p><strong>4. Check all three</strong> with
+<code>setup.sh --status</code>: each says <code>OK</code>.</p>
+<p><strong>5. The first server:</strong> it is a standby now, and its
+<code>--status</code> warns that the primary is East2. Move the primary
+back when it suits you (logins are held for a few seconds):</p>
+<pre class="bash"><code>sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east1 --force</code></pre>
+<ul>
+<li><p><strong>Two servers down at once:</strong> etcd on the third has
+no quorum, so no member can be removed or added, and
+<code>setup.sh</code> stops at etcd, before starting it:</p>
+<pre class="text"><code>setup.sh: error: etcd: the cluster has this server&#39;s member from before, and fewer than two servers run etcd, which adding it again needs. Start etcd on the other two (see &quot;Rebuild a turn-key server&quot; in the guide)</code></pre>
+<p>If the other server is only down, or its etcd stopped, start it and
+run <code>setup.sh</code> again. If it is lost too, see <a
+href="#two-servers-lost">Two servers lost</a>.</p></li>
+<li><p><strong>All three servers' etcd down</strong> (a power cut at
+every site, say): nothing answers, so <code>setup.sh</code> starts etcd
+as in a new cluster, and waits; once the other two run etcd again, it
+joins them. A server rebuilt before, whose member was added again then,
+starts as the member it was at first, which the others removed: they
+refuse it, and <code>setup.sh</code> says
+<code>etcd: the others refused this server's etcd, started as in a new cluster: they have its member under another ID</code>,
+and adds its member again.</p></li>
+<li><p><strong>New names or addresses</strong> can't be had this way:
+not covered yet.</p></li>
+<li><p><code>tests/radiator/turnkey.sh</code> rebuilds West, whose check
+had renewed its key, and East1, lost while it was the primary, on new
+servers; starts East2 over in place with <code>--reset</code>; and
+starts West over while East2's etcd is stopped, and while all three's
+is.</p></li>
+</ul>
+</section>
+<section id="two-servers-lost" class="level3">
+<h3>Two servers lost</h3>
+<p>When two servers are lost at once, for good, the third goes on alone:
+partition mode logs users in there from its copy (see <a
+href="#what-users-see-with-partition-mode">What users see with partition
+mode</a>), and the routers send every device to it. (For the first
+seconds no login is answered: the third's anycast check fails until
+partition mode is on, and the third may withdraw its addresses until the
+check has passed again.) But its etcd has no quorum, so its PostgreSQL
+isn't the primary, and nothing in the database can change.
+<code>setup.sh --alone</code> makes it the cluster alone; then you set
+up the other two again.</p>
+<p><strong>Only when both are lost for good.</strong> If they still run,
+cut off from the third, they are still a cluster, with a primary, and
+<code>--alone</code> makes a second one: there are then logins and
+changes on both sides, which nothing brings together again.
+<code>--alone</code> refuses while either answers on etcd's,
+PostgreSQL's or Patroni's ports, but from the third a cut network looks
+the same as a lost server: make sure at the sites.</p>
+<p><strong>1. On the third server</strong> (here West):</p>
+<pre class="bash"><code>sudo /root/turnkey/setup.sh --alone</code></pre>
+<p>It asks, and then:</p>
+<ul>
+<li><strong>etcd</strong> starts once with
+<code>--force-new-cluster</code>, which keeps its data and makes it the
+only member, and then as before.</li>
+<li><strong>Patroni</strong> doesn't make its PostgreSQL the primary by
+itself: in quorum mode, without the other standby, it can't tell that
+this one has every transaction. Once the lost primary's leader key has
+expired (in up to 30 s), <code>setup.sh</code> fails over to it. A
+transaction that only the other lost standby had confirmed is lost: an
+OTP of the last second or so may work once more.</li>
+<li><strong>Partition mode</strong> stays on until one of the other two
+answers again.</li>
+</ul>
+<pre class="text"><code>== alone: west
+  ok    the other two answer on none of etcd&#39;s, PostgreSQL&#39;s and Patroni&#39;s ports
+This makes west the cluster alone: its etcd forgets the other two servers, and its
+PostgreSQL becomes the primary. Only when both are lost for good: if they still run, cut off
+from here, they go on as a cluster of their own, and there are two primaries.
+Make west the cluster alone? Type yes: yes
+  ok    etcd: a cluster of one, west
+  ..    waiting for the lost primary&#39;s leader key to expire (12 s)
+  ok    Patroni: west&#39;s PostgreSQL is the primary
+  ..    partition mode stays on until one of the other two answers again; then the counters of the logins in between go into the database
+  ok    west is the cluster alone. Now set up the other two again: new servers with the same names and addresses, their folders, and setup.sh on both (see &quot;Two servers lost&quot; in the guide).</code></pre>
+<p>In the lab it took about a minute. <code>--yes</code> doesn't ask;
+run again, it finds nothing to do.</p>
+<p><strong>2. The other two:</strong> set them up again as in steps 1 to
+3 of <a href="#rebuild-a-turn-key-server">Rebuild a turn-key server</a>,
+and run <code>setup.sh</code> on both (at the same time is fine). Each
+adds its etcd member as a learner, one after the other, and copies the
+database from the third. Once their Patroni answers, the third leaves
+partition mode, and moves the counters of the logins in between into the
+database, before their anycast checks advertise.</p>
+<p><strong>3. Check all three</strong> with
+<code>setup.sh --status</code>, and move the primary back to the first
+server, as in step 5 there.</p>
+<ul>
+<li><strong>While it is alone</strong>, the third's
+<code>setup.sh --status</code> warns about etcd and Patroni, and its
+backups miss the counters of the logins in partition mode, which are
+only in its copy.</li>
+<li><code>tests/radiator/turnkey.sh</code> loses East1 and East2, logs
+in through West from its copy, runs <code>--alone</code> on West
+(refused while the two run, without a terminal and when not answered
+yes; then answered yes, and again with <code>--yes</code>), sets up the
+two again at the same time, and checks that the OTP used on West alone
+is refused after.</li>
+</ul>
+</section>
 <section id="change-a-turn-key-setup" class="level3">
 <h3>Change a turn-key setup</h3>
 <ul>
@@ -4022,16 +4202,20 @@ days; the tool warns 60 days before):
 folders and run <code>setup.sh</code> on each server, one at a
 time.</li>
 <li><strong>A server's name or address</strong> can't change this way
-once the cluster runs: etcd and Patroni keep them. That, and replacing a
-server, are not covered yet.</li>
+once the cluster runs: etcd and Patroni keep them. That isn't covered
+yet. A server lost or broken is set up again with the same ones: see <a
+href="#rebuild-a-turn-key-server">Rebuild a turn-key server</a>.</li>
 <li><strong>Start over:</strong>
 <code>sudo /root/turnkey/setup.sh --reset NAME</code>
 (<code>NAME</code>: the server's host name) stops the services and
-removes the server's etcd member, PostgreSQL cluster, anycast key and
-<code>setup.sh</code>'s state. Run it on all three, then
-<code>setup.sh</code> on all three again: the database is made anew,
-without the YubiKeys, which a backup can bring back (the backups in
-<code>/var/backups</code> stay).</li>
+removes the server's etcd data, PostgreSQL cluster, anycast key and
+<code>setup.sh</code>'s state (the backups in <code>/var/backups</code>
+stay). Then run <code>setup.sh</code>: on this server alone, while the
+other two run, it joins them again (see <a
+href="#rebuild-a-turn-key-server">Rebuild a turn-key server</a>); after
+<code>--reset</code> on all three, <code>setup.sh</code> on all three
+makes the database anew, without the YubiKeys, which a backup can bring
+back.</li>
 </ul>
 </section>
 </section>
@@ -4563,10 +4747,26 @@ stopped: see its output, fix the cause, and run it again there.</td>
 </tr>
 <tr>
 <td><code>setup.sh: error: this server's PostgreSQL isn't the primary</code></td>
-<td>The first server's first run found another primary (after a
-failover): move the primary to it with
+<td>The first server found another primary before it had made the
+database (a failover during its first run): move the primary to it with
 <code>patronictl switchover --candidate NAME --force</code>, and run
-<code>setup.sh</code> again.</td>
+<code>setup.sh</code> again. (Once the database is made, a first server
+that isn't the primary, as when rebuilt, leaves it as it is.)</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: --alone: the others answer (TCP ...)</code></td>
+<td>One of the other two still runs, so it isn't lost:
+<code>--alone</code> is only for when both are lost for good. For one
+lost server, see <a href="#rebuild-a-turn-key-server">Rebuild a turn-key
+server</a>.</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: etcd: the cluster has this server's member from before, and fewer than two servers run etcd</code></td>
+<td>A rebuilt server, or one after <code>--reset</code>, while one of
+the other two doesn't run etcd: start it there
+(<code>sudo systemctl start etcd</code>), and run <code>setup.sh</code>
+again. See <a href="#rebuild-a-turn-key-server">Rebuild a turn-key
+server</a>.</td>
 </tr>
 <tr>
 <td><code>setup.sh: error: an SSH connection comes from ADDRESS, outside the admin subnets</code></td>
@@ -5267,7 +5467,8 @@ input or the options. It needs Python 3.11 or later and
 <h3><code>setup.sh</code> (<code>yubikey-turnkey-setup.sh</code>)</h3>
 <pre class="text"><code>sudo ./setup.sh [--check] [--no-firewall]
 sudo ./setup.sh --status
-sudo ./setup.sh --reset NAME</code></pre>
+sudo ./setup.sh --reset NAME
+sudo ./setup.sh --alone [--yes]</code></pre>
 <p>In each server's folder from <code>yubikey-turnkey</code> (the
 package's <code>yubikey-turnkey-setup.sh</code>). It reads
 <code>server.env</code>, <code>secrets.env</code>,
@@ -5306,9 +5507,22 @@ copy of <code>server.env</code> in
 </tr>
 <tr>
 <td><code>--reset NAME</code></td>
-<td>Stop the services, and remove this server's etcd member, PostgreSQL
+<td>Stop the services, and remove this server's etcd data, PostgreSQL
 cluster, anycast key and state (<code>NAME</code>: its host name); the
-backups in <code>/var/backups</code> stay</td>
+backups in <code>/var/backups</code> stay. Then <code>setup.sh</code> on
+this server alone joins the other two again; after <code>--reset</code>
+on all three, it makes a new cluster</td>
+</tr>
+<tr>
+<td><code>--alone</code></td>
+<td>Only when the other two servers are lost for good: make this server
+the cluster alone, its etcd a cluster of one with its data, and its
+PostgreSQL the primary (see <a href="#two-servers-lost">Two servers
+lost</a>). It refuses while one of them answers, and asks first</td>
+</tr>
+<tr>
+<td><code>--yes</code></td>
+<td>With <code>--alone</code>: don't ask</td>
 </tr>
 </tbody>
 </table>

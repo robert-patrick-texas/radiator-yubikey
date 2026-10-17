@@ -42,7 +42,8 @@ These scripts:
   makes, from `site.toml`, a folder for each server with a `setup.sh` that
   installs and configures everything on it, and the settings for the
   routers and the devices; `setup.sh --status` then says whether a server
-  works, for you and for monitoring
+  works, for you and for monitoring, and a lost server is set up again
+  from its folder (two lost: `setup.sh --alone` on the third first)
 
 The scripts come as a Debian package, `radiator-yubikey`, which puts them in
 `/opt/radiator-yubikey`. `install.sh` installs it, with the packages that it
@@ -161,7 +162,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 
 ```bash
 tests/run-tests.sh                           # 48 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 145 + 133 + 63 + 212 + 49 + 155 checks with real Radiator, in Docker
+tests/radiator/run.sh ~/radiator-packages    # 145 + 133 + 63 + 212 + 49 + 255 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

@@ -2921,6 +2921,10 @@ scenario_turnkey() {
     setup_sh --status
     setup_sh --status --check
     setup_sh --help
+    # --alone: as root only, and with --yes at most (turnkey.sh runs it).
+    setup_sh --alone
+    setup_sh --alone --check
+    setup_sh --yes
 
     show out/east1/server.env out/east1/secrets.env out/east1/hosts out/east1/files.list \
          out/east1/db/anycast.csv out/east1/db/services out/east1/db/groups

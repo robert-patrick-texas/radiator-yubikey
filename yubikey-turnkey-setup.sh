@@ -25,7 +25,8 @@
 #     radiator   Radiator's configuration (radiator-groups.example.conf with
 #                this server's settings), its devices, and its database clause
 #     partition  partition mode (when on in site.toml)
-#     anycast    FRR, and the anycast check (yubikey-anycast.sh)
+#     anycast    FRR, and the anycast check (yubikey-anycast.sh), with its
+#                key and counter as the database has them
 #     backup     the daily backup (yubikey-backup.sh), and the first one
 #                (with [backup] in site.toml)
 #     firewall   ufw off, and the iptables rules (when on in site.toml)
@@ -35,6 +36,15 @@
 #   If it stops, fix the cause and run it again: it goes on where it
 #   stopped. It never removes a database, an etcd cluster or a PostgreSQL
 #   cluster that it didn't make, except with --reset.
+#   On a server rebuilt with the same name and addresses (a new disk, or
+#   --reset NAME on it alone) while the other two run, it joins them: it
+#   adds the server's etcd member again, Patroni copies the database (the
+#   first server's too, which then is a standby), and the anycast check
+#   goes on with its key from the database (renewed since, perhaps).
+#   While two servers' etcd is down, it stops at etcd: adding the member
+#   again needs both. When two servers are lost for good, '--alone' on the
+#   third makes it the cluster alone; then setup.sh on the other two, set
+#   up again, joins them to it.
 #   '--status' shows whether the server works, for people and for
 #   monitoring; it changes nothing.
 #
@@ -42,6 +52,7 @@
 #   sudo ./setup.sh [--check] [--no-firewall]
 #   sudo ./setup.sh --status
 #   sudo ./setup.sh --reset NAME
+#   sudo ./setup.sh --alone [--yes]
 #
 # OPTIONS
 #   -n, --check     Only the preflight checks: change nothing
@@ -55,11 +66,18 @@
 #                   yubikey-turnkey-setup.sh), it reads the copy of
 #                   server.env in /etc/yubikey-turnkey.
 #   --reset NAME    Start this server over (NAME: its host name): stop the
-#                   services, and remove its etcd member, PostgreSQL cluster,
-#                   anycast key and setup.sh's state. Run it on all three
-#                   servers, then setup.sh on all three again. The copy of
-#                   the settings and secrets in /etc/yubikey-turnkey stays,
-#                   and so do the backups in /var/backups.
+#                   services, and remove its etcd data, PostgreSQL cluster,
+#                   anycast key and setup.sh's state. Then setup.sh: on this
+#                   server alone, while the other two run, it joins them
+#                   again; after --reset on all three, setup.sh on all three
+#                   makes a new cluster. The copy of the settings and
+#                   secrets in /etc/yubikey-turnkey stays, and so do the
+#                   backups in /var/backups.
+#   --alone         Only when the other two servers are lost for good: make
+#                   this server the cluster alone (its etcd a cluster of
+#                   one, with its data, and its PostgreSQL the primary). It
+#                   refuses while one of them answers, and asks first.
+#   --yes           --alone: don't ask
 #
 # FILES (next to this script, from yubikey-turnkey)
 #   server.env, secrets.env   this server's settings, and the secrets that
@@ -109,9 +127,13 @@ ADMINS='' ADMIN_SUBNETS='' PARTITION='' FIREWALL='' BACKUP=''
 RADIATOR_PASSWORD='' RADIATOR_SCRAM=''
 declare -A ADMIN_SCRAM=()
 
-CHECK=0 NO_FIREWALL=0 RESET='' STATUS=0
+CHECK=0 NO_FIREWALL=0 RESET='' STATUS=0 ALONE=0 YES=0
 ENV_DIR=$HERE       # where server.env is (--status: or $KEEP)
 PROBLEMS=0          # preflight: things to fix
+REJOIN=0            # etcd: this server's member was added again
+REMOVED=0           # etcd: refused, as a member the cluster had removed
+LEARNER=''          # etcd: this server's member, while a learner
+START=$EPOCHSECONDS
 CHANGED=()          # install_files: the paths it changed
 
 die() {
@@ -130,6 +152,7 @@ usage() {
 Usage: sudo ./$PROG [--check] [--no-firewall]
        sudo ./$PROG --status
        sudo ./$PROG --reset NAME
+       sudo ./$PROG --alone [--yes]
 
 Sets up this server from its folder, made by yubikey-turnkey. Run it on all
 three servers at about the same time; run it again whenever the folder
@@ -141,6 +164,8 @@ Options:
   --status        Show whether this server works (changes nothing); exits
                   0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN
   --reset NAME    Start this server over (NAME: its host name)
+  --alone         The other two servers are lost for good: make this one
+                  the cluster alone (asks first; --yes: doesn't)
   -h, --help      Show this help
 EOF
 }
@@ -445,8 +470,143 @@ etcdctl_() {
         --endpoints "https://$IPV4:2379" --dial-timeout 2s --command-timeout 4s "$@"
 }
 
+# etcdctl_others ARGS...: etcdctl, at the other two servers' etcd.
+etcdctl_others() {
+    local ip eps=''
+    for ip in $IPV4S; do [[ $ip == "$IPV4" ]] || eps+=${eps:+,}https://$ip:2379; done
+    etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt --key /etc/etcd/tls/server.key \
+        --endpoints "$eps" --dial-timeout 2s --command-timeout 4s "$@"
+}
+
 etcd_ready() {
     [[ $(etcdctl_ endpoint health --cluster 2>/dev/null | grep -c 'is healthy') == 3 ]]
+}
+
+# etcd_peer_members: the members as the other two's etcd has them, from the
+# first that answers on its peer port, which needs no quorum: a line each,
+# ID NAME PEER-URL CLIENT-URL, with - for no name or client URL. (Over
+# HTTP/1.1: with HTTP/2, curl gets "Error in the HTTP2 framing layer".)
+etcd_peer_members() {
+    local ip
+    for ip in $IPV4S; do
+        [[ $ip == "$IPV4" ]] && continue
+        curl -sf --http1.1 --max-time 3 --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt \
+            --key /etc/etcd/tls/server.key "https://$ip:2380/members" 2>/dev/null | python3 -c '
+import json, sys
+for m in json.load(sys.stdin):
+    print("%x" % m["id"], m.get("name") or "-", m["peerURLs"][0], (m.get("clientURLs") or ["-"])[0])
+' 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# etcd_member ARGS...: etcdctl_others member ARGS; again, for up to 60 s,
+# while etcd says "unhealthy cluster" (it takes no member changes until it
+# has had quorum for 5 s, as when its servers have just started) or "too
+# many learner members" (another server's, being added at the same time).
+etcd_member() {
+    local out t=$SECONDS
+    until out=$(etcdctl_others member "$@" 2>&1); do
+        if [[ $out != *'unhealthy cluster'* && $out != *'too many learner members'* ]] \
+            || ((SECONDS - t >= 60)); then
+            printf '%s\n' "$out"
+            return 1
+        fi
+        sleep 2
+    done
+    printf '%s\n' "$out"
+}
+
+etcd_alone() {
+    die "etcd: the cluster has this server's member from before, and fewer than two servers run etcd, which adding it again needs. Start etcd on the other two (see \"Rebuild a turn-key server\" in the guide)"
+}
+
+# etcd_up: etcd_ready. When this server's etcd, started as in a new
+# cluster because the others answered nothing, stopped: the cluster has its
+# member from before (etcd refuses), and setup.sh stops; or the cluster has
+# it under another ID, having added it again before, and removed the one
+# this etcd started as: once the others have quorum, it is added again
+# (once). A member added again is a learner until it has caught up with
+# the leader: then it is promoted.
+etcd_up() {
+    local log out
+    etcd_ready && return 0
+    if [[ -n $LEARNER ]]; then
+        if out=$(etcdctl_others member promote "$LEARNER" 2>&1); then
+            info "etcd: promoted this server's member, which has caught up"
+            LEARNER=''
+        elif [[ $(tail -1 <<<"$out") == *'can only promote a learner member' ]]; then
+            LEARNER=''
+        fi
+    fi
+    systemctl -q is-active etcd && return 1
+    log=$(journalctl -u etcd --since "@$START" -o cat 2>/dev/null)
+    grep -q 'has already been bootstrapped' <<<"$log" && etcd_alone
+    if [[ $REMOVED == 0 ]] && grep -q 'permanently removed from the cluster' <<<"$log"; then
+        etcdctl_others member list >/dev/null 2>&1 || return 1
+        REMOVED=1
+        info "etcd: the others refused this server's etcd, started as in a new cluster: they have its member under another ID"
+        systemctl stop etcd 2>/dev/null
+        rm -rf /var/lib/etcd/default
+        etcd_rejoin
+        systemctl start --no-block etcd
+    fi
+    return 1
+}
+
+# etcd_rejoin: on a server whose etcd has no WAL and never ran with
+# setup.sh (new, rebuilt, or after --reset), whether the other two's
+# cluster has this server's member from before. One that ran has a client
+# URL: it is removed and added again, and this server's etcd joins the
+# cluster that exists. While the cluster is being made, the others list
+# this server's member by name, with no client URL; one added again but
+# not started yet has no name either. Without quorum the others can't
+# list, remove or add members, but their peer port says whether the
+# cluster has run: if not (or nothing answers: they don't run etcd yet),
+# etcd starts as in a new cluster; if so, a member that ran can't be added
+# again, and setup.sh stops.
+etcd_rejoin() {
+    local list quorum=1 line id name client out cluster
+    if list=$(etcdctl_others member list 2>/dev/null); then
+        list=$(awk -F', ' '{print $1, ($3 == "" ? "-" : $3), $4, ($5 == "" ? "-" : $5)}' <<<"$list")
+    elif list=$(etcd_peer_members) && [[ -n $(awk '$4 != "-"' <<<"$list") ]]; then
+        quorum=0
+    else
+        return 0
+    fi
+    line=$(awk -v u="https://$IPV4:2380" '$3 == u' <<<"$list")
+    read -r id name _ client <<<"$line"
+    [[ -n $line && $name != - && $client == - ]] && return 0
+    [[ $quorum == 0 && ( -z $line || $client != - ) ]] && etcd_alone
+    if [[ -n $line && $client != - ]]; then
+        out=$(etcd_member remove "$id") \
+            || die "etcd: cannot remove this server's member from before ($id): $out"
+        info "etcd: removed this server's member from before ($id), to add it again"
+        line=''
+    fi
+    if [[ -z $line ]]; then
+        # As a learner, which counts for no quorum, until it has caught up:
+        # if it never joined, a cluster of one (see --alone) would have none.
+        out=$(etcd_member add "$NAME" --learner --peer-urls "https://$IPV4:2380") \
+            || die "etcd: cannot add this server's member: $out"
+        # (etcdctl pads the ID with spaces to 16 characters.)
+        id=$(sed -n 's/^Member  *\([0-9a-f]*\) added.*/\1/p' <<<"$out")
+        cluster=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out")
+        info "etcd: added this server's member again ($id), as a learner until it has caught up"
+    else
+        # Added before, not started yet: the members as the others list them.
+        cluster=$(awk -v u="https://$IPV4:2380" -v n="$NAME" '{
+            printf "%s%s=%s", (NR > 1 ? "," : ""), ($3 == u ? n : ($2 == "-" ? "unstarted" NR : $2)), $3 }' <<<"$list")
+    fi
+    [[ -n $id && -n $cluster ]] || die "etcd: cannot tell this server's member and the cluster's: $out"
+    # Until it has joined, as a member of the cluster that exists, with its
+    # members (etcd refuses to join with others).
+    systemctl stop etcd 2>/dev/null
+    rm -rf /var/lib/etcd/default
+    sed -i -e 's/^ETCD_INITIAL_CLUSTER_STATE=new$/ETCD_INITIAL_CLUSTER_STATE=existing/' \
+        -e "s|^ETCD_INITIAL_CLUSTER=.*|ETCD_INITIAL_CLUSTER=$cluster|" /etc/default/etcd \
+        || die "cannot change /etc/default/etcd"
+    REJOIN=1 LEARNER=$id
 }
 
 etcd_step() {
@@ -470,13 +630,23 @@ etcd_step() {
     fi
     install_files etcd
     systemctl enable etcd 2>/dev/null
+    REJOIN=0
+    # (etcd itself takes a data directory without a WAL as none: a start it
+    # refused leaves one.)
+    if ! done_ etcd && [[ ! -d /var/lib/etcd/default/member/wal ]]; then etcd_rejoin; fi
     if [[ ${#CHANGED[@]} -gt 0 ]] && systemctl -q is-active etcd; then
         systemctl restart --no-block etcd
     else
         systemctl start --no-block etcd
     fi
-    wait_for "etcd on all three servers (run $PROG on the others)" "$WAIT" etcd_ready || exit 1
+    wait_for "etcd on all three servers (run $PROG on the others)" "$WAIT" etcd_up || exit 1
     mark etcd
+    if [[ $REJOIN == 1 ]]; then
+        # The folder's file again: its ETCD_INITIAL_* settings count no more.
+        install_files etcd >/dev/null
+        ok "etcd: joined the cluster again; 3 members healthy"
+        return
+    fi
     ok "etcd: 3 members healthy"
 }
 
@@ -488,13 +658,14 @@ for m in json.load(sys.stdin):
     print("%s=%s/%s" % (m["Member"], m["Role"].replace(" ", "_"), m["State"]))' 2>/dev/null
 }
 has_leader()  { grep -q '=Leader/running$' <<<"$(members)"; }
+leader()      { sed -n 's|=Leader/running$||p' <<<"$(members)"; }
 streaming()   { grep -Eq "^$NAME=(Quorum_Standby|Sync_Standby|Replica)/streaming$" <<<"$(members)"; }
 api() { curl -s -o /dev/null -w '%{http_code}' --max-time 3 --cacert /etc/patroni/tls/ca.crt "https://$1:8008/$2"; }
 local_primary() { [[ $(pg -c 'SELECT pg_is_in_recovery()' 2>/dev/null) == f ]]; }
 leading() { [[ $(api "$FQDN" primary) == 200 ]] && local_primary; }
 
 patroni_step() {
-    local dbs
+    local dbs lead
     step patroni
     if ! done_ patroni-config; then
         # The postgresql package made a cluster 18/main; Patroni makes its
@@ -523,11 +694,16 @@ patroni_step() {
         else
             systemctl start "$PATRONI_UNIT"
         fi
-    elif [[ $NAME == "$FIRST" ]]; then
+    elif [[ $NAME == "$FIRST" ]] && lead=$(leader) && [[ -z $lead || $lead == "$NAME" ]]; then
         systemctl start "$PATRONI_UNIT"
         wait_for "this server's Patroni to create the cluster" 600 leading || exit 1
     else
-        wait_for "$FIRST's Patroni to create the cluster (run $PROG there)" "$WAIT" has_leader || exit 1
+        if [[ $NAME == "$FIRST" ]]; then
+            # Rebuilt: the cluster runs without it.
+            info "the cluster exists, with $lead as its primary: this server copies it, as a standby"
+        else
+            wait_for "$FIRST's Patroni to create the cluster (run $PROG there)" "$WAIT" has_leader || exit 1
+        fi
         systemctl start "$PATRONI_UNIT"
         wait_for "this server to copy the database and stream from the primary" 1800 streaming || exit 1
     fi
@@ -551,8 +727,10 @@ database_step() {
         return
     fi
     if ! local_primary; then
-        if done_ database; then
+        # As after a failover, or on this server rebuilt.
+        if done_ database || db_loaded; then
             info "this server's PostgreSQL isn't the primary now: the database was made before; left as it is"
+            mark database
             return
         fi
         die "this server's PostgreSQL isn't the primary: move the primary here first (sudo patronictl -c $PATRONI switchover --candidate $NAME --force)"
@@ -681,9 +859,40 @@ partition_step() {
     ok "partition mode: yubikey-partition runs; Radiator uses $(readlink "$CONF_D/yubikey.conf")"
 }
 
+# anycast_key: the check's key on a server that has none (new, rebuilt, or
+# after --reset): the folder's, with the private ID and AES key that the
+# database has, which differ once the check renewed them, and the
+# database's counter, so that its first OTP is above the last one used.
+anycast_key() {
+    local dir=/var/lib/yubikey-anycast src=$HERE/files/var/lib/yubikey-anycast/key row pub priv aes made counter
+    [[ -f $dir/key ]] && return 0
+    row=$(pg_var yubikey "anycast-$NAME" \
+              "SELECT tokenid, userid, secret, extract(epoch FROM created)::bigint, counter FROM yubikeys WHERE username = :'v';") \
+        || die "cannot read anycast-$NAME's key in the database"
+    IFS='|' read -r pub priv aes made counter <<<"$row"
+    [[ -n $pub ]] || die "the database has no key for anycast-$NAME"
+    if [[ $pub != "$(sed -n 's/^public_id=//p' "$src")" ]]; then
+        bad "the database's key for anycast-$NAME (public ID $pub) isn't the one in the folder: make one again with yubikey-anycast.sh enroll"
+        return 0
+    fi
+    install -d -m 0700 "$dir" || die "cannot make $dir"
+    if [[ $priv == "$(sed -n 's/^private_id=//p' "$src")" ]]; then
+        put "$dir/key" 0600 root:root <"$src"
+    else
+        # AES keys are hex, or base64 as some imports store them.
+        [[ $aes =~ ^[0-9a-fA-F]{32}$ ]] || aes=$(perl -MMIME::Base64 -e 'print unpack("H*", decode_base64($ARGV[0]))' "$aes")
+        [[ $aes =~ ^[0-9a-fA-F]{32}$ ]] || die "anycast-$NAME's AES key in the database is neither hex nor base64"
+        sed -e "s/^private_id=.*/private_id=$priv/" -e "s/^aes_key=.*/aes_key=${aes,,}/" -e "s/^made=.*/made=$made/" "$src" \
+            | put "$dir/key" 0600 root:root
+        info "the anycast check's key from the database: renewed on $(date -u -d "@$made" +%F)"
+    fi
+    printf '%s\n' "$counter" | put "$dir/counter" 0600 root:root
+}
+
 anycast_step() {
     local restart_frr=0 out
     step anycast
+    anycast_key
     install_files anycast
     changed /etc/frr/frr.conf && restart_frr=1
     if grep -Eq '^(bgpd|bfdd)=no' /etc/frr/daemons; then
@@ -1076,7 +1285,71 @@ reset() {
     rm -f "$CONF_D"/yubikey.conf "$CONF_D"/yubikey-cluster.conf "$CONF_D"/yubikey-partition.conf
     ip addr del "$ANYCAST4/32" dev lo 2>/dev/null
     ip -6 addr del "$ANYCAST6/128" dev lo 2>/dev/null
-    ok "stopped etcd, Patroni, Radiator, the checks and the backups; removed their data (the backups in /var/backups stay). Run $PROG on all three servers again."
+    ok "stopped etcd, Patroni, Radiator, the checks and the backups; removed their data (the backups in /var/backups stay). Run $PROG: on this server alone, while the other two run, it joins them again; after --reset on all three, on all three."
+}
+
+# alone: when the other two servers are lost for good, this server the
+# cluster alone: its etcd a cluster of one, with its data (Patroni's), and
+# its PostgreSQL the primary. Then setup.sh on the other two, set up again,
+# adds their etcd members (as learners first) and copies the database.
+alone() {
+    [[ $(id -u) == 0 ]] || die "run it as root (sudo ./$PROG)"
+    done_ setup || die "--alone: setup.sh hasn't finished on this server: it isn't one of the cluster's"
+    step "alone: $NAME"
+    local ip port answers='' answer out
+    for ip in $IPV4S; do
+        [[ $ip == "$IPV4" ]] && continue
+        for port in 2379 2380 5432 8008; do
+            if timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null; then answers+=" $ip:$port"; fi
+        done
+    done
+    [[ -z $answers ]] || die "--alone: the others answer (TCP$answers): it is only for when both are lost for good"
+    ok "the other two answer on none of etcd's, PostgreSQL's and Patroni's ports"
+    if [[ $YES == 0 ]]; then
+        printf '%s\n' "This makes $NAME the cluster alone: its etcd forgets the other two servers, and its" \
+            "PostgreSQL becomes the primary. Only when both are lost for good: if they still run, cut off" \
+            "from here, they go on as a cluster of their own, and there are two primaries."
+        [[ -t 0 ]] || die "--alone: answer on a terminal, or add --yes"
+        read -r -p "Make $NAME the cluster alone? Type yes: " answer
+        [[ $answer == yes ]] || die "--alone: nothing changed"
+    fi
+    # etcd: once with --force-new-cluster, which keeps the data and makes
+    # this server its only member; then as before.
+    if ! etcd_one; then
+        printf 'ETCD_FORCE_NEW_CLUSTER=true\n' >>/etc/default/etcd
+        systemctl restart etcd || die "etcd didn't start as a cluster of one (journalctl -u etcd)"
+        install_files etcd >/dev/null
+        systemctl restart etcd || die "etcd didn't start (journalctl -u etcd)"
+        wait_for "etcd, a cluster of one" 60 etcd_one || exit 1
+    fi
+    ok "etcd: a cluster of one, $NAME"
+    # Patroni, in quorum mode, doesn't promote this server by itself: without
+    # the other standby, it can't tell that this one has every transaction.
+    # Once the lost primary's leader key has expired (in up to 30 s): a
+    # failover to this server.
+    if ! leading; then
+        wait_for "the lost primary's leader key to expire" 120 no_leader || exit 1
+        out=$(patronictl -c $PATRONI failover --candidate "$NAME" --force 2>&1) \
+            || die "Patroni: cannot fail over to $NAME: $out"
+        wait_for "this server's PostgreSQL to become the primary" 120 leading || exit 1
+    fi
+    ok "Patroni: $NAME's PostgreSQL is the primary"
+    if [[ $PARTITION == 1 ]]; then
+        info "partition mode stays on until one of the other two answers again; then the counters of the logins in between go into the database"
+    fi
+    ok "$NAME is the cluster alone. Now set up the other two again: new servers with the same names and addresses, their folders, and setup.sh on both (see \"Two servers lost\" in the guide)."
+}
+
+# etcd_one: this server's etcd, healthy, its only member.
+etcd_one() {
+    [[ $(etcdctl_ member list 2>/dev/null | wc -l) == 1 ]] && etcdctl_ endpoint health >/dev/null 2>&1
+}
+
+# no_leader: no member of Patroni's cluster leads, or this server.
+no_leader() {
+    local lead
+    lead=$(leader)
+    [[ -z $lead || $lead == "$NAME" ]]
 }
 
 main() {
@@ -1086,10 +1359,20 @@ main() {
             --no-firewall) NO_FIREWALL=1; shift ;;
             --reset)       RESET=${2:?--reset needs this server\'s host name}; shift 2 ;;
             --status)      STATUS=1; shift ;;
+            --alone)       ALONE=1; shift ;;
+            --yes)         YES=1; shift ;;
             -h|--help)     usage; exit 0 ;;
             *) printf '%s: unknown option %s (see --help)\n' "$PROG" "$1" >&2; exit 2 ;;
         esac
     done
+    if [[ $YES == 1 && $ALONE == 0 ]]; then
+        printf '%s: --yes goes with --alone (see --help)\n' "$PROG" >&2
+        exit 2
+    fi
+    if [[ $ALONE == 1 && ( $CHECK == 1 || $NO_FIREWALL == 1 || -n $RESET || $STATUS == 1 ) ]]; then
+        printf '%s: --alone goes alone, or with --yes (see --help)\n' "$PROG" >&2
+        exit 2
+    fi
     if [[ $STATUS == 1 ]]; then
         if [[ $CHECK == 1 || $NO_FIREWALL == 1 || -n $RESET ]]; then
             printf '%s: --status goes alone (see --help)\n' "$PROG" >&2
@@ -1107,6 +1390,7 @@ main() {
     read_env "$HERE/secrets.env"
     [[ -n $NAME && -n $VERSION ]] || die "$HERE/server.env is incomplete"
     if [[ -n $RESET ]]; then reset; exit 0; fi
+    if [[ $ALONE == 1 ]]; then alone; exit 0; fi
     if [[ $CHECK == 0 ]]; then
         [[ $(id -u) == 0 ]] || die "run it as root (sudo ./$PROG)"
         mkdir -p "$STATE"

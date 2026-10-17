@@ -41,6 +41,29 @@
   `secrets.toml` or the certificate changes. Without `[backup]` it says
   that the servers make no backups. See the guide's
   [Turn-key backups](docs/guide.md#turn-key-backups).
+- Turn-key: a lost server is set up again with the same name and
+  addresses, while the other two run: its folder and `setup.sh`, on a new
+  server, or after `setup.sh --reset NAME` on it alone. `setup.sh` removes
+  the server's etcd member from before and adds it again (as a learner
+  until it has caught up), and its etcd joins the cluster that runs;
+  Patroni copies the database, on the first server too, which is then a
+  standby (`--status` says to move the primary back); the database is
+  left as it is; and the anycast check takes its key (renewed since,
+  perhaps) and counter from the database. While two
+  servers' etcd is down, it stops at etcd, before starting it, and says
+  why; when all three's was, it joins once the others run again. The
+  runbook says what to do when a server is lost. See the guide's
+  [Rebuild a turn-key server](docs/guide.md#rebuild-a-turn-key-server).
+- Turn-key: `setup.sh --alone`, for when two servers are lost for good: on
+  the third, it makes its etcd a cluster of one, with its data, and its
+  PostgreSQL the primary (which Patroni, in quorum mode, doesn't do by
+  itself), after checking that the other two answer on none of etcd's,
+  PostgreSQL's and Patroni's ports, and asking (`--yes`: it doesn't). Then
+  `setup.sh` on the other two, set up again, joins them to it, at the same
+  time too, and the third's partition mode moves the counters of the
+  logins in between into the database. The runbook has a "Two servers
+  lost" section. See the guide's
+  [Two servers lost](docs/guide.md#two-servers-lost).
 
 ### Changed
 
@@ -50,10 +73,13 @@
   says where the backups are.
 - `yubikey-turnkey` says `removed out/FILE` for a file of its own it
   removed from `out/`.
+- `setup.sh --reset NAME` says what to run next: `setup.sh` on this server
+  alone joins the other two again; after `--reset` on all three, on all
+  three.
 
 ### Tests
 
-- `tests/radiator/turnkey.sh` (155 checks): `setup.sh --status` on
+- `tests/radiator/turnkey.sh` (255 checks): `setup.sh --status` on
   the three servers, from the package without the folder, and not as root;
   and what it says with etcd stopped on one server, a router down, the
   primary moved, the anycast addresses withdrawn, a folder copied but not
@@ -63,8 +89,17 @@
   key pair made as the guide says; a restore on the primary after a login,
   a deleted YubiKey, a group change and a renewed anycast key (what it
   undoes, the counters and the checks' keys it keeps, logins right after),
-  refused on a standby; and after `--reset` on all three, the last backup
-  restored into the new cluster.
+  refused on a standby; servers rebuilt with the same names and addresses
+  (West, whose check renewed its key, and East1, lost while it was the
+  primary, on new containers, with logins going on meanwhile, etcd's
+  member added again, the check's key and counter from the database, and
+  the primary moved back; East2 in place after `--reset`); `setup.sh`
+  stopping at etcd while East2's is stopped, and joining when all three's
+  was; two servers lost (East1 and East2: logins through West from its
+  copy, `setup.sh --alone` on West, refused while they run, without a
+  terminal and when not answered yes, the two set up again at the same time, the OTP used on West
+  alone refused after, the primary moved back); and after `--reset` on all
+  three, the last backup restored into the new cluster.
 - `tests/radiator/geo.sh` (212 checks): the guide's steps for automatic
   backups on the three sites, a backup checked and decrypted on the
   client, and restored on the primary at its prompt after a login (the OTP
@@ -72,7 +107,8 @@
 - `tests/radiator/package.sh`: the backups' units are installed, neither
   enabled nor started, and pass `systemd-analyze verify`.
 - `tests/run-tests.sh` (48 scenarios): `turnkey` runs `setup.sh --status`
-  as a normal user and with another option, and checks `secrets.toml.cms`
+  as a normal user and with another option, `--alone` as a normal user and
+  with another option, and `--yes` alone, and checks `secrets.toml.cms`
   (it decrypts to `secrets.toml`, is made again only when it or the
   certificate changes, and goes with `[backup]`); `turnkey_errors` the
   checks of `[backup]`; `pg_partition` shows the copy that isn't updated;
