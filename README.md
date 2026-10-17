@@ -34,6 +34,10 @@ These scripts:
   which accounts may log in to which devices, at which TACACS+ privilege
   level, with which commands and RADIUS reply attributes
   (`radiator-groups.example.conf`)
+- back up a PostgreSQL database every day on each server, encrypted for a
+  certificate whose private key is kept elsewhere, check the backups on
+  any machine, and restore one without making used OTPs valid again
+  (`yubikey-backup.sh`)
 - set up all of that on three sites from one input file: `yubikey-turnkey`
   makes, from `site.toml`, a folder for each server with a `setup.sh` that
   installs and configures everything on it, and the settings for the
@@ -129,6 +133,7 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | Suspend a lost YubiKey | `sudo ./yubikey-db.sh disable alice vvccccbbcdef` |
 | Remove a user | `sudo ./yubikey-db.sh delete alice` |
 | Encrypted backup | `sudo ./yubikey-db.sh export - \| gpg -e -r backup@example.com > yubikeys.csv.gpg` |
+| Daily encrypted backups (PostgreSQL) | `sudo systemctl enable --now yubikey-backup.timer` (see [the guide](docs/guide.md#automatic-backups)) |
 | Move to PostgreSQL | `./yubikey-db-migrate.sh /etc/radiator/db/yubicred.db` (see [the guide](docs/guide.md#move-from-sqlite-to-postgresql)) |
 
 ## Repository
@@ -142,6 +147,8 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 | `radiator.example.conf` | Radiator configuration for YubiKey logins |
 | `yubikey-partition.sh` | Partition mode: a copy of the keys on each server, used while it can reach no other site; with `yubikey-partition.service` and `yubikey-partition.example.conf` |
 | `yubikey-anycast.sh` | Advertises the anycast addresses (through FRR) only while the local Radiator accepts logins; with `yubikey-anycast.service` and `yubikey-anycast.example.conf` |
+| `yubikey-backup.sh` | Daily encrypted backups of PostgreSQL, and their check and restore; with `yubikey-backup.service`, `yubikey-backup.timer` and `yubikey-backup.example.conf` |
+| `yubikey-turnkey`, `yubikey-turnkey-setup.sh` | The turn-key setup of three sites from `site.toml` (see `site.example.toml`) |
 | `users.example.csv` | Sample CSV file (test values only) |
 | `VERSION` | The version, which every script reads from it (`-V` shows it) |
 | `docs/guide.md` | The guide; `docs/build-guide.sh` makes `yubikey-db-guide.html` from it |
@@ -153,8 +160,8 @@ and to give them one address, [Anycast](docs/guide.md#anycast).
 ## Testing
 
 ```bash
-tests/run-tests.sh                           # 40 scenarios; PostgreSQL ones need a local server
-tests/radiator/run.sh ~/radiator-packages    # 134 + 62 + 191 + 49 checks with real Radiator, in Docker
+tests/run-tests.sh                           # 48 scenarios; PostgreSQL ones need a local server
+tests/radiator/run.sh ~/radiator-packages    # 145 + 133 + 63 + 212 + 49 + 155 checks with real Radiator, in Docker
 ```
 
 See [Testing](docs/guide.md#testing) in the guide.

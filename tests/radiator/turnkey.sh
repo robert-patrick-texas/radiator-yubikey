@@ -32,8 +32,13 @@
 # West withdrawn from both of its routers when only its TACACS+ login
 # fails, and when its check stops; setup.sh --status, when all is well and
 # when etcd, a router, the primary, the anycast check or the folder isn't;
-# the firewall; setup.sh run again (nothing changes or restarts); a
-# reboot; a new device from site.toml.
+# the backups (setup.sh's first, the daily ones on a standby, how many it
+# keeps, --status when one is old or the timer is off, a check on the
+# admin's machine, a restore on the primary: what it undoes, the counters
+# and the anycast checks' keys it keeps, and a refusal on a standby); the
+# firewall; setup.sh run again (nothing changes or restarts); a reboot; a
+# new device from site.toml; new certificates; --reset on all three, then
+# the last backup restored into the new cluster.
 #
 # Needs Docker, usable without sudo. KEEP=1 leaves the containers running.
 # Exits 0 when every check passes.
@@ -156,6 +161,11 @@ docker volume create yk-tk-lab >/dev/null || exit 1
 # The admins' machine: the packages, and site.toml.
 lab() { docker run --rm -v "$root:/repo:ro" -v "$rads:/radiator:ro" -v yk-tk-lab:/lab "$image" bash -c "$1"; }
 lab 'mkdir -p /lab/pkgs && /repo/packaging/build-deb.sh /lab/pkgs >/dev/null && cp /radiator/*.deb /lab/pkgs/' || exit 1
+# The backups' key pair, as the guide makes it (with the passphrase given
+# here instead of asked).
+lab 'cd /lab && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -pass pass:lab-only -out backup.key \
+     && openssl req -new -x509 -key backup.key -passin pass:lab-only -days 7300 -subj "/CN=yubikey backups" -out backup.crt' \
+    || exit 1
 site_toml() {
     cat <<EOF
 # The lab of tests/radiator/turnkey.sh.
@@ -231,6 +241,10 @@ access = [ { devices = "core", level = 15, reply = 'Reply-Message="netadmins"' }
 [[group]]
 name = "helpdesk"
 access = [ { devices = "access", level = 1, rules = ["permit service=shell cmd=show"] } ]
+
+[backup]
+certificate = "backup.crt"
+keep = 3
 $1
 EOF
 }
@@ -486,6 +500,82 @@ check "with access to unlisted" PASS "$(tac "$ANY4" "$CATCH_KEY" 172.31.100.20 a
 check "the check's user is refused from a device" "REJECT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" anycast-west x:y)"
 
 echo
+echo "== Backups"
+for n in "${SITES[@]}"; do
+    check "$n: setup.sh made the first backup, for the group adm" "640 root:adm" \
+        "$(on "$n" 'stat -c "%a %U:%G" /var/backups/yubikey-db.cms.0')"
+    check_match "$n: the daily timer, next at about 03:00" '^active .* 03:[0-3][0-9]:[0-9]{2} ' \
+        "$(on "$n" 'echo "$(systemctl is-active yubikey-backup.timer) $(systemctl show -P NextElapseUSecRealtime yubikey-backup.timer)"')"
+done
+check "west: secrets.toml, encrypted, from the folder" same \
+    "$(on west 'cmp -s /var/backups/yubikey-turnkey-secrets.toml.cms /lab/out/secrets.toml.cms && echo same')"
+for _ in 1 2 3; do on west 'systemctl start yubikey-backup.service'; done
+check "west: three more, as the timer makes them: it keeps 3" "yubikey-db.cms.0 yubikey-db.cms.1 yubikey-db.cms.2" \
+    "$(on west 'cd /var/backups && ls yubikey-db.cms.* | paste -sd" "')"
+check_match "west: from its own PostgreSQL, a standby" '^made /var/backups/yubikey-db\.cms\.0 \([0-9]+ KB, of database yubikey on a standby\); keeping 3$' \
+    "$(on west 'journalctl -u yubikey-backup -o cat | grep "^made" | tail -1')"
+check_status "west: --status OK" west '^0 west: OK$'
+check_match "with its line" '^  ok    backups: the newest backup is 0 min old, 3 of 3 kept$' "$(on west 'grep "backups:" /tmp/status.out')"
+on east2 'touch -d "-30 hours" /var/backups/yubikey-db.cms.0'
+check_status "east2: the newest 30 hours old: WARNING" east2 \
+    '^1 east2: WARNING - backups: the newest backup is 30 h old: none was made in the last 26 hours'
+on east2 'systemctl start yubikey-backup.service'
+check_status "a new one: OK" east2 '^0 east2: OK$'
+on east2 'systemctl stop yubikey-backup.timer'
+check_status "the timer stopped: WARNING" east2 '^1 east2: WARNING - backups: the daily timer is off'
+on east2 'systemctl start yubikey-backup.timer'
+check_status "started: OK" east2 '^0 east2: OK$'
+
+# The admin fetches east1's newest, checks it, and decrypts it on their
+# machine, with the key (in /lab); the dump goes to the primary.
+on east1 'systemctl start yubikey-backup.service'
+fetch() { on "$1" "cat $2" | docker exec -i yk-tk-nas bash -c "cat >$3"; }
+put() { on nas "cat $1" | docker exec -i "yk-tk-$2" bash -c "umask 077 && cat >$3"; }
+fetch east1 /var/backups/yubikey-db.cms.0 /root/east1.cms
+out=$(on nas 'bash /repo/yubikey-backup.sh check --key /lab/backup.key --passin pass:lab-only /root/east1.cms')
+check_match "the admin's machine: it decrypts and reads back whole" \
+    '^/root/east1\.cms: a whole backup of the YubiKey database, made [0-9-]+ [0-9:]+ UTC \(PostgreSQL 18' "$(head -1 <<<"$out")"
+check "with the YubiKeys, the service accounts and the groups" \
+    "  it holds 5 YubiKeys (of 5 users), 4 service accounts, 4 groups" "$(tail -1 <<<"$out")"
+on nas 'bash /repo/yubikey-backup.sh decrypt --key /lab/backup.key --passin pass:lab-only /root/east1.cms /root/east1.dump >/dev/null' \
+    || exit 1
+put /root/east1.dump east1 /root/east1.dump
+put /root/east1.dump east2 /root/east1.dump
+# Since that backup: alice logs in (her counters move ahead), bob's YubiKey
+# is deleted, svc.backup leaves the group backup, and West's check renews
+# its key.
+otp "${ALICE[@]}"
+USED=$OTP
+check "alice logs in after the backup" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$USED")"
+admin 'delete bob vvccccbbcdeg' >/dev/null 2>&1 </dev/null
+admin 'member delete backup svc.backup' >/dev/null 2>&1 </dev/null
+check_match "west's check renews its key" '^renewed the key of anycast-west' \
+    "$(on west 'systemctl stop yubikey-anycast && /opt/radiator-yubikey/yubikey-anycast.sh renew; systemctl start yubikey-anycast')"
+check "east2, a standby: no restore there" \
+    "3 yubikey-backup.sh: error: this server's PostgreSQL is a standby: restore on the primary" \
+    "$(on east2 'out=$(/opt/radiator-yubikey/yubikey-backup.sh restore --yes /root/east1.dump 2>&1); echo "$? $out"')"
+out=$(on east1 '/opt/radiator-yubikey/yubikey-backup.sh restore --yes /root/east1.dump 2>&1'); rc=$?
+check "east1, the primary: the restore" 0 "$rc"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+check "it says that bob's YubiKey comes back" "  YubiKeys deleted since the backup, which come back: bob vvccccbbcdeg" \
+    "$(grep '^  YubiKeys' <<<"$out")"
+check "and the group's member" "  Groups changed since the backup, which are put back as they were: backup (members)" \
+    "$(grep '^  Groups' <<<"$out")"
+check "it keeps alice's counters, and the three checks' keys" \
+    "Kept the counters of 1 YubiKey(s) that were ahead, and the keys of 3 anycast check(s)." "$(tail -1 <<<"$out")"
+check "alice's OTP from after the backup: still refused" "REJECT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$USED")"
+otp "${ALICE[@]}"
+check "her next one: accepted" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
+check "bob's YubiKey is back" 1 "$(admin 'list bob' 2>/dev/null </dev/null | grep -c vvccccbbcdeg)"
+check "svc.backup is in the group backup again" PASS "$(tac "$ANY4" "$CORE_KEY" "$NAS4" authen svc.backup backup-password-1234)"
+sleep 10
+check "west's renewed key stays: all three still advertise" "west,east1,east2 west,east1,east2" \
+    "$(until_eq 30 "west,east1,east2 west,east1,east2" routes rtr1)"
+check_match "west's check logs in" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' \
+    "$(on west '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+check_status "east1: --status OK" east1 '^0 east1: OK$'
+
+echo
 echo "== West withdraws when only its TACACS+ login fails, from both routers"
 admin 'service disable svc.anycast-west' >/dev/null 2>&1 </dev/null
 check "rtr1: West gone" "east1,east2 east1,east2" "$(until_eq 40 "east1,east2 east1,east2" routes rtr1)"
@@ -561,7 +651,8 @@ site_toml '[[device]]
 address = "172.31.100.20"
 group = "lab2"' | docker run --rm -i -v yk-tk-lab:/lab "$image" bash -c 'cat >/lab/site.toml' || exit 1
 out=$(gen '-p /lab/pkgs site.toml')
-check_match "the generator writes the new device's file" 'clients.d/lab2.conf' "$out"
+check_match "the generator writes the folders again" 'out/east1/: [0-9]+ written' "$out"
+check "with the new device's file in each" 3 "$(lab 'ls /lab/out/*/files/etc/radiator/clients.d/lab2.conf | wc -l')"
 LAB2_KEY=$(secret 'device|172.31.100.20|tacacs_key')
 for n in "${SITES[@]}"; do
     on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
@@ -588,7 +679,9 @@ served() {
 }
 old=$(served "east1.$DOMAIN" 8008)
 out=$(gen '--renew-certs -p /lab/pkgs site.toml')
-check_match "the generator makes new ones" "out/east1/: 4 written" "$out"
+# (In each folder the certificate and key, for etcd and for Patroni, and the
+# copy of secrets.toml.)
+check_match "the generator makes new ones" "out/east1/: 5 written" "$out"
 for n in east2 west east1; do
     on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
     out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
@@ -633,6 +726,26 @@ check "Patroni: a new cluster" "east1=leader east2=quorum west=quorum" "$(until_
 check "rtr1: all three advertise" "west,east1,east2 west,east1,east2" "$(until_eq 30 "west,east1,east2 west,east1,east2" routes rtr1)"
 otp "${ALICE[@]}"
 check "the database is new: alice's YubiKey isn't in it" "REJECT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
+
+# As after losing the whole cluster: the last backup, restored into the new
+# one. (The backups stayed; setup.sh made no new one, as one was there.)
+check "east1: the backups stay after --reset" "yubikey-db.cms.0 yubikey-db.cms.1" \
+    "$(on east1 'cd /var/backups && ls yubikey-db.cms.* | paste -sd" "')"
+fetch east1 /var/backups/yubikey-db.cms.0 /root/last.cms
+on nas 'bash /repo/yubikey-backup.sh decrypt --key /lab/backup.key --passin pass:lab-only /root/last.cms /root/last.dump >/dev/null' \
+    || exit 1
+put /root/last.dump east1 /root/last.dump
+out=$(on east1 '/opt/radiator-yubikey/yubikey-backup.sh restore --yes /root/last.dump 2>&1'); rc=$?
+check "east1: the last backup, restored into the new cluster" 0 "$rc"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+check_match "the new cluster's anycast keys stay" 'and the keys of 3 anycast check\(s\)\.$' "$(tail -1 <<<"$out")"
+otp "${ALICE[@]}"
+check "alice logs in again" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
+check "the groups are back: svc.backup over TACACS+" PASS "$(tac "$ANY4" "$CORE_KEY" "$NAS4" authen svc.backup backup-password-1234)"
+sleep 10
+check "rtr1: all three still advertise" "west,east1,east2 west,east1,east2" \
+    "$(until_eq 30 "west,east1,east2 west,east1,east2" routes rtr1)"
+for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
 
 rm -rf -- "$work"
 echo

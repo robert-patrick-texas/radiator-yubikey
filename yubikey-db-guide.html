@@ -432,6 +432,21 @@ href="#anycast">Anycast</a>); with <code>yubikey-anycast.service</code>
 and <code>yubikey-anycast.example.conf</code>.</td>
 </tr>
 <tr>
+<td><code>yubikey-backup.sh</code></td>
+<td>Backs up the PostgreSQL database every day, encrypted for a
+certificate whose key is kept elsewhere, checks and decrypts the
+backups, and restores one (see <a href="#automatic-backups">Automatic
+backups</a>); with <code>yubikey-backup.service</code>,
+<code>yubikey-backup.timer</code> and
+<code>yubikey-backup.example.conf</code>.</td>
+</tr>
+<tr>
+<td><code>yubikey-turnkey</code>, <code>yubikey-turnkey-setup.sh</code>,
+<code>site.example.toml</code></td>
+<td>Make and run the setup of three sites from one input file (see <a
+href="#turn-key-setup">Turn-key setup</a>).</td>
+</tr>
+<tr>
 <td><code>users.example.csv</code></td>
 <td>A sample bulk-import file (test values only).</td>
 </tr>
@@ -701,7 +716,7 @@ standby is promoted, and one held for 5 s, then rejected, when none is),
 the replay window (see <a href="#two-database-servers">Two database
 servers</a>), and the same OTP sent to both Radiator servers at the same
 moment.</li>
-<li><code>geo.sh</code>, 196 checks with three containers, one per site,
+<li><code>geo.sh</code>, 212 checks with three containers, one per site,
 each running systemd with etcd, PostgreSQL under Patroni, Radiator, FRR
 and <code>yubikey-anycast.sh</code> from the package, set up as in <a
 href="#three-sites">Three sites</a> and <a href="#anycast">Anycast</a>,
@@ -721,30 +736,36 @@ primary's site off, takes two servers down at once, and breaks the link
 between the East sites again. Each time it checks which logins are
 accepted, which OTPs are replays, that the cluster recovers, which
 servers the router has anycast routes from, and which server answers the
-client. The containers have the <code>SYS_ADMIN</code> capability (for
-systemd) and <code>NET_ADMIN</code> (for traffic control and addresses
-in their own network), but aren't privileged. Docker sets the two kernel
-settings of <a href="#set-up-anycast-on-each-server">Set up anycast on
-each server</a>, step 2, in the containers (<code>--sysctl</code>); the
+client. Last, it sets up the <a href="#automatic-backups">automatic
+backups</a> with the guide's steps (the key pair made on the client, as
+the admins' machine), checks and decrypts one there, and restores it on
+the primary, at its prompt, after a login: the OTP stays used, and the
+sites go on logging users in and advertising. The containers have the
+<code>SYS_ADMIN</code> capability (for systemd) and
+<code>NET_ADMIN</code> (for traffic control and addresses in their own
+network), but aren't privileged. Docker sets the two kernel settings of
+<a href="#set-up-anycast-on-each-server">Set up anycast on each
+server</a>, step 2, in the containers (<code>--sysctl</code>); the
 step's commands themselves were run in a container whose kernel settings
 it could change for its own network only.</li>
 <li><code>package.sh</code>, 49 checks of the package and
 <code>install.sh</code>: the package builds the same twice, lintian
 finds nothing in it, and it puts nothing outside
-<code>/opt/radiator-yubikey</code> but its two units. Then, on fresh
-Ubuntu 26.04 containers (<code>apt-get</code> in them needs network
-access): without Radiator, where <code>install.sh</code> stops, or goes
-on with <code>--yes</code>; with Radiator Software's packages; with
-Radiator's source unpacked in <code>/opt/radiator/radiator</code>; and
-with it installed with <code>make install</code> (taken from the
+<code>/opt/radiator-yubikey</code> but its units. Then, on fresh Ubuntu
+26.04 containers (<code>apt-get</code> in them needs network access):
+without Radiator, where <code>install.sh</code> stops, or goes on with
+<code>--yes</code>; with Radiator Software's packages; with Radiator's
+source unpacked in <code>/opt/radiator/radiator</code>; and with it
+installed with <code>make install</code> (taken from the
 <code>radiator</code> package, which holds Radiator's source
 distribution). Each Radiator then accepts a login and rejects the same
 OTP again. Last, under systemd: units installed by hand as this guide
 said before the package, replaced with <code>install.sh</code>'s
-commands; the package's units neither enabled nor started by the
-install, restarted by an upgrade only while they run, stopped by a
-removal, and gone after a purge.</li>
-<li><code>turnkey.sh</code>, 114 checks of <a href="#turn-key-setup">the
+commands; the package's units (and the backups' timer) neither enabled
+nor started by the install, and found sound by
+<code>systemd-analyze verify</code>, restarted by an upgrade only while
+they run, stopped by a removal, and gone after a purge.</li>
+<li><code>turnkey.sh</code>, 155 checks of <a href="#turn-key-setup">the
 turn-key setup</a>: <code>yubikey-turnkey</code> makes the folders from
 a <code>site.toml</code> with two routers at West's site, and
 <code>setup.sh</code> runs on three fresh Ubuntu 26.04 containers
@@ -761,12 +782,20 @@ its routers when only its TACACS+ login fails, and when its check stops;
 <code>setup.sh --status</code> (OK on all three, also without the
 folder; and what it says with etcd stopped on one server, a router down,
 the primary moved, West withdrawn, and a folder copied but not set up);
-the firewall (PostgreSQL closed to a machine outside the admin subnets,
-Patroni's REST API open to the admins); <code>setup.sh</code> run again
-(nothing installed or restarted); a reboot; a new device added in
-<code>site.toml</code>; new certificates, one server at a time (etcd,
+the <a href="#turn-key-backups">backups</a> (the first, made by
+<code>setup.sh</code>, more on a standby, how many it keeps,
+<code>--status</code> with one 30 hours old and with the timer stopped;
+one checked and decrypted on the admins' machine, with a key pair made
+as this guide says, and restored on the primary after a login, a deleted
+YubiKey, a group change and a renewed anycast key: what it undoes, the
+counters and keys it keeps, logins right after, and no restore on a
+standby); the firewall (PostgreSQL closed to a machine outside the admin
+subnets, Patroni's REST API open to the admins); <code>setup.sh</code>
+run again (nothing installed or restarted); a reboot; a new device added
+in <code>site.toml</code>; new certificates, one server at a time (etcd,
 Patroni and PostgreSQL present them); and <code>--reset</code> on all
-three, then <code>setup.sh</code> again.</li>
+three, then <code>setup.sh</code> again, and the last backup restored
+into the new cluster.</li>
 </ul>
 <pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 35 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)</code></pre>
@@ -775,9 +804,9 @@ and ends with a count, such as
 <code>Radiator 4.30-1: 145 passed, 0 failed</code> (and
 <code>133 passed</code> for <code>groups.sh</code>),
 <code>Two database servers: 63 passed, 0 failed</code>,
-<code>Three sites: 196 passed, 0 failed</code>,
+<code>Three sites: 212 passed, 0 failed</code>,
 <code>Package: 49 passed, 0 failed</code> and
-<code>Turnkey: 114 passed, 0 failed</code>. Run them again with each new
+<code>Turnkey: 155 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -896,7 +925,10 @@ Nothing is missing.</code></pre>
 <code>yubikey-partition.service</code> and
 <code>yubikey-anycast.service</code>, for <a
 href="#partition-mode">Partition mode</a> and <a
-href="#anycast">Anycast</a>, but neither enables nor starts them.</p>
+href="#anycast">Anycast</a>, and <code>yubikey-backup.service</code>
+with <code>yubikey-backup.timer</code>, for <a
+href="#automatic-backups">Automatic backups</a>, but enables and starts
+none of them.</p>
 <p>The examples in this guide run from
 <code>/opt/radiator-yubikey</code>
 (<code>cd /opt/radiator-yubikey</code>). With SQLite, run the scripts
@@ -925,8 +957,9 @@ only:</p>
 <pre class="bash"><code>sudo git clone https://github.com/robert-patrick-texas/radiator-yubikey.git /opt/radiator-yubikey
 cd /opt/radiator-yubikey
 sudo ./install.sh</code></pre>
-<p>For partition mode and anycast, install their units yourself:
-<code>sudo install -m 0644 yubikey-partition.service yubikey-anycast.service /etc/systemd/system/</code>,
+<p>For partition mode, anycast and the backups, install their units
+yourself:
+<code>sudo install -m 0644 yubikey-partition.service yubikey-anycast.service yubikey-backup.service yubikey-backup.timer /etc/systemd/system/</code>,
 then <code>sudo systemctl daemon-reload</code>. To build the package
 from a clone, see <a
 href="#packagingbuild-debsh"><code>packaging/build-deb.sh</code></a>.</p>
@@ -1571,10 +1604,118 @@ valid again. <code>export FILE</code> writes a file with mode
 <code>--force</code>.</p>
 <p>You can also back up the database itself: for SQLite,
 <code>sudo sqlite3 /etc/radiator/db/yubicred.db ".backup '/root/yubicred-backup.db'"</code>
-takes a consistent copy while Radiator runs; for PostgreSQL, use
-<code>pg_dump</code>. Only such a backup holds the <a
-href="#groups-and-tacacs">service accounts and groups</a> too. Every
-backup holds every AES key: keep it encrypted.</p>
+takes a consistent copy while Radiator runs; for PostgreSQL,
+<code>yubikey-backup.sh</code> makes one every day (see <a
+href="#automatic-backups">Automatic backups</a>). Only such a backup
+holds the <a href="#groups-and-tacacs">service accounts and groups</a>
+too. Every backup holds every AES key: keep it encrypted.</p>
+</section>
+<section id="automatic-backups" class="level3">
+<h3>Automatic backups</h3>
+<p>For PostgreSQL, <code>yubikey-backup.sh</code> backs up the whole
+database every day on each database server: the YubiKeys, the service
+accounts and the groups.</p>
+<ul>
+<li><strong>From the server's own PostgreSQL.</strong>
+<code>pg_dump</code> reads the local database, a standby's too, so each
+server of two or three keeps its own backups.</li>
+<li><strong>Encrypted for a key that isn't on the servers.</strong> The
+dump goes straight into <code>openssl cms</code>: AES-256-GCM, with a
+new key for each file, wrapped with RSA-OAEP for a certificate whose
+private key you keep elsewhere. It is never on disk in clear, and a copy
+of a backup is of no use without the key.</li>
+<li><strong>Kept on the server.</strong>
+<code>/var/backups/yubikey-db.cms.0</code> is the newest: each run moves
+the others up one (<code>.0</code> to <code>.1</code>, <code>.1</code>
+to <code>.2</code>, ...), and keeps 7 (<code>.0</code> to
+<code>.6</code>; <code>KEEP</code> sets how many). They are mode
+<code>0640</code>, group <code>adm</code>, so an admin in that group can
+fetch them.</li>
+<li><strong>Checked and restored with the same script.</strong>
+<code>check</code> decrypts a backup and reads it back whole, and
+<code>decrypt</code> writes the dump, on any machine with
+<code>openssl</code> and <code>pg_restore</code>, and only when the file
+is whole and unchanged (<code>openssl</code> alone writes out what it
+decrypted even then). <code>restore</code>, on the primary, says what it
+would undo and asks first.</li>
+</ul>
+<p><strong>1. Make the key pair</strong> on an admin's machine, not on a
+server:</p>
+<pre class="bash"><code>openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey backups&quot; -out backup.crt</code></pre>
+<p><code>openssl</code> asks for a passphrase for the key (twice), and
+for it again to sign the certificate. Keep <code>backup.key</code> in
+two places, apart from each other and from the servers (two USB drives
+in two safes, say), and the passphrase on its own (a password manager):
+whoever has both can read every AES key in every backup. Test that you
+can decrypt (step 4) before you rely on it. <code>backup.crt</code>
+isn't secret. It lasts 20 years, but the backups decrypt after it
+expires too. When you make a new pair, keep the old key as long as you
+keep backups made for it.</p>
+<p><strong>2. On each database server,</strong> the certificate, the
+settings and the timer, and a first backup now:</p>
+<pre class="bash"><code>sudo install -D -m 0644 backup.crt /etc/radiator/backup.crt
+sudo install -D -m 0644 /opt/radiator-yubikey/yubikey-backup.example.conf /etc/radiator/backup.conf
+sudo systemctl enable --now yubikey-backup.timer
+sudo systemctl start yubikey-backup.service
+sudo /opt/radiator-yubikey/yubikey-backup.sh status</code></pre>
+<pre class="text"><code>the newest backup is 0 min old
+newest: /var/backups/yubikey-db.cms.0, 2026-10-16 22:53:42 UTC, 20 KB
+kept: 1 of 7, the oldest yubikey-db.cms.0 of 2026-10-16 22:53:42 UTC
+last run: 2026-10-16 22:53:42 UTC, ok
+encrypted to: CN = yubikey backups (SHA-256 06:9E:AE:5E:EA:1C:1E:C0:E8:55:CC:E1:85:A9:7A:14:CE:F8:99:19:DC:B3:A2:4C:87:8D:B9:02:2B:CF:6B:F5), until 2046-10-11</code></pre>
+<p>The timer starts it every day at about 03:00 (the server's time), or
+at the next boot when the server was off then. <code>status</code> exits
+with 0 when the newest backup is less than 26 hours old and the last run
+worked, and 1 otherwise, so monitoring can run it;
+<code>journalctl -u yubikey-backup</code> has each run.</p>
+<p><strong>3. Fetch them</strong> to where you keep backups, as a member
+of the group <code>adm</code> on the server
+(<code>sudo usermod -aG adm alice</code>):</p>
+<pre class="bash"><code>scp db1.example.com:/var/backups/yubikey-db.cms.0 db1-$(date +%F).cms</code></pre>
+<p><strong>4. Check one now and then,</strong> on your machine (with
+<code>postgresql-client</code> and <code>openssl</code>). It changes
+nothing:</p>
+<pre class="bash"><code>./yubikey-backup.sh check --key backup.key db1-2026-10-16.cms</code></pre>
+<pre class="text"><code>Enter pass phrase for backup.key:
+db1-2026-10-16.cms: a whole backup of the YubiKey database, made 2026-10-16 22:53:41 UTC (PostgreSQL 18.6)
+  it holds 5 YubiKeys (of 5 users), 4 service accounts, 4 groups</code></pre>
+<p><strong>5. To restore one,</strong> decrypt it on your machine (the
+key stays there), copy the dump to the primary, restore it there, and
+remove the dump from both, since it holds every AES key in clear:</p>
+<pre class="bash"><code>./yubikey-backup.sh decrypt --key backup.key db1-2026-10-16.cms yubikey-db.dump
+scp yubikey-db.dump db1.example.com:
+ssh -t db1.example.com sudo /opt/radiator-yubikey/yubikey-backup.sh restore yubikey-db.dump
+ssh db1.example.com shred -u yubikey-db.dump &amp;&amp; shred -u yubikey-db.dump</code></pre>
+<pre class="text"><code>Enter pass phrase for backup.key:
+decrypted db1-2026-10-16.cms to yubikey-db.dump (20 KB, mode 0600)
+The backup, made 2026-10-16 22:53:41 UTC: 5 YubiKeys (of 5 users), 4 service accounts, 4 groups.
+The database yubikey now: 6 YubiKeys (of 6 users), 4 service accounts, 4 groups.
+The restore puts the backup&#39;s tables back, and so undoes what changed since:
+  YubiKeys added since the backup, which go: carol vvccccbbcdeh
+  YubiKeys changed since the backup, which are put back as they were: bob vvccccbbcdeg (enabled again)
+Counters that are ahead now stay, and so do the anycast checks&#39; keys.
+Restore it into yubikey? Type yes: yes
+Restored the backup of 2026-10-16 22:53:41 UTC into yubikey: 5 YubiKeys, 4 service accounts, 4 groups.
+Kept the counters of 1 YubiKey(s) that were ahead, and the keys of 3 anycast check(s).</code></pre>
+<p>In this example, alice logged in after the backup, bob's YubiKey was
+disabled and carol's added. The restore replaces every table of the
+database with the backup's, in one transaction (logins wait for it: a
+tenth of a second in the test), and so undoes what changed since the
+backup, which it lists first. Two things stay as they are:</p>
+<ul>
+<li><strong>Counters that are ahead now</strong>, so an OTP used since
+the backup stays used. A YubiKey deleted since the backup comes back
+with the backup's counters, and when the database is gone (a new one),
+every YubiKey has them: an OTP used after the backup could then be used
+once more, until the YubiKey's next login.</li>
+<li><strong>The anycast checks' keys</strong> (<code>anycast-*</code>),
+which renew themselves: the checks go on logging in.</li>
+</ul>
+<p>A YubiKey or account the list says is <code>enabled again</code> was
+disabled after the backup: disable it again. It runs only on the primary
+(on a standby it says so), and takes the backup decrypted already, or
+encrypted with <code>--key</code>.</p>
 </section>
 <section id="after-upgrading-the-scripts" class="level3">
 <h3>After upgrading the scripts</h3>
@@ -3483,17 +3624,18 @@ back it up.</li>
 listed with their modes in <code>files.list</code>), and on the first
 server the database's first contents (<code>db/</code>). Next to them,
 <code>runbook.md</code> (the order to do things in),
-<code>routers.md</code>, <code>devices.md</code>, and
-<code>admin/</code> (the files for the admins' machines).</li>
+<code>routers.md</code>, <code>devices.md</code>, <code>admin/</code>
+(the files for the admins' machines), and with <code>[backup]</code>,
+<code>secrets.toml.cms</code>.</li>
 <li><strong><code>setup.sh</code> does the steps of the sections
 above,</strong> in order: the packages (PostgreSQL, Patroni, etcd and
 FRR from Ubuntu; Radiator and radiator-yubikey from the packages next to
 it), <code>/etc/hosts</code> and the kernel settings, the cluster's TLS
 files, etcd, Patroni, the database, Radiator
 (<code>radiator-groups.example.conf</code> with the server's addresses
-and devices), partition mode, FRR and the anycast check, and the
-firewall. It ends with a report: the cluster, the anycast check, the BGP
-sessions.</li>
+and devices), partition mode, FRR and the anycast check, the backups,
+and the firewall. It ends with a report: the cluster, the anycast check,
+the BGP sessions.</li>
 <li><strong>The three run at the same time.</strong> etcd starts only
 when two servers run it; the first server's Patroni creates the cluster,
 which the other two copy; the first server makes the database, and the
@@ -3506,9 +3648,16 @@ PostgreSQL cluster with databases that it didn't make;
 <code>--reset</code> starts a server over.</li>
 <li><strong>One command says whether a server works:</strong>
 <code>setup.sh --status</code> checks its services, the cluster, the
-anycast check, partition mode, BGP, the firewall, the certificates, the
-disk and the clock, without changing anything, and sums it up in its
-first line, for you and for monitoring.</li>
+anycast check, partition mode, BGP, the backups, the firewall, the
+certificates, the disk and the clock, without changing anything, and
+sums it up in its first line, for you and for monitoring.</li>
+<li><strong>Backups, encrypted for a key that isn't on the
+servers</strong> (with <code>[backup]</code> in <code>site.toml</code>,
+as in the example): each server makes the <a
+href="#automatic-backups">automatic backups</a>, and
+<code>yubikey-turnkey</code> writes <code>secrets.toml</code> encrypted
+for the same certificate, which each server keeps too (see <a
+href="#turn-key-backups">Turn-key backups</a>).</li>
 <li><strong>The database's first contents, once.</strong> The first
 server loads the three anycast checks' keys and TACACS+ service
 accounts, the group <code>anycast-check</code>, and the groups in
@@ -3536,9 +3685,18 @@ the admin subnets.</li>
 <h3>Set up three sites with yubikey-turnkey</h3>
 <p><strong>1. On an admin's machine</strong>, with the radiator-yubikey
 package (or the release's tarball), Python 3.11 or later and
-<code>openssl</code>, make <code>site.toml</code> from the example:</p>
+<code>openssl</code>, make <code>site.toml</code> from the example, and
+the backups' key pair next to it (step 1 of <a
+href="#automatic-backups">Automatic backups</a> says how to keep the
+key):</p>
 <pre class="bash"><code>cp /opt/radiator-yubikey/site.example.toml site.toml
-editor site.toml</code></pre>
+editor site.toml
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey backups&quot; -out backup.crt</code></pre>
+<p><code>site.toml</code> names only the certificate
+(<code>[backup] certificate = "backup.crt"</code>);
+<code>yubikey-turnkey</code> refuses a file that holds a private
+key.</p>
 <p><strong>2. Make the folders,</strong> with the packages copied into
 each (<code>-p</code>): put Radiator's packages from Radiator Software,
 and the release's <code>radiator-yubikey_VERSION_all.deb</code> and
@@ -3548,11 +3706,12 @@ and the release's <code>radiator-yubikey_VERSION_all.deb</code> and
 <pre class="text"><code>made secrets.toml, with every password, key and certificate
 out/admin/: 3 written
 wrote out/devices.md
-out/east1/: 35 written
-out/east2/: 32 written
+out/east1/: 38 written
+out/east2/: 35 written
 wrote out/routers.md
 wrote out/runbook.md
-out/west/: 32 written</code></pre>
+wrote out/secrets.toml.cms
+out/west/: 35 written</code></pre>
 <p>Run it again with no change and it says <code>out: up to date</code>.
 It checks the whole input first, and lists every error it finds, for
 example
@@ -3629,6 +3788,10 @@ database):</p>
   ..    installed /etc/radiator/anycast.conf /var/lib/yubikey-anycast/key /var/lib/yubikey-anycast/counter /var/lib/yubikey-anycast/tacacs /etc/frr/frr.conf
   ok    the anycast check: ACCEPT in 46 ms; TACACS+ PASS in 50 ms
 
+== backup
+  ..    installed /etc/radiator/backup.crt /etc/radiator/backup.conf /var/backups/yubikey-turnkey-secrets.toml.cms
+  ok    backups: every day at about 03:00, in /var/backups; the newest backup is 0 min old
+
 == firewall
   ..    installed /etc/iptables/rules.v4 /etc/iptables/rules.v6
   ok    firewall: 13 IPv4 and 10 IPv6 rules
@@ -3682,6 +3845,7 @@ changes nothing:</p>
   ok    the check&#39;s key: next renewal on 2027-10-16
   ok    normal mode since 2026-10-16 13:46:12 UTC; the copy for partition mode: 4 YubiKeys, updated 13:51:12
   ok    BGP: 192.0.2.1 Established, 2001:db8:31::1 Established
+  ok    backups: the newest backup is 5 h old, 7 of 7 kept
   ok    firewall: 13 IPv4 and 10 IPv6 rules
   ok    certificates: this server&#39;s until 2029-01-19, the CA&#39;s until 2036-10-14
   ok    disk: 41 GiB free in /var/lib
@@ -3743,6 +3907,12 @@ failover)</td>
 <td>None is up</td>
 </tr>
 <tr>
+<td><code>backups</code></td>
+<td>The newest is more than 26 hours old; the last one failed; the daily
+timer is off</td>
+<td></td>
+</tr>
+<tr>
 <td><code>firewall</code></td>
 <td>The rules aren't loaded</td>
 <td></td>
@@ -3783,6 +3953,53 @@ its own user (here <code>nagios</code>), allow it that one command:</p>
 sudo chmod 0440 /etc/sudoers.d/yubikey-status
 sudo -u nagios sudo -n /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status</code></pre>
 </section>
+<section id="turn-key-backups" class="level3">
+<h3>Turn-key backups</h3>
+<p>With <code>[backup]</code> in <code>site.toml</code>,
+<code>setup.sh</code> installs the certificate and
+<code>/etc/radiator/backup.conf</code>, starts the daily timer and makes
+the first backup on each server: the <a
+href="#automatic-backups">automatic backups</a>, with <code>keep</code>
+of them (7 by default: <code>/var/backups/yubikey-db.cms.0</code> to
+<code>.6</code>).</p>
+<pre class="toml"><code>[backup]
+certificate = &quot;backup.crt&quot;  # next to site.toml; its private key is kept elsewhere
+keep = 7</code></pre>
+<ul>
+<li><p><strong>Fetch them and check one now and then</strong> as in
+steps 3 and 4 of <a href="#automatic-backups">Automatic backups</a>.
+<code>setup.sh --status</code> warns when the newest is more than 26
+hours old, the last one failed, or the timer is off.</p></li>
+<li><p><strong>Restore one</strong> on the primary (east1, unless it
+failed over), as in step 5. The anycast checks' keys stay, so all three
+servers go on advertising.</p></li>
+<li><p><strong>After losing the whole cluster:</strong> set up servers
+with the same names and addresses, copy the folders and run
+<code>setup.sh</code> on all three, as on new servers, which makes the
+database anew with the anycast checks and the groups of
+<code>site.toml</code>, and then restore the last backup on east1.
+<code>tests/radiator/turnkey.sh</code> does this after
+<code>--reset</code> on all three.</p></li>
+<li><p><strong><code>secrets.toml</code>, encrypted:</strong>
+<code>yubikey-turnkey</code> writes <code>out/secrets.toml.cms</code>,
+<code>secrets.toml</code> encrypted for the same certificate, and each
+server keeps a copy as
+<code>/var/backups/yubikey-turnkey-secrets.toml.cms</code>. It is made
+again only when <code>secrets.toml</code> or the certificate changes, so
+the output stays the same. If you lose <code>secrets.toml</code>, fetch
+a copy and decrypt it:</p>
+<pre class="bash"><code>./yubikey-backup.sh decrypt --key backup.key yubikey-turnkey-secrets.toml.cms secrets.toml</code></pre></li>
+<li><p><strong>A new key pair:</strong> replace <code>backup.crt</code>,
+run <code>yubikey-turnkey</code>, copy the folders and run
+<code>setup.sh</code> on each server, which makes a backup for the new
+certificate at once. Keep the old key while you keep backups made for
+it.</p></li>
+<li><p><strong>Without <code>[backup]</code></strong>, the servers make
+no backups (<code>yubikey-turnkey</code> says so), and
+<code>setup.sh</code> turns the timer off where it was on; the backups
+already made stay.</p></li>
+</ul>
+</section>
 <section id="change-a-turn-key-setup" class="level3">
 <h3>Change a turn-key setup</h3>
 <ul>
@@ -3813,7 +4030,8 @@ server, are not covered yet.</li>
 removes the server's etcd member, PostgreSQL cluster, anycast key and
 <code>setup.sh</code>'s state. Run it on all three, then
 <code>setup.sh</code> on all three again: the database is made anew,
-without the YubiKeys.</li>
+without the YubiKeys, which a backup can bring back (the backups in
+<code>/var/backups</code> stay).</li>
 </ul>
 </section>
 </section>
@@ -3919,6 +4137,15 @@ the anycast checks' keys of all three, to load them.
 in <code>/etc/yubikey-turnkey</code> (root only). The admins' passwords
 reach the servers only as SCRAM verifiers. Its firewall leaves outgoing
 traffic open.</li>
+<li><strong>Automatic backups</strong> hold every AES key, encrypted for
+the backups' certificate: only its private key decrypts them, so keep it
+off the servers, in two places, with its passphrase apart from it. The
+servers keep them readable by the group <code>adm</code>, for the admins
+to fetch. A decrypted dump holds every AES key in clear:
+<code>shred -u</code> it after a restore. <code>restore</code> brings
+back what the backup had, also YubiKeys or accounts disabled since: it
+lists them (<code>enabled again</code>). <code>secrets.toml.cms</code>
+is encrypted for the same certificate.</li>
 <li>The scripts pass AES keys and PINs to <code>sqlite3</code> and
 <code>psql</code> through their input, never on a command line, and
 quote every value. PINs are stored as salted SHA-512
@@ -4388,6 +4615,51 @@ for the reason given. Expected for a while on a primary that was cut off
 href="#run-anycast">Run anycast</a>. The key works until
 <code>OTPs left</code> runs out, and it keeps trying every hour.</td>
 </tr>
+<tr>
+<td><code>yubikey-backup.sh status</code>:
+<code>the last backup failed, ...: pg_dump: error: ...</code></td>
+<td><code>pg_dump</code> couldn't read this server's PostgreSQL, for the
+reason given: expected while it is down or being copied again (a
+standby). <code>sudo systemctl start yubikey-backup.service</code> tries
+again.</td>
+</tr>
+<tr>
+<td><code>yubikey-backup.sh status</code>:
+<code>the newest backup is 30 h old</code> (and
+<code>setup.sh --status</code> warns)</td>
+<td>The timer isn't running
+(<code>systemctl status yubikey-backup.timer</code>;
+<code>systemctl enable --now yubikey-backup.timer</code>), or the runs
+fail (<code>journalctl -u yubikey-backup</code>).</td>
+</tr>
+<tr>
+<td><code>yubikey-backup.sh: FILE didn't decrypt: a wrong key, or the file isn't whole or was changed</code></td>
+<td>The file was made for another certificate (an older key pair), was
+cut short in a copy, or was changed. Nothing was written. Try the copy
+from another server.</td>
+</tr>
+<tr>
+<td><code>yubikey-backup.sh: cannot read the private key backup.key: a wrong passphrase</code></td>
+<td>Type the key's passphrase (the one for <code>backup.key</code>, not
+a server's).</td>
+</tr>
+<tr>
+<td><code>yubikey-backup.sh: error: this server's PostgreSQL is a standby: restore on the primary</code></td>
+<td>Run the restore on the primary (<code>patronictl list</code>, or the
+server whose <code>pg_is_in_recovery()</code> is false).</td>
+</tr>
+<tr>
+<td><code>yubikey-backup.sh: nothing restored: ... canceling statement due to lock timeout</code></td>
+<td>Another session held a lock on a table for more than 10 s (an
+admin's open transaction, say). Nothing changed: end it and restore
+again.</td>
+</tr>
+<tr>
+<td><code>yubikey-turnkey</code>:
+<code>backup.certificate: ... holds a private key</code></td>
+<td>Name the certificate (<code>backup.crt</code>) only, and keep the
+key off the servers and out of <code>out/</code>.</td>
+</tr>
 </tbody>
 </table>
 </section>
@@ -4847,6 +5119,97 @@ or the addresses aren't on <code>lo</code> (<code>status</code>), and 3
 for a problem with the settings, the key, the TACACS+ account's file or
 the system, which the service then doesn't restart on.</p>
 </section>
+<section id="yubikey-backupsh" class="level3">
+<h3><code>yubikey-backup.sh</code></h3>
+<pre class="text"><code>yubikey-backup.sh [-c FILE] COMMAND [OPTIONS]</code></pre>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run</code></td>
+<td>Dump the database from this server's PostgreSQL (as
+<code>postgres</code>, through the local socket), encrypted for
+<code>CERT</code>, to <code>DIR/yubikey-db.cms.0</code>, moving the
+others up one and keeping <code>KEEP</code> of them.
+<code>yubikey-backup.service</code> runs it.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>The newest backup and its age, how many are kept, the last run, and
+the certificate. Exits 0 when the newest is less than 26 hours old and
+the last run worked.</td>
+</tr>
+<tr>
+<td><code>decrypt --key KEY FILE OUT</code></td>
+<td>Decrypt <code>FILE</code> (a backup, or
+<code>secrets.toml.cms</code>) to <code>OUT</code> (mode
+<code>0600</code>), which it writes only when <code>FILE</code> is whole
+and unchanged, and refuses to overwrite.</td>
+</tr>
+<tr>
+<td><code>check [--key KEY] FILE</code></td>
+<td>Decrypt <code>FILE</code> (or take it as a dump already), read the
+dump back whole, and show when it was made and what it holds. Changes
+nothing; needs <code>pg_restore</code>, not a database.</td>
+</tr>
+<tr>
+<td><code>restore [--key KEY] [--yes] FILE</code></td>
+<td>On the primary: show what the restore would undo, ask
+(<code>--yes</code>: don't), and replace every table with the backup's
+in one transaction, keeping the counters that are ahead and the anycast
+checks' keys.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--key KEY</code> is the private key; <code>openssl</code> asks
+for its passphrase, or takes it as <code>--passin ARG</code> says
+(<code>openssl</code>'s <code>-passin</code>: <code>pass:TEXT</code>,
+<code>env:VAR</code>, <code>file:PATH</code>, <code>fd:N</code>).
+<code>-c FILE</code> reads the settings from FILE instead of
+<code>/etc/radiator/backup.conf</code> (<code>restore</code> works
+without them, for the database <code>yubikey</code>;
+<code>decrypt</code> and <code>check</code> don't read them):</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CERT</code></td>
+<td><code>/etc/radiator/backup.crt</code></td>
+<td>The certificate the backups are encrypted for (RSA)</td>
+</tr>
+<tr>
+<td><code>KEEP</code></td>
+<td><code>7</code></td>
+<td>How many backups to keep, <code>.0</code> (the newest) to
+<code>.KEEP-1</code> (1 to 366)</td>
+</tr>
+<tr>
+<td><code>DIR</code></td>
+<td><code>/var/backups</code></td>
+<td>Where</td>
+</tr>
+<tr>
+<td><code>DATABASE</code></td>
+<td><code>yubikey</code></td>
+<td>The database</td>
+</tr>
+</tbody>
+</table>
+<p>It exits with 0 on success, 1 when a step fails (<code>status</code>:
+no recent backup, or the last run failed), and 3 for a problem with the
+settings, the options or the system.</p>
+</section>
 <section id="yubikey-turnkey" class="level3">
 <h3><code>yubikey-turnkey</code></h3>
 <pre class="text"><code>yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml</code></pre>
@@ -4944,7 +5307,8 @@ copy of <code>server.env</code> in
 <tr>
 <td><code>--reset NAME</code></td>
 <td>Stop the services, and remove this server's etcd member, PostgreSQL
-cluster, anycast key and state (<code>NAME</code>: its host name)</td>
+cluster, anycast key and state (<code>NAME</code>: its host name); the
+backups in <code>/var/backups</code> stay</td>
 </tr>
 </tbody>
 </table>
@@ -5251,7 +5615,7 @@ repeat if the first save was made.</li>
 </section>
 <section id="testing" class="level2">
 <h2>Testing</h2>
-<p><code>tests/run-tests.sh</code> runs the scripts through 46 scenarios
+<p><code>tests/run-tests.sh</code> runs the scripts through 48 scenarios
 against throwaway SQLite and PostgreSQL databases and compares each
 transcript (commands, output, exit codes, and the final table) with
 <code>tests/expected/</code>, where the scripts' version shows as
@@ -5274,8 +5638,13 @@ Radiator, installed in each of the ways it recognizes.
 (<code>tests/turnkey/example-secrets.toml</code>) and shows everything
 it writes; <code>turnkey_errors</code> its checks of the input, and
 <code>turnkey_secrets</code> the secrets it makes, and changed by hand.
-It needs <code>bash</code>, <code>sqlite3</code>, <code>perl</code>,
-and, for the <code>verify</code> and <code>anycast</code> scenarios,
+<code>backup</code> runs <code>yubikey-backup.sh</code>'s settings,
+<code>status</code> and <code>decrypt</code> (of whole, changed and cut
+files), and <code>pg_backup</code> its backups, checks and restores in
+the test's PostgreSQL, with the test key pair in
+<code>tests/turnkey/</code> (passphrase <code>test-only</code>). It
+needs <code>bash</code>, <code>sqlite3</code>, <code>perl</code>, and,
+for the <code>verify</code> and <code>anycast</code> scenarios,
 <code>openssl</code> and <code>libcrypt-rijndael-perl</code>
 (<code>dpkg-deb</code> for <code>install</code>, and Python 3.11 and
 <code>openssl</code> for the <code>turnkey</code> ones); it runs as a

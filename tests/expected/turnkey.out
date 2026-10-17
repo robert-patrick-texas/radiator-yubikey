@@ -8,16 +8,25 @@ yubikey-turnkey: error: name the input file, such as site.toml
 [exit 2]
 
 $ yubikey-turnkey site.toml
+site.toml: backup.certificate: cannot read <WORK>/backup.crt: No such file or directory (make it as the guide's "Turn-key backups" says, and keep its private key elsewhere)
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+$ yubikey-turnkey site.toml
 out/admin/: 3 written
 wrote out/devices.md
-out/east1/: 31 written
-out/east2/: 28 written
+out/east1/: 34 written
+out/east2/: 31 written
 wrote out/routers.md
 wrote out/runbook.md
-out/west/: 28 written
+wrote out/secrets.toml.cms
+out/west/: 31 written
 [exit 0]
 
+secrets.toml.cms: secrets.toml, encrypted
+
 --- the files in out
+600 .secrets.toml.cms.sha256
 600 .turnkey-files
 700 admin
 644 admin/ca.crt
@@ -41,6 +50,7 @@ out/west/: 28 written
 700 east2/setup.sh
 600 routers.md
 600 runbook.md
+600 secrets.toml.cms
 700 west
 700 west/files
 600 west/files.list
@@ -77,6 +87,8 @@ out/west/: 28 written
 600 files/etc/patroni/tls/server.key
 700 files/etc/radiator
 600 files/etc/radiator/anycast.conf
+600 files/etc/radiator/backup.conf
+600 files/etc/radiator/backup.crt
 700 files/etc/radiator/clients.d
 600 files/etc/radiator/clients.d/access.conf
 600 files/etc/radiator/clients.d/catch-all.conf
@@ -91,6 +103,8 @@ out/west/: 28 written
 700 files/etc/systemd/system/patroni@18-main.service.d
 600 files/etc/systemd/system/patroni@18-main.service.d/restart.conf
 700 files/var
+700 files/var/backups
+600 files/var/backups/yubikey-turnkey-secrets.toml.cms
 700 files/var/lib
 700 files/var/lib/yubikey-anycast
 600 files/var/lib/yubikey-anycast/counter
@@ -119,6 +133,7 @@ $ yubikey-turnkey --check site.toml
 out: up to date
 [exit 0]
 
+secrets.toml.cms: the same file, made once
 $ setup.sh --status
 UNKNOWN - run it as root (sudo <WORK>/out/east1/setup.sh --status)
 [exit 3]
@@ -164,6 +179,7 @@ ADMINS="opsadmin"
 ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
 PARTITION="1"
 FIREWALL="1"
+BACKUP="1"
 
 --- out/east1/secrets.env (600)
 # secrets.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
@@ -207,6 +223,9 @@ anycast file 0600 root:root keep var/lib/yubikey-anycast/key
 anycast file 0600 root:root keep var/lib/yubikey-anycast/counter
 anycast file 0600 root:root keep var/lib/yubikey-anycast/tacacs
 anycast file 0640 frr:frr replace etc/frr/frr.conf
+backup file 0644 root:root replace etc/radiator/backup.crt
+backup file 0644 root:root replace etc/radiator/backup.conf
+backup file 0640 root:adm replace var/backups/yubikey-turnkey-secrets.toml.cms
 firewall file 0644 root:root replace etc/iptables/rules.v4
 firewall file 0644 root:root replace etc/iptables/rules.v6
 
@@ -251,6 +270,7 @@ ADMINS="opsadmin"
 ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
 PARTITION="1"
 FIREWALL="1"
+BACKUP="1"
 
 --- out/west/secrets.env (600)
 # secrets.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
@@ -555,6 +575,19 @@ TACACS_KEY="VNmTH66pw3jOsl7Zri6HXjpziQjgpJYn"
 # cut off, and Radiator uses its copy of the keys.
 PEERS="east1.example.com east2.example.com"
 
+--- out/west/files/etc/radiator/backup.conf (600)
+# backup.conf - Made by yubikey-turnkey <VERSION> from site.toml.
+# Settings for yubikey-backup.sh (see yubikey-backup.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The certificate the backups are encrypted to: its private key is kept off
+# the servers.
+CERT=/etc/radiator/backup.crt
+
+# How many to keep, one a day: /var/backups/yubikey-db.cms.0 (the newest) to
+# .6.
+KEEP=7
+
 --- out/west/files/var/lib/yubikey-anycast/key (600)
 user=anycast-west
 pin=pwaRZmyN8eWnA3zwhn57
@@ -637,6 +670,8 @@ east1 is the usual primary of the database; west becomes the primary only when t
   with its `install.sh`; or run yubikey-turnkey again with `--packages DIR`.
 - Between the servers, and from the admin subnets, SSH and the ports in
   `site.toml`'s comments must not be blocked by firewalls on the way.
+- `backup.crt` is the backups' certificate: its private key is on none of
+  the servers, and you keep it where you keep the backups.
 
 ## 2. Copy each folder to its server
 
@@ -701,20 +736,38 @@ servers, with their secret and key.
 
 ## 8. Check
 
-On each server:
+On each server: every line `ok` (the guide's "Check a turn-key server"
+says what the others mean, and how monitoring can run it).
 
 ```bash
-sudo patronictl -c /etc/patroni/18-main.yml list
-sudo /opt/radiator-yubikey/yubikey-anycast.sh status
-sudo /opt/radiator-yubikey/yubikey-partition.sh status
-sudo vtysh -c 'show bgp summary'
+sudo /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status
 ```
+
+## 9. Backups
+
+Each server dumps the database every day at about 03:00, encrypted to the
+backups' certificate, and keeps 7: `/var/backups/yubikey-db.cms.0` (the
+newest) to `.6`, readable by the group adm. Fetch them to where you
+keep backups, and now and then check that one decrypts and reads back
+whole, on your machine:
+
+```bash
+scp east1.example.com:/var/backups/yubikey-db.cms.0 .
+yubikey-backup.sh check --key backup.key yubikey-db.cms.0
+```
+
+To restore one, see the guide's "Turn-key backups".
 
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and
 nothing else, where only you can read them. Each server keeps a copy of
 its own in `/etc/yubikey-turnkey`.
+
+`secrets.toml.cms` is `secrets.toml` encrypted to the backups'
+certificate, and each server keeps it as
+`/var/backups/yubikey-turnkey-secrets.toml.cms`: with the private key,
+`yubikey-backup.sh decrypt` gives back `secrets.toml`.
 
 --- out/routers.md (600)
 # Example network: routers
@@ -976,13 +1029,16 @@ secrets.toml: unchanged
 $ yubikey-turnkey site.toml
 secrets.toml: new device secrets
 wrote out/devices.md
-out/east1/: 6 written, 2 removed
-out/east2/: 6 written, 2 removed
-out/west/: 6 written, 2 removed
+out/east1/: 7 written, 2 removed
+out/east2/: 7 written, 2 removed
+wrote out/secrets.toml.cms
+out/west/: 7 written, 2 removed
 yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
 [exit 0]
 
 4
+secrets.toml.cms: secrets.toml, encrypted
+
 $ yubikey-turnkey site.toml
 out: up to date
 [exit 0]
@@ -1085,6 +1141,7 @@ ADMINS="opsadmin"
 ADMIN_SUBNETS="10.9.0.0/24 2001:db8:9::/64"
 PARTITION="0"
 FIREWALL="0"
+BACKUP="1"
 
 --- the files in out/west
 700 files
@@ -1110,6 +1167,8 @@ FIREWALL="0"
 600 files/etc/patroni/tls/server.key
 700 files/etc/radiator
 600 files/etc/radiator/anycast.conf
+600 files/etc/radiator/backup.conf
+600 files/etc/radiator/backup.crt
 700 files/etc/radiator/clients.d
 600 files/etc/radiator/clients.d/access.conf
 600 files/etc/radiator/clients.d/core.conf
@@ -1123,6 +1182,8 @@ FIREWALL="0"
 700 files/etc/systemd/system/patroni@18-main.service.d
 600 files/etc/systemd/system/patroni@18-main.service.d/restart.conf
 700 files/var
+700 files/var/backups
+600 files/var/backups/yubikey-turnkey-secrets.toml.cms
 700 files/var/lib
 700 files/var/lib/yubikey-anycast
 600 files/var/lib/yubikey-anycast/counter
@@ -1135,14 +1196,48 @@ FIREWALL="0"
 
 $ yubikey-turnkey --renew-certs site.toml
 secrets.toml: new east1's certificate, east2's certificate, west's certificate
-out/east1/: 4 written
-out/east2/: 4 written
-out/west/: 4 written
+out/east1/: 5 written
+out/east2/: 5 written
+wrote out/secrets.toml.cms
+out/west/: 5 written
 yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
 [exit 0]
 
 the same CA
 out/west/files/etc/patroni/tls/server.crt: OK
+$ yubikey-turnkey site.toml
+wrote out/east1/files/etc/radiator/backup.crt
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/files/etc/radiator/backup.crt
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/secrets.toml.cms
+wrote out/west/files/etc/radiator/backup.crt
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
+[exit 0]
+
+secrets.toml.cms: for the new certificate
+backup.crt: the new one
+$ yubikey-turnkey site.toml
+out/east1/: 2 written, 3 removed
+out/east2/: 2 written, 3 removed
+wrote out/runbook.md
+removed out/secrets.toml.cms
+out/west/: 2 written, 3 removed
+yubikey-turnkey: no [backup] in site.toml: the servers make no backups (see the guide's "Turn-key backups")
+yubikey-turnkey: secrets.toml keeps the secrets of devices no longer in site.toml: 10.1.0.2
+[exit 0]
+
+0
+BACKUP="0"
+.turnkey-files
+admin
+devices.md
+east1
+east2
+routers.md
+runbook.md
+west
 $ yubikey-turnkey site.toml
 yubikey-turnkey: error: <WORK>/secrets.toml is readable by others (mode 0640): chmod 600 <WORK>/secrets.toml
 [exit 2]

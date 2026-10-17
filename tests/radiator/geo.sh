@@ -61,6 +61,11 @@
 # its check is stopped, and advertises again after; the router drops West
 # within a second or two when it loses power (BFD); a site that can't reach
 # the primary withdraws, and so does every site while there is none.
+# Automatic backups, last, with the guide's steps: on each site, the first
+# (West's from a standby); one checked and decrypted on the client as the
+# admins' machine, and restored on the primary after a login (it asks,
+# keeps the counters that are ahead and the anycast checks' keys; refused on
+# a standby); logins and anycast after it.
 # Set KEEP=1 to leave the containers running afterwards.
 
 set -uo pipefail
@@ -915,6 +920,55 @@ cluster "East2 follows East1 again" "$NORMAL" east1
 login_until "OTP at East2" east2 30
 T0=$SECONDS
 routes_until "all three sites advertise" "$ALL3" 30
+
+echo
+echo "== Automatic backups, as the guide sets them up"
+# The admins' machine is the client (yk-geo-nas). Step 1 there, with the
+# passphrase given instead of asked.
+admin() { docker exec -i yk-geo-nas bash -c "$1"; }
+admin 'cd /root && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -pass pass:geo-only -out backup.key \
+       && openssl req -new -x509 -key backup.key -passin pass:geo-only -days 7300 -subj "/CN=yubikey backups" -out backup.crt' \
+    || exit 1
+# Step 2 on each server, with the certificate copied to it.
+for n in "${SITES[@]}"; do
+    admin 'cat /root/backup.crt' | docker exec -i "yk-geo-$n" bash -c 'cat >/root/backup.crt' || exit 1
+    out=$(docker exec "yk-geo-$n" bash -c 'cd /root &&
+        install -D -m 0644 backup.crt /etc/radiator/backup.crt &&
+        install -D -m 0644 /opt/radiator-yubikey/yubikey-backup.example.conf /etc/radiator/backup.conf &&
+        systemctl enable --now yubikey-backup.timer 2>/dev/null &&
+        systemctl start yubikey-backup.service &&
+        /opt/radiator-yubikey/yubikey-backup.sh status'); rc=$?
+    check "$n: step 2: the first backup" "0 the newest backup is 0 min old" "$rc $(head -1 <<<"$out")"
+    check "$n: for the group adm; the timer runs" "640 root:adm active" \
+        "$(docker exec "yk-geo-$n" bash -c 'echo "$(stat -c "%a %U:%G" /var/backups/yubikey-db.cms.0) $(systemctl is-active yubikey-backup.timer)"')"
+done
+check "west's: from a standby" yes \
+    "$(docker exec yk-geo-west journalctl -u yubikey-backup -o cat | grep -q 'of database yubikey on a standby); keeping 7$' && echo yes)"
+# Steps 3 and 4: east1's, fetched and checked on the admins' machine.
+docker exec yk-geo-east1 cat /var/backups/yubikey-db.cms.0 | admin 'cat >/root/db1.cms' || exit 1
+out=$(admin 'cd /root && bash /repo/yubikey-backup.sh check --key backup.key --passin pass:geo-only db1.cms')
+check "step 4: it decrypts and reads back whole" yes \
+    "$([[ $out =~ ^db1\.cms:\ a\ whole\ backup\ of\ the\ YubiKey\ database,\ made\ .*\ UTC\ \(PostgreSQL\ 18 ]] && echo yes || echo "$out")"
+# Step 5, after a login (its counters move ahead): the dump decrypted
+# there, restored on the primary, which asks first (on a terminal).
+login "OTP at East1, after the backup" ACCEPT east1
+after=$C
+admin 'cd /root && bash /repo/yubikey-backup.sh decrypt --key backup.key --passin pass:geo-only db1.cms yubikey-db.dump >/dev/null' \
+    || exit 1
+for n in east1 east2; do admin 'cat /root/yubikey-db.dump' | docker exec -i "yk-geo-$n" bash -c 'umask 077 && cat >/root/yubikey-db.dump'; done
+check "on a standby (east2): refused" "this server's PostgreSQL is a standby: restore on the primary" \
+    "$(docker exec yk-geo-east2 bash -c 'cd /root && /opt/radiator-yubikey/yubikey-backup.sh restore yubikey-db.dump 2>&1' | sed 's/^yubikey-backup.sh: error: //')"
+out=$(docker exec -i yk-geo-east1 bash -c 'cd /root && script -qec "/opt/radiator-yubikey/yubikey-backup.sh restore yubikey-db.dump" /dev/null' <<<yes); rc=$?
+check "step 5: east1 asks, and restores" 0 "$rc"
+check "it keeps alice's counters, and the three checks' keys" \
+    "Kept the counters of 1 YubiKey(s) that were ahead, and the keys of 3 anycast check(s)." \
+    "$(tr -d '\r' <<<"$out" | tail -1)"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+docker exec yk-geo-east1 shred -u /root/yubikey-db.dump && admin 'shred -u /root/yubikey-db.dump'
+login "the OTP from after the backup, at West: still a replay" "REJECT: Replay attack detected" west "$after"
+login "a new one at West" ACCEPT west
+login "and at East2" ACCEPT east2
+routes_until "all three sites still advertise" "$ALL3" 30
 
 echo
 echo "Login times (median, warm connections): East1 ${LAT[east1]} ms, East2 ${LAT[east2]} ms, West ${LAT[west]} ms"

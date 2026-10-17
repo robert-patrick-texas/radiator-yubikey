@@ -51,7 +51,7 @@ while read -r file _; do
     mkdir -p "$src/$(dirname -- "$file")"
     cp -p -- "$root/$file" "$src/$file"
 done <"$here/debian/radiator-yubikey.install"
-for s in yubikey-db.sh yubikey-db-migrate.sh yubikey-partition.sh yubikey-anycast.sh install.sh; do
+for s in yubikey-db.sh yubikey-db-migrate.sh yubikey-partition.sh yubikey-anycast.sh yubikey-backup.sh install.sh; do
     [[ $(grep -c '^VERSION=' "$src/$s") == 1 ]] || die "$s has no single VERSION= line"
     sed -i "s/^VERSION=.*/VERSION=$version/" "$src/$s"
 done

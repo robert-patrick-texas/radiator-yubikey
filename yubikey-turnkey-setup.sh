@@ -26,6 +26,8 @@
 #                this server's settings), its devices, and its database clause
 #     partition  partition mode (when on in site.toml)
 #     anycast    FRR, and the anycast check (yubikey-anycast.sh)
+#     backup     the daily backup (yubikey-backup.sh), and the first one
+#                (with [backup] in site.toml)
 #     firewall   ufw off, and the iptables rules (when on in site.toml)
 #     report     the cluster, the anycast check, the BGP sessions
 #   It can be run again at any time: each step changes only what differs
@@ -45,8 +47,8 @@
 #   -n, --check     Only the preflight checks: change nothing
 #   --no-firewall   Leave the firewall alone this time
 #   --status        Check this server's services, the cluster, the anycast
-#                   check, partition mode, BGP, the firewall, the
-#                   certificates, the disk and the clock, and whether
+#                   check, partition mode, BGP, the backups, the firewall,
+#                   the certificates, the disk and the clock, and whether
 #                   setup.sh has made what its folder holds. Changes nothing.
 #                   The first line sums it up (OK, WARNING or CRITICAL).
 #                   Without the folder (as the package's
@@ -56,7 +58,8 @@
 #                   services, and remove its etcd member, PostgreSQL cluster,
 #                   anycast key and setup.sh's state. Run it on all three
 #                   servers, then setup.sh on all three again. The copy of
-#                   the settings and secrets in /etc/yubikey-turnkey stays.
+#                   the settings and secrets in /etc/yubikey-turnkey stays,
+#                   and so do the backups in /var/backups.
 #
 # FILES (next to this script, from yubikey-turnkey)
 #   server.env, secrets.env   this server's settings, and the secrets that
@@ -101,7 +104,7 @@ MARK="Made by yubikey-turnkey"
 # From server.env
 VERSION='' SITE_NAME='' NAME='' FQDN='' IPV4='' IPV6='' FIRST=''
 SERVERS='' FQDNS='' IPV4S='' ANYCAST4='' ANYCAST6=''
-ADMINS='' ADMIN_SUBNETS='' PARTITION='' FIREWALL=''
+ADMINS='' ADMIN_SUBNETS='' PARTITION='' FIREWALL='' BACKUP=''
 # From secrets.env
 RADIATOR_PASSWORD='' RADIATOR_SCRAM=''
 declare -A ADMIN_SCRAM=()
@@ -153,7 +156,7 @@ read_env() {
         name=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
         case $name in
             VERSION|SITE_NAME|NAME|FQDN|IPV4|IPV6|FIRST|SERVERS|FQDNS|IPV4S|ANYCAST4|ANYCAST6|\
-            ADMINS|ADMIN_SUBNETS|PARTITION|FIREWALL|RADIATOR_PASSWORD|RADIATOR_SCRAM)
+            ADMINS|ADMIN_SUBNETS|PARTITION|FIREWALL|BACKUP|RADIATOR_PASSWORD|RADIATOR_SCRAM)
                 printf -v "$name" '%s' "$value" ;;
             ADMIN_SCRAM_*) ADMIN_SCRAM[${name#ADMIN_SCRAM_}]=$value ;;
             *) die "$1 line $n: unknown name '$name'" ;;
@@ -389,7 +392,7 @@ packages() {
         quiet bash "$HERE/install.sh" --yes "$HERE/radiator-yubikey_${VERSION}_all.deb" \
             || die "install.sh failed"
     fi
-    for p in yubikey-db.sh yubikey-anycast.sh yubikey-partition.sh dictionary.yubikey; do
+    for p in yubikey-db.sh yubikey-anycast.sh yubikey-partition.sh yubikey-backup.sh dictionary.yubikey; do
         [[ -f $PKG/$p ]] || die "$PKG/$p is missing (radiator-yubikey isn't installed properly)"
     done
     ok "packages: Radiator $(pkg_version radiator)$(pkg_version radiator-locked), radiator-yubikey $VERSION, PostgreSQL $(pkg_version postgresql), Patroni $(pkg_version patroni), etcd $(pkg_version etcd-server), FRR $(pkg_version frr)"
@@ -702,6 +705,32 @@ anycast_step() {
     fi
 }
 
+backup_step() {
+    local out
+    step backup
+    if [[ $BACKUP != 1 ]]; then
+        if systemctl -q is-enabled yubikey-backup.timer 2>/dev/null; then
+            systemctl disable --now yubikey-backup.timer 2>/dev/null
+            info "turned the daily backup off (no [backup] in site.toml); the backups in /var/backups stay"
+        else
+            info "none (no [backup] in site.toml)"
+        fi
+        return
+    fi
+    install_files backup
+    systemctl enable --now yubikey-backup.timer 2>/dev/null || die "cannot start yubikey-backup.timer"
+    # The first backup, and the first to a new certificate, now.
+    if [[ ! -e /var/backups/yubikey-db.cms.0 ]] || changed /etc/radiator/backup.crt; then
+        if ! systemctl start yubikey-backup.service; then
+            out=$("$PKG/yubikey-backup.sh" status 2>&1 | head -1)
+            bad "the backup failed: ${out:-?} (journalctl -u yubikey-backup)"
+            return
+        fi
+    fi
+    out=$("$PKG/yubikey-backup.sh" status 2>&1 | head -1)
+    ok "backups: every day at about 03:00, in /var/backups; ${out:-?}"
+}
+
 firewall_step() {
     local peer
     step firewall
@@ -928,6 +957,21 @@ status_bgp() {
     fi
 }
 
+status_backup() {
+    local out rc first kept
+    if [[ $BACKUP != 1 ]]; then s_ok "backups: none (no [backup] in site.toml)"; return; fi
+    out=$("$PKG/yubikey-backup.sh" status 2>&1); rc=$?
+    first=$(head -1 <<<"$out")
+    kept=$(sed -n 's/^kept: \([0-9]* of [0-9]*\).*/\1 kept/p' <<<"$out")
+    if ! systemctl -q is-active yubikey-backup.timer; then
+        s_warn "backups: the daily timer is off (systemctl enable --now yubikey-backup.timer); $first"
+    elif [[ $rc == 0 ]]; then
+        s_ok "backups: $first${kept:+, $kept}"
+    else
+        s_warn "backups: $first (yubikey-backup.sh status; journalctl -u yubikey-backup)"
+    fi
+}
+
 status_firewall() {
     if [[ $FIREWALL != 1 ]]; then s_ok "firewall: off in site.toml"; return; fi
     if [[ $(iptables -S INPUT 2>/dev/null | head -1) == "-P INPUT DROP" \
@@ -999,6 +1043,7 @@ status() {
     status_anycast
     status_partition
     status_bgp
+    status_backup
     status_firewall
     status_certs
     status_system
@@ -1022,7 +1067,7 @@ reset() {
         || die "--reset needs this server's host name, $NAME, and this server's folder"
     step "reset $NAME"
     local u
-    for u in yubikey-anycast yubikey-partition radiator "$PATRONI_UNIT" etcd; do
+    for u in yubikey-backup.timer yubikey-anycast yubikey-partition radiator "$PATRONI_UNIT" etcd; do
         systemctl disable --now "$u" 2>/dev/null
     done
     rm -rf /var/lib/etcd/default /var/lib/yubikey-anycast /var/lib/yubikey-partition "$STATE"
@@ -1031,7 +1076,7 @@ reset() {
     rm -f "$CONF_D"/yubikey.conf "$CONF_D"/yubikey-cluster.conf "$CONF_D"/yubikey-partition.conf
     ip addr del "$ANYCAST4/32" dev lo 2>/dev/null
     ip -6 addr del "$ANYCAST6/128" dev lo 2>/dev/null
-    ok "stopped etcd, Patroni, Radiator and the checks; removed their data. Run $PROG on all three servers again."
+    ok "stopped etcd, Patroni, Radiator, the checks and the backups; removed their data (the backups in /var/backups stay). Run $PROG on all three servers again."
 }
 
 main() {
@@ -1083,6 +1128,7 @@ main() {
     radiator_step
     partition_step
     anycast_step
+    backup_step
     firewall_step
     # Every step is done, with this folder (for --status).
     mark setup

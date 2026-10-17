@@ -17,10 +17,10 @@ Description: YubiKey OTP database tools for Radiator RADIUS
  Scripts that create and manage the SQLite or PostgreSQL database of users
  and YubiKeys that Radiator's <AuthBy SQLYUBIKEY> checks one-time passwords
  against, with no dependency on Yubico's cloud: add, import, verify, back up
- and restore accounts, move from SQLite to PostgreSQL, keep logging users in
- at a site that is cut off (partition mode), advertise an anycast
- address only while Radiator accepts logins, and set up three sites from
- one input file (yubikey-turnkey).
+ and restore accounts, make encrypted daily backups of PostgreSQL, move from
+ SQLite to PostgreSQL, keep logging users in at a site that is cut off
+ (partition mode), advertise an anycast address only while Radiator accepts
+ logins, and set up three sites from one input file (yubikey-turnkey).
  .
  Installed in /opt/radiator-yubikey. Radiator, from Radiator Software's
  packages or its source, is not a dependency, so either works;

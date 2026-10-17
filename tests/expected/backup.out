@@ -1,0 +1,175 @@
+$ yubikey-backup.sh -V
+yubikey-backup.sh <VERSION>
+[exit 0]
+
+$ yubikey-backup.sh 
+Usage: yubikey-backup.sh [-c FILE] COMMAND [OPTIONS]
+
+Commands:
+  run       Make a backup now (yubikey-backup.timer does it every day)
+  status    Show the backups and the last run; exits 0 when the newest is
+            less than 26 hours old and the last run worked
+  decrypt --key KEY [--passin ARG] FILE OUT
+            Decrypt FILE to OUT, only when FILE is whole and unchanged
+  check [--key KEY] [--passin ARG] FILE
+            Decrypt FILE, read the dump back whole and show what it holds;
+            changes nothing
+  restore [--key KEY] [--passin ARG] [--yes] FILE
+            Restore FILE into this server's PostgreSQL (the primary). A
+            counter that is ahead now stays, and so do the anycast checks'
+            keys; it shows what it would undo, and asks
+
+Options:
+  -c FILE        The settings (default /etc/radiator/backup.conf)
+  --key KEY      The private key of the backups' certificate (PEM)
+  --passin ARG   Its passphrase, as openssl's -passin (pass:, env:, file:,
+                 fd:); without it, openssl asks
+  --yes          restore: don't ask
+  -h             Show this help
+  -V             Show the version
+[exit 3]
+
+$ yubikey-backup.sh frobnicate
+yubikey-backup.sh: error: unknown command 'frobnicate' (see 'yubikey-backup.sh help')
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: cannot read backup.conf
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf: KEEP must be a number from 1 to 366
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf: KEEP must be a number from 1 to 366
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf: KEEP must be a number from 1 to 366
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf: DIR must be a full path
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf: DATABASE 'my-db' is not a database name
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf line 5: unknown setting 'COLOR'
+[exit 3]
+
+$ yubikey-backup.sh status
+yubikey-backup.sh: error: backup.conf line 5: expected NAME=value
+[exit 3]
+
+$ yubikey-backup.sh status extra
+yubikey-backup.sh: error: status takes no arguments
+[exit 3]
+
+$ yubikey-backup.sh status
+no backup yet in <WORK>/bk
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 1]
+
+$ yubikey-backup.sh status
+the newest backup is 2 h old
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 3 of 3, the oldest yubikey-db.cms.2 of <TIMESTAMP> UTC
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 0]
+
+$ yubikey-backup.sh status
+the newest backup is 30 h old: none was made in the last 26 hours
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 3 of 3, the oldest yubikey-db.cms.2 of <TIMESTAMP> UTC
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 1]
+
+$ yubikey-backup.sh status
+the last backup failed, 1 h ago: pg_dump: error: connection failed
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 3 of 3, the oldest yubikey-db.cms.2 of <TIMESTAMP> UTC
+last run: <TIMESTAMP> UTC, failed
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 1]
+
+$ yubikey-backup.sh status
+the last backup failed, 1 h ago: pg_dump: error: connection failed
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 3 of 3, the oldest yubikey-db.cms.2 of <TIMESTAMP> UTC
+last run: <TIMESTAMP> UTC, failed
+encrypted to: cannot read <WORK>/bad.crt
+[exit 1]
+
+$ yubikey-backup.sh run
+yubikey-backup.sh: error: <WORK>/bad.crt is not a certificate (PEM)
+[exit 3]
+
+$ yubikey-backup.sh run
+yubikey-backup.sh: error: cannot read the certificate <WORK>/missing.crt
+[exit 3]
+
+$ yubikey-backup.sh run
+yubikey-backup.sh: error: cannot write to <WORK>/nowhere
+[exit 3]
+
+$ yubikey-backup.sh decrypt plain.cms out.txt
+yubikey-backup.sh: error: decrypt: name the private key (--key KEY)
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key plain.cms
+yubikey-backup.sh: error: decrypt: name the file and where to write it (decrypt --key KEY FILE OUT)
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key --yes plain.cms out.txt
+yubikey-backup.sh: error: decrypt: --yes is for restore
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only plain.cms out.txt
+decrypted plain.cms to out.txt (<N> KB, mode 0600)
+[exit 0]
+
+600 <WORK>/out.txt
+out.txt: as encrypted
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only plain.cms out.txt
+yubikey-backup.sh: error: out.txt exists: remove it first, or name another file
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:wrong plain.cms out2.txt
+yubikey-backup.sh: cannot read the private key backup.key: a wrong passphrase
+[exit 1]
+
+$ yubikey-backup.sh decrypt --key nokey --passin pass:test-only plain.cms out2.txt
+yubikey-backup.sh: error: cannot read the private key nokey
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only plain.txt out2.txt
+yubikey-backup.sh: plain.txt didn't decrypt: a wrong key, or the file isn't whole or was changed (openssl: Error reading SMIME Content Info)
+[exit 1]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only plain.cms nodir/out2.txt
+yubikey-backup.sh: error: cannot write to the directory nodir
+[exit 3]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only changed.cms out2.txt
+yubikey-backup.sh: changed.cms didn't decrypt: a wrong key, or the file isn't whole or was changed (openssl: Error decrypting CMS structure)
+[exit 1]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only short.cms out2.txt
+yubikey-backup.sh: short.cms didn't decrypt: a wrong key, or the file isn't whole or was changed (openssl: Error reading SMIME Content Info)
+[exit 1]
+
+backup.conf
+backup.crt
+backup.key
+bad.crt
+bk
+changed.cms
+out.txt
+plain.cms
+plain.txt
+short.cms
+state

@@ -2879,6 +2879,20 @@ bad() {
     tk site.toml
 }
 
+# secrets.toml.cms: secrets.toml, encrypted to the test's certificate, and
+# each server's copy of it.
+secrets_copy() {
+    local f
+    rm -f "$WORK/secrets.dec"
+    BACKUP_STATE_DIR="$WORK/state" "$ROOT/yubikey-backup.sh" decrypt --key "$TESTS_DIR/turnkey/backup.key" \
+        --passin pass:test-only "$WORK/out/secrets.toml.cms" "$WORK/secrets.dec" >/dev/null \
+        && cmp -s "$WORK/secrets.dec" "$WORK/secrets.toml" && echo "secrets.toml.cms: secrets.toml, encrypted"
+    for f in "$WORK"/out/*/files/var/backups/yubikey-turnkey-secrets.toml.cms; do
+        cmp -s "$f" "$WORK/out/secrets.toml.cms" || echo "BAD: ${f#"$WORK/"} differs"
+    done
+    echo
+}
+
 # The example input, with fixed secrets (certificates for 100 years): the
 # output, again (up to date), and changed.
 scenario_turnkey() {
@@ -2887,6 +2901,9 @@ scenario_turnkey() {
     tk -V
     tk
     tk site.toml
+    cp "$TESTS_DIR/turnkey/backup.crt" "$WORK/backup.crt"
+    tk site.toml
+    secrets_copy
     tree out 2
     tree out/east1
     cmp -s "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml" && echo "secrets.toml: unchanged"
@@ -2897,6 +2914,8 @@ scenario_turnkey() {
     echo
     tk site.toml
     tk --check site.toml
+    cmp -s "$WORK/out/secrets.toml.cms" "$WORK/out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms" \
+        && echo "secrets.toml.cms: the same file, made once"
     # setup.sh --status: as root only (tests/radiator/turnkey.sh runs it on
     # servers), and alone.
     setup_sh --status
@@ -2912,7 +2931,8 @@ scenario_turnkey() {
          out/west/files/etc/frr/frr.conf out/west/files/etc/iptables/rules.v4 out/west/files/etc/iptables/rules.v6 \
          out/west/files/etc/radiator/clients.d/core.conf out/west/files/etc/radiator/clients.d/access.conf \
          out/west/files/etc/radiator/clients.d/catch-all.conf out/west/files/etc/radiator/anycast.conf \
-         out/west/files/etc/radiator/partition.conf out/west/files/var/lib/yubikey-anycast/key \
+         out/west/files/etc/radiator/partition.conf out/west/files/etc/radiator/backup.conf \
+         out/west/files/var/lib/yubikey-anycast/key \
          out/west/files/var/lib/yubikey-anycast/tacacs out/west/files/var/lib/yubikey-anycast/counter \
          out/west/files/etc/sysctl.d/60-radiator-anycast.conf \
          'out/west/files/etc/systemd/system/patroni@18-main.service.d/restart.conf'
@@ -2929,6 +2949,7 @@ scenario_turnkey() {
     cmp -s "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml" && echo "secrets.toml: unchanged"
     tk site.toml
     grep -c '^\[device\.' "$WORK/secrets.toml"
+    secrets_copy
     tk site.toml
     # (The new device's secret and key are new each time.)
     show out/west/files/etc/radiator/clients.d/core.conf out/west/files/etc/radiator/clients.d/v6only.conf \
@@ -2941,6 +2962,21 @@ scenario_turnkey() {
     tk --renew-certs site.toml
     cmp -s "$WORK/out/admin/ca.crt" "$WORK/out/west/files/etc/radiator/pg-ca.crt" && echo "the same CA"
     openssl verify -CAfile "$WORK/out/admin/ca.crt" "$WORK/out/west/files/etc/patroni/tls/server.crt" | sed "s|$WORK/||"
+
+    # A new certificate for the backups: secrets.toml.cms is made again, for
+    # it. Without [backup], the backups' files go.
+    openssl req -x509 -newkey rsa:3072 -nodes -keyout "$WORK/new.key" -subj /CN=new -days 1 \
+        -out "$WORK/backup.crt" 2>/dev/null
+    tk site.toml
+    rm -f "$WORK/secrets.dec"
+    "$ROOT/yubikey-backup.sh" decrypt --key "$WORK/new.key" "$WORK/out/secrets.toml.cms" "$WORK/secrets.dec" >/dev/null \
+        && cmp -s "$WORK/secrets.dec" "$WORK/secrets.toml" && echo "secrets.toml.cms: for the new certificate"
+    cmp -s "$WORK/backup.crt" "$WORK/out/west/files/etc/radiator/backup.crt" && echo "backup.crt: the new one"
+    perl -0pi -e 's/\n\[backup\]\n[^[]*/\n/' "$WORK/site.toml"
+    tk site.toml
+    grep -c backup "$WORK/out/west/files.list"
+    grep BACKUP "$WORK/out/west/server.env"
+    ls -A "$WORK/out"
 
     # secrets.toml readable by others, or not TOML.
     chmod 0640 "$WORK/secrets.toml"
@@ -2980,6 +3016,16 @@ scenario_turnkey_errors() {
         $'[[device]]\naddress = "10.1.0.1"\ngroup = "core"\n[[device]]\naddress = "10.2.0.1/24"\ngroup = "unlisted"\n[[device]]\naddress = "127.0.0.1"\ngroup = "x"\n[[device]]\naddress = "::/0"\ngroup = "x"\n[[device]]\naddress = "10.3.0.0/16"\ngroup = "bad group"'
     # shellcheck disable=SC2016  # a sed address
     bad "no devices and no catch-all" '/^\[\[device\]\]/,$d' $'[catch_all]\nenabled = false'
+    printf 'not a certificate\n' >"$WORK/text.crt"
+    cat "$TESTS_DIR/turnkey/backup.crt" "$TESTS_DIR/turnkey/backup.key" >"$WORK/with-key.crt"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=ec \
+        -days 1 -out "$WORK/ec.crt" 2>/dev/null
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout /dev/null -subj /CN=small -days 1 -out "$WORK/small.crt" 2>/dev/null
+    cat "$TESTS_DIR/turnkey/backup.crt" "$TESTS_DIR/turnkey/backup.crt" >"$WORK/two.crt"
+    bad "backups: no certificate, keep out of range, an unknown setting" '' $'[backup]\nkeep = 0\nretain = 7'
+    for c in missing.crt text.crt with-key.crt ec.crt small.crt two.crt; do
+        bad "backups: $c" '' $'[backup]\ncertificate = "'"$c"'"'
+    done
     bad "groups" '' $'[[group]]\nname = "anycast-check"\n[[group]]\nname = "ops"\naccess = [ { devices = "core", level = 16 }, { devices = "nowhere", level = 1 }, { devices = "core", level = 1, rules = ["allow everything", "permit cmd=\\"x\\""] } ]\n[[group]]\nname = "ops"'
     ls "$WORK"
 }
@@ -3059,6 +3105,186 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# yubikey-backup.sh
+# --------------------------------------------------------------------------
+
+BACKUP=$ROOT/yubikey-backup.sh
+
+# Run yubikey-backup.sh with the settings backup.conf, its state in state/,
+# and no standard input, and record it: bk ARGS... (The sizes of the files
+# vary a little.)
+bk() {
+    local out rc=0
+    out=$(cd "$WORK" && BACKUP_STATE_DIR="$WORK/state" BACKUP_GROUP='' "$BACKUP" -c backup.conf "$@" </dev/null 2>&1) || rc=$?
+    printf '$ yubikey-backup.sh %s\n%s%s[exit %d]\n\n' "$*" "$out" "${out:+$'\n'}" "$rc" | sed -E 's/\b[0-9]+ KB\b/<N> KB/g'
+}
+
+# The test's key pair: the certificate, and its key (passphrase test-only).
+backup_keys() {
+    cp "$TESTS_DIR/turnkey/backup.crt" "$WORK/backup.crt"
+    install -m 0600 "$TESTS_DIR/turnkey/backup.key" "$WORK/backup.key"
+}
+
+# backup_conf KEEP [DATABASE]: the settings.
+backup_conf() {
+    printf 'CERT=%s/backup.crt\nKEEP=%s\nDIR=%s/bk\nDATABASE=%s\n' "$WORK" "$1" "$WORK" "${2:-$PGDB}" >"$WORK/backup.conf"
+}
+
+# Its settings, status and decrypt, without a database.
+scenario_backup() {
+    backup_keys
+    mkdir "$WORK/bk" "$WORK/state"
+    bk -V
+    bk
+    bk frobnicate
+    bk status
+    for bad in 'KEEP=0' 'KEEP=367' 'KEEP=seven' 'DIR=backups' 'DATABASE=my-db' 'COLOR=blue' 'nonsense'; do
+        backup_conf 3 yubikey
+        printf '%s\n' "$bad" >>"$WORK/backup.conf"
+        bk status
+    done
+    backup_conf 3 yubikey
+    bk status extra
+    bk status
+    # The backups' times: the newest 2 hours old, then 30.
+    touch -d '-2 hours' "$WORK/bk/yubikey-db.cms.0"
+    touch -d '-1 day' "$WORK/bk/yubikey-db.cms.1"
+    touch -d '-2 days' "$WORK/bk/yubikey-db.cms.2"
+    touch "$WORK/bk/yubikey-db.cms.new" "$WORK/bk/yubikey-db.cms.x"
+    bk status
+    touch -d '-30 hours' "$WORK/bk/yubikey-db.cms.0"
+    bk status
+    # The last run failed.
+    printf 'time=%s\nresult=failed\ntext=pg_dump: error: connection failed\n' "$(date -d '-1 hour' +%s)" >"$WORK/state/last"
+    bk status
+    # A certificate that isn't one.
+    echo 'not a certificate' >"$WORK/bad.crt"
+    sed -i "s|^CERT=.*|CERT=$WORK/bad.crt|" "$WORK/backup.conf"
+    bk status
+    bk run
+    sed -i "s|^CERT=.*|CERT=$WORK/missing.crt|" "$WORK/backup.conf"
+    bk run
+    backup_conf 3 yubikey
+    sed -i "s|^DIR=.*|DIR=$WORK/nowhere|" "$WORK/backup.conf"
+    bk run
+
+    # decrypt: only a whole file, unchanged, with the right key and passphrase.
+    printf 'line one\nline two\n' >"$WORK/plain.txt"
+    openssl cms -encrypt -binary -aes-256-gcm -recip "$WORK/backup.crt" -keyopt rsa_padding_mode:oaep \
+        -keyopt rsa_oaep_md:sha256 -outform DER -in "$WORK/plain.txt" -out "$WORK/plain.cms"
+    bk decrypt plain.cms out.txt
+    bk decrypt --key backup.key plain.cms
+    bk decrypt --key backup.key --yes plain.cms out.txt
+    bk decrypt --key backup.key --passin pass:test-only plain.cms out.txt
+    stat -c '%a %n' "$WORK/out.txt"
+    cmp "$WORK/plain.txt" "$WORK/out.txt" && echo "out.txt: as encrypted"
+    bk decrypt --key backup.key --passin pass:test-only plain.cms out.txt
+    bk decrypt --key backup.key --passin pass:wrong plain.cms out2.txt
+    bk decrypt --key nokey --passin pass:test-only plain.cms out2.txt
+    bk decrypt --key backup.key --passin pass:test-only plain.txt out2.txt
+    bk decrypt --key backup.key --passin pass:test-only plain.cms nodir/out2.txt
+    # A changed byte, and a file cut short: openssl writes what it decrypted,
+    # but nothing stays.
+    cp "$WORK/plain.cms" "$WORK/changed.cms"
+    printf '\x01' | dd of="$WORK/changed.cms" bs=1 seek=$(( $(stat -c %s "$WORK/plain.cms") - 30 )) conv=notrunc 2>/dev/null
+    bk decrypt --key backup.key --passin pass:test-only changed.cms out2.txt
+    head -c $(( $(stat -c %s "$WORK/plain.cms") - 10 )) "$WORK/plain.cms" >"$WORK/short.cms"
+    bk decrypt --key backup.key --passin pass:test-only short.cms out2.txt
+    ls "$WORK"
+}
+
+# Backups of a database, and restores.
+scenario_pg_backup() {
+    backup_keys
+    mkdir "$WORK/bk" "$WORK/state"
+    run -b pg -d "$PGDB" init-pg >/dev/null
+    csv example.csv <"$ROOT/users.example.csv"
+    run -b pg -d "$PGDB" import example.csv >/dev/null
+    run_lines 'anycast-a,vvcccccccccb,0a0b0c0d0e01,00112233445566778899aabbccddeeff,checkpin1,1' -- -b pg -d "$PGDB" import - >/dev/null
+    run_lines 'svc-password-1' -- -b pg -d "$PGDB" service add svc.backup >/dev/null
+    run -b pg -d "$PGDB" group add netadmins >/dev/null
+    run -b pg -d "$PGDB" member add netadmins test.user svc.backup >/dev/null
+    run -b pg -d "$PGDB" access set netadmins core 15 >/dev/null
+    run -b pg -d "$PGDB" rule add netadmins core 'permit service=shell cmd=show' >/dev/null
+
+    # Four runs keep three; then two.
+    backup_conf 3
+    bk status
+    for _ in 1 2 3 4; do bk run; done
+    (cd "$WORK/bk" && find . -type f -printf '%m %P\n' | LC_ALL=C sort -k2)
+    bk status
+    backup_conf 2
+    bk run
+    (cd "$WORK/bk" && find . -type f -printf '%m %P\n' | LC_ALL=C sort -k2)
+    cat "$WORK/state/last" | sed -E 's/^time=[0-9]+$/time=<TIME>/'
+    echo
+
+    # check: anywhere, with the key; it changes nothing.
+    bk check bk/yubikey-db.cms.0
+    bk check --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+    bk check --key backup.key --passin pass:test-only bk/yubikey-db.cms.0 bk/yubikey-db.cms.1
+    pg_dump -Fc -d postgres >"$WORK/other.dump"
+    bk check other.dump
+    bk check backup.conf
+
+    # After the backup: a login (counters forward), the anycast check's
+    # renewed key, a disabled YubiKey, a new one, a group deleted and one
+    # added, a service account's new password.
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 9, low = 1 WHERE username = 'test.user'"
+    pgq "$PGDB" "SELECT anycast_renew('vvcccccccccb', '0a0b0c0d0e01', 'aaaaaaaaaaaa', '0123456789abcdef0123456789abcdef')" >/dev/null
+    run -b pg -d "$PGDB" disable test.user2 >/dev/null
+    run_lines 'carol,vvccccdddddd,0a0b0c0d0e0f,00112233445566778899aabbccddeeff,pin1' -- -b pg -d "$PGDB" import - >/dev/null
+    run -b pg -d "$PGDB" group delete netadmins >/dev/null
+    run -b pg -d "$PGDB" group add helpdesk >/dev/null
+    run_lines 'svc-password-2' -- -b pg -d "$PGDB" service password svc.backup >/dev/null
+    # It asks first, on a terminal.
+    bk restore --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+    bk restore --yes --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+    pgtable "SELECT username, tokenid, userid, active, counter, low FROM yubikeys ORDER BY username"
+    pgtable "SELECT g.name, m.username FROM user_groups g LEFT JOIN group_members m ON m.user_group = g.name ORDER BY 1, 2"
+    pgtable "SELECT user_group, device_group, seq, rule FROM group_rules"
+    echo
+    # Radiator's role can read the keys and save the counters, as before.
+    pgtable "SELECT has_column_privilege('${PGT}_radiator', 'yubikeys', 'secret', 'SELECT') AS read,
+                    has_column_privilege('${PGT}_radiator', 'yubikeys', 'counter', 'UPDATE') AS save,
+                    has_function_privilege('${PGT}_radiator', 'anycast_renew(text, text, text, text)', 'EXECUTE') AS renew"
+    pgq "$PGDB" "UPDATE yubikeys SET counter = 9, low = 1 WHERE username = 'test.user'" 2>&1 | sed 's/^/# /'
+    echo
+
+    # A file changed, a wrong passphrase, a dump cut short: nothing restored.
+    cp "$WORK/bk/yubikey-db.cms.1" "$WORK/changed.cms"
+    printf '\x01' | dd of="$WORK/changed.cms" bs=1 seek=2000 conv=notrunc 2>/dev/null
+    bk restore --yes --key backup.key --passin pass:test-only changed.cms
+    bk restore --yes --key backup.key --passin pass:wrong bk/yubikey-db.cms.1
+    bk decrypt --key backup.key --passin pass:test-only bk/yubikey-db.cms.1 plain.dump
+    head -c 3000 "$WORK/plain.dump" >"$WORK/short.dump"
+    bk restore --yes short.dump
+    pgtable "SELECT username, active, counter, low FROM yubikeys ORDER BY username"
+    echo
+
+    # A session that holds a lock for long: the restore gives up after 10 s,
+    # and changes nothing, instead of holding up logins behind it.
+    psql -X -q -d "$PGDB" -c "BEGIN; LOCK TABLE group_rules IN ACCESS SHARE MODE; SELECT pg_sleep(14); COMMIT;" >/dev/null &
+    sleep 1
+    bk restore --yes plain.dump
+    wait
+    # A decrypted dump; then into a database without the tables (a new one).
+    bk restore --yes plain.dump
+    psql -X -q -d postgres -c "CREATE DATABASE ${PGT}_empty OWNER ${PGT}_admin"
+    backup_conf 2 "${PGT}_empty"
+    bk restore --yes plain.dump
+    psql -X -q --no-align --field-separator ' | ' --pset footer=off -d "${PGT}_empty" \
+        -c "SELECT username, tokenid, active, counter FROM yubikeys ORDER BY username" -c "SELECT name FROM user_groups"
+    echo
+
+    # A run that fails: its status says why.
+    backup_conf 2 "${PGT}_none"
+    bk run
+    bk status
+    (cd "$WORK/bk" && find . -type f -printf '%m %P\n' | LC_ALL=C sort -k2)
+}
+
+# --------------------------------------------------------------------------
 # Runner
 # --------------------------------------------------------------------------
 
@@ -3068,13 +3294,13 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
      anycast anycast_run pg_anycast pg_partition groups pg_groups install
-     turnkey turnkey_errors turnkey_secrets)
+     turnkey turnkey_errors turnkey_secrets backup pg_backup)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }
 needs_otp() { [[ $1 == verify || $1 == pg_verify || $1 == *anycast* ]]; }
 needs_dpkg() { [[ $1 == install ]]; }
-needs_turnkey() { [[ $1 == turnkey* ]]; }
+needs_turnkey() { [[ $1 == turnkey* || $1 == *backup ]]; }
 
 if [[ ${1-} == --update ]]; then UPDATE=1; shift; fi
 if [[ $# -gt 0 ]]; then SELECTED=("$@"); else SELECTED=("${ALL[@]}"); fi

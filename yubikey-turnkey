@@ -23,6 +23,8 @@
 #     routers.md       what each site's router needs
 #     devices.md       what each device needs: the anycast addresses, its
 #                      RADIUS secret and TACACS+ key (mode 0600)
+#     secrets.toml.cms secrets.toml, encrypted to the backups' certificate
+#                      (with [backup]); each server keeps a copy too
 #   It removes the files it wrote before and no longer writes; other files
 #   in out/ (such as the packages copied next to setup.sh) stay.
 #
@@ -46,7 +48,8 @@
 #   error in the input or the options.
 #
 # PREREQUISITES
-#   Python 3.11 or later (tomllib), and openssl (for the certificates).
+#   Python 3.11 or later (tomllib), and openssl (for the certificates, and
+#   to encrypt secrets.toml.cms).
 
 import argparse
 import base64
@@ -91,6 +94,7 @@ PASSWORD_RE = re.compile(r"^[A-Za-z0-9]{16,128}$")
 RESERVED_GROUPS = {"localhost", "*", "anycast-check"}
 RULE_RE = re.compile(r"^(permit|permitreplace|deny) \S")
 HEADER = "Made by yubikey-turnkey"
+SECRETS_COPY = "yubikey-turnkey-secrets.toml.cms"   # secrets.toml, encrypted, on the servers
 
 
 class InputError(Exception):
@@ -201,7 +205,7 @@ def check_site(path):
 
     s = Site()
     known(data, {"site", "server", "anycast", "cluster", "admin", "partition", "firewall",
-                 "catch_all", "device", "group"}, "")
+                 "catch_all", "device", "group", "backup"}, "")
 
     t = table(data, "site", "[site]")
     known(t, {"name", "service_name"}, "site.")
@@ -322,6 +326,21 @@ def check_site(path):
     t = table(data, "firewall", "[firewall]", required=False)
     known(t, {"enabled"}, "firewall.")
     s.firewall = boolean(t, "enabled", "firewall.", True)
+
+    # Backups: none without the table.
+    s.backup = None
+    t = table(data, "backup", "[backup]", required=False)
+    if not isinstance(t, Missing):
+        known(t, {"certificate", "keep"}, "backup.")
+        cert = text(t, "certificate", "backup.")
+        keep = integer(t, "keep", "backup.", 1, 366, default=7)
+        if cert is not None:
+            cpath = os.path.join(os.path.dirname(os.path.abspath(path)), os.path.expanduser(cert))
+            pem, why = backup_cert(cpath)
+            if why:
+                err("backup.certificate", why)
+            elif keep is not None:
+                s.backup = {"name": cert, "path": cpath, "cert": pem, "keep": keep}
 
     t = table(data, "catch_all", "[catch_all]", required=False)
     known(t, {"enabled", "group"}, "catch_all.")
@@ -453,6 +472,44 @@ def subnets(v, where, err, required=False):
             continue
         out.append(n)
     return out
+
+
+def backup_cert(path):
+    """The backups' certificate at PATH: (its PEM text, None), or (None, why
+    it can't be)."""
+    try:
+        with open(path) as f:
+            pem = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return None, (f"cannot read {path}: {getattr(e, 'strerror', None) or e} (make it as the guide's "
+                      "\"Turn-key backups\" says, and keep its private key elsewhere)")
+    if "PRIVATE KEY" in pem:
+        return None, (f"{path} holds a private key: name a file with the certificate only, and keep the "
+                      "key off the servers")
+    try:
+        r = subprocess.run(["openssl", "x509", "-noout", "-text"], input=pem, capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, "openssl not found (it checks the certificate): sudo apt install openssl"
+    m = re.search(r"Public-Key: \((\d+) bit\)", r.stdout)
+    if r.returncode != 0 or pem.count("-----BEGIN CERTIFICATE-----") != 1:
+        return None, f"{path} is not one certificate (PEM)"
+    if "Public Key Algorithm: rsaEncryption" not in r.stdout or not m or int(m[1]) < 3072:
+        return None, f"{path} must have an RSA key of 3072 bits or more"
+    return pem, None
+
+
+def encrypt(cert, data):
+    """DATA encrypted to the certificate CERT, as yubikey-backup.sh encrypts
+    the backups (openssl cms, AES-256-GCM, RSA-OAEP)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        write(tmp, "backup.crt", cert)
+        with open(os.path.join(tmp, "in"), "wb") as fh:
+            fh.write(data)
+        openssl("cms", "-encrypt", "-binary", "-aes-256-gcm", "-recip", "backup.crt",
+                "-keyopt", "rsa_padding_mode:oaep", "-keyopt", "rsa_oaep_md:sha256",
+                "-outform", "DER", "-in", "in", "-out", "out", cwd=tmp)
+        with open(os.path.join(tmp, "out"), "rb") as fh:
+            return fh.read()
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +794,7 @@ def gen_server(site, sec, out, sv):
         ("ADMIN_SUBNETS", [str(x) for x in site.admin_nets]),
         ("PARTITION", int(site.partition)),
         ("FIREWALL", int(site.firewall)),
+        ("BACKUP", int(site.backup is not None)),
     ]))
     # secrets.env: what setup.sh needs itself (the rest is in files/).
     pairs = [("RADIATOR_PASSWORD", sec["cluster"]["radiator"])]
@@ -965,6 +1023,24 @@ TACACS_KEY="{sec['localhost']['tacacs_key']}"
       f"user=svc.anycast-{n}\npassword={a['tacacs_password']}\n", "0600", "root:root", "keep")
     f("anycast", "etc/frr/frr.conf", frr_conf(site, sv), "0640", "frr:frr")
 
+    # Backups: the certificate they are encrypted to, the settings, and
+    # secrets.toml, encrypted the same way.
+    if site.backup:
+        f("backup", "etc/radiator/backup.crt", site.backup["cert"])
+        f("backup", "etc/radiator/backup.conf", header(site, "backup.conf") + f"""\
+# Settings for yubikey-backup.sh (see yubikey-backup.example.conf).
+# NAME=value lines; the file is read, never run as shell code.
+
+# The certificate the backups are encrypted to: its private key is kept off
+# the servers.
+CERT=/etc/radiator/backup.crt
+
+# How many to keep, one a day: /var/backups/yubikey-db.cms.0 (the newest) to
+# .{site.backup['keep'] - 1}.
+KEEP={site.backup['keep']}
+""")
+        f("backup", f"var/backups/{SECRETS_COPY}", site.backup["secrets"], "0640", "root:adm")
+
     # The firewall.
     v4, v6 = firewall(site, sv)
     f("firewall", "etc/iptables/rules.v4", v4)
@@ -1135,6 +1211,35 @@ def gen_sheets(site, sec, out, packages):
     first = site.first
     last = next((o for o in site.servers if o["last_resort"]), None)
     names = ", ".join(o["name"] for o in site.servers)
+    backup_before = backup_steps = backup_keep = ""
+    if site.backup:
+        b = site.backup
+        backup_before = f"""\
+- `{b['name']}` is the backups' certificate: its private key is on none of
+  the servers, and you keep it where you keep the backups.
+"""
+        backup_steps = f"""
+## 9. Backups
+
+Each server dumps the database every day at about 03:00, encrypted to the
+backups' certificate, and keeps {b['keep']}: `/var/backups/yubikey-db.cms.0` (the
+newest) to `.{b['keep'] - 1}`, readable by the group adm. Fetch them to where you
+keep backups, and now and then check that one decrypts and reads back
+whole, on your machine:
+
+```bash
+scp {first['fqdn']}:/var/backups/yubikey-db.cms.0 .
+yubikey-backup.sh check --key backup.key yubikey-db.cms.0
+```
+
+To restore one, see the guide's "Turn-key backups".
+"""
+        backup_keep = f"""
+
+`secrets.toml.cms` is `secrets.toml` encrypted to the backups'
+certificate, and each server keeps it as
+`/var/backups/{SECRETS_COPY}`: with the private key,
+`yubikey-backup.sh decrypt` gives back `secrets.toml`."""
     out.add("runbook.md", f"""\
 # {site.name}: runbook
 
@@ -1153,7 +1258,7 @@ def gen_sheets(site, sec, out, packages):
    + "  with its `install.sh`; or run yubikey-turnkey again with `--packages DIR`."}
 - Between the servers, and from the admin subnets, SSH and the ports in
   `{site.src}`'s comments must not be blocked by firewalls on the way.
-
+{backup_before}
 ## 2. Copy each folder to its server
 
 Each folder holds secrets: copy it as root, readable by root only, for
@@ -1215,20 +1320,18 @@ servers, with their secret and key.
 
 ## 8. Check
 
-On each server:
+On each server: every line `ok` (the guide's "Check a turn-key server"
+says what the others mean, and how monitoring can run it).
 
 ```bash
-sudo patronictl -c /etc/patroni/18-main.yml list
-sudo /opt/radiator-yubikey/yubikey-anycast.sh status
-sudo /opt/radiator-yubikey/yubikey-partition.sh status
-sudo vtysh -c 'show bgp summary'
+sudo /opt/radiator-yubikey/yubikey-turnkey-setup.sh --status
 ```
-
+{backup_steps}
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and
 nothing else, where only you can read them. Each server keeps a copy of
-its own in `/etc/yubikey-turnkey`.
+its own in `/etc/yubikey-turnkey`.{backup_keep}
 """)
 
     r = [f"# {site.name}: routers", "",
@@ -1436,6 +1539,28 @@ def summary(paths):
     return ", ".join(seen)
 
 
+DIGEST = ".secrets.toml.cms.sha256"
+
+
+def secrets_copy(site, sectext, outdir, check):
+    """secrets.toml encrypted to the backups' certificate: the copy in OUTDIR
+    when secrets.toml and the certificate are the same as when it was made
+    (each encryption differs, so the output stays the same), or a new one
+    (with --check, a placeholder, which compares as changed)."""
+    digest = hashlib.sha256(sectext.encode() + b"\0" + site.backup["cert"].encode()).hexdigest()
+    site.backup["digest"] = digest
+    try:
+        with open(os.path.join(outdir, DIGEST)) as fh:
+            same = fh.read().strip() == digest
+        with open(os.path.join(outdir, "secrets.toml.cms"), "rb") as fh:
+            data = fh.read()
+        if same and data:
+            return data
+    except OSError:
+        pass
+    return b"" if check else encrypt(site.backup["cert"], sectext.encode())
+
+
 def save_secrets(path, text):
     tmp = path + ".new"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1509,7 +1634,12 @@ def main():
         print(f"{show(secpath)}: would get new secrets: {summary(new)}")
         return 1
 
+    sectext = dump_secrets(sec, site)
     out = Out()
+    if site.backup:
+        site.backup["secrets"] = secrets_copy(site, sectext, outdir, args.check)
+        out.add("secrets.toml.cms", site.backup["secrets"])
+        out.add(DIGEST, site.backup["digest"] + "\n")
     for sv in site.servers:
         gen_server(site, sec, out, sv)
     gen_admin(site, sec, out)
@@ -1517,7 +1647,6 @@ def main():
     if args.packages:
         copy_packages(site, out, args.packages)
 
-    sectext = dump_secrets(sec, site)
     write_, remove = compare(outdir, out.files)
     if args.check:
         changed = False
@@ -1529,9 +1658,11 @@ def main():
         except OSError:
             changed = True
         for p in write_:
-            print(f"{show(outdir, p)}: would be written")
+            if p != DIGEST:
+                print(f"{show(outdir, p)}: would be written")
         for p in remove:
-            print(f"{show(outdir, p)}: would be removed")
+            if p != DIGEST:
+                print(f"{show(outdir, p)}: would be removed")
         if not changed and not write_ and not remove:
             print(f"{show(outdir)}: up to date")
         return 1 if changed or write_ or remove else 0
@@ -1548,23 +1679,30 @@ def main():
     elif new:
         print(f"{show(secpath)}: new {summary(new)}")
     write_out(outdir, out.files, write_, remove)
-    # The files written: one line per folder of out/, unless only a few.
-    if len(write_) + len(remove) <= 10:
-        for p in write_:
+    # The files written: one line per folder of out/, unless only a few
+    # (not the digest, which goes with secrets.toml.cms).
+    shown_w = [p for p in write_ if p != DIGEST]
+    shown_r = [p for p in remove if p != DIGEST]
+    if len(shown_w) + len(shown_r) <= 10:
+        for p in shown_w:
             print(f"wrote {show(outdir, p)}")
-        for p in remove:
+        for p in shown_r:
             print(f"removed {show(outdir, p)}")
     else:
-        for top in sorted({p.split("/")[0] for p in write_ + remove}):
-            mine = [p for p in write_ if p.split("/")[0] == top]
-            gone = [p for p in remove if p.split("/")[0] == top]
+        for top in sorted({p.split("/")[0] for p in shown_w + shown_r}):
+            mine = [p for p in shown_w if p.split("/")[0] == top]
+            gone = [p for p in shown_r if p.split("/")[0] == top]
             if mine == [top]:
                 print(f"wrote {show(outdir, top)}")
+            elif gone == [top]:
+                print(f"removed {show(outdir, top)}")
             else:
                 print(f"{show(outdir, top)}/: {len(mine)} written" + (f", {len(gone)} removed" if gone else ""))
     if not write_ and not remove:
         print(f"{show(outdir)}: up to date")
 
+    if not site.backup and (write_ or remove):
+        note(f"no [backup] in {site.src}: the servers make no backups (see the guide's \"Turn-key backups\")")
     gone = sorted(set((old.get("device") or {})) - {d["address"] for d in site.devices})
     if gone and (write_ or remove):
         note(f"{show(secpath)} keeps the secrets of devices no longer in {site.src}: {', '.join(gone)}")

@@ -130,10 +130,10 @@ check "a second build is the same, byte for byte" "$(sha256sum <"$deb")" \
     "$("$here/build-deb.sh" "$image" "$work/again" >/dev/null && sha256sum <"$work/again/${deb##*/}")"
 check "every file is in /opt/radiator-yubikey, a systemd unit, or the package's own" "" \
     "$(dpkg-deb -c "$deb" | awk '{print $6}' | grep -v '/$' \
-        | grep -vE '^\./(opt/radiator-yubikey/|usr/lib/systemd/system/yubikey-(anycast|partition)\.service$|usr/share/(doc|lintian/overrides)/radiator-yubikey)')"
+        | grep -vE '^\./(opt/radiator-yubikey/|usr/lib/systemd/system/yubikey-((anycast|partition|backup)\.service|backup\.timer)$|usr/share/(doc|lintian/overrides)/radiator-yubikey)')"
 check "the units run the scripts in /opt/radiator-yubikey" \
-    "/opt/radiator-yubikey/yubikey-anycast.sh run|/opt/radiator-yubikey/yubikey-partition.sh run" \
-    "$(sed -n 's/^ExecStart=//p' "$root/yubikey-anycast.service" "$root/yubikey-partition.service" | paste -sd'|')"
+    "/opt/radiator-yubikey/yubikey-anycast.sh run|/opt/radiator-yubikey/yubikey-backup.sh run|/opt/radiator-yubikey/yubikey-partition.sh run" \
+    "$(sed -n 's/^ExecStart=//p' "$root/yubikey-anycast.service" "$root/yubikey-backup.service" "$root/yubikey-partition.service" | paste -sd'|')"
 
 echo
 echo "== No Radiator"
@@ -149,8 +149,8 @@ check "and the packages it installs with apt-get" "" \
                 libdbd-sqlite3-perl sqlite3 libdbd-pg-perl postgresql-client; do
            [[ $(version none $p) != none ]] || printf '%s ' "$p"; done)"
 check "the scripts run from /opt/radiator-yubikey" \
-    "yubikey-db.sh $pkg_version|yubikey-db-migrate.sh $pkg_version|yubikey-anycast.sh $pkg_version|yubikey-partition.sh $pkg_version|install.sh $pkg_version" \
-    "$(on none 'for s in yubikey-db yubikey-db-migrate yubikey-anycast yubikey-partition install; do
+    "yubikey-db.sh $pkg_version|yubikey-db-migrate.sh $pkg_version|yubikey-anycast.sh $pkg_version|yubikey-partition.sh $pkg_version|yubikey-backup.sh $pkg_version|install.sh $pkg_version" \
+    "$(on none 'for s in yubikey-db yubikey-db-migrate yubikey-anycast yubikey-partition yubikey-backup install; do
                    /opt/radiator-yubikey/$s.sh -V; done' | paste -sd'|')"
 check "they manage a database without Radiator" "2 users" \
     "$(on none 'cd /opt/radiator-yubikey && ./yubikey-db.sh -d /tmp/t.db init >/dev/null 2>&1 &&
@@ -224,10 +224,11 @@ on systemd "install -m 0755 /repo/yubikey-anycast.sh /repo/yubikey-partition.sh 
                 >/etc/systemd/system/yubikey-anycast.service &&
             systemctl daemon-reload && systemctl enable yubikey-anycast 2>/dev/null"
 on systemd "dpkg -i /inst/${deb##*/} >/dev/null"
-check "the install enables and starts neither service" "disabled inactive inactive" \
-    "$(on systemd 'systemctl is-enabled yubikey-partition; systemctl is-active yubikey-partition yubikey-anycast' | paste -sd' ')"
+check "the install enables and starts neither service, nor the backups' timer" "disabled disabled inactive inactive inactive" \
+    "$(on systemd 'systemctl is-enabled yubikey-partition yubikey-backup.timer; systemctl is-active yubikey-partition yubikey-anycast yubikey-backup.timer' | paste -sd' ')"
 check "systemd finds nothing wrong with the units" "" \
-    "$(on systemd 'systemd-analyze verify /usr/lib/systemd/system/yubikey-anycast.service /usr/lib/systemd/system/yubikey-partition.service 2>&1')"
+    "$(on systemd 'systemd-analyze verify /usr/lib/systemd/system/yubikey-anycast.service /usr/lib/systemd/system/yubikey-partition.service \
+                       /usr/lib/systemd/system/yubikey-backup.service /usr/lib/systemd/system/yubikey-backup.timer 2>&1')"
 install systemd --check >/dev/null
 check "install.sh says the unit installed by hand hides the package's" yes \
     "$(said systemd '^  - /etc/systemd/system/yubikey-anycast.service, installed by hand, hides')"

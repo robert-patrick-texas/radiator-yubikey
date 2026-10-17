@@ -13,22 +13,76 @@
   `CRITICAL`, with the exit status that monitoring tools expect (0, 1, 2;
   3 when it can't check). See the guide's
   [Check a turn-key server](docs/guide.md#check-a-turn-key-server).
+- `yubikey-backup.sh`, with `yubikey-backup.service` and
+  `yubikey-backup.timer` (installed, not enabled): an encrypted backup of
+  a PostgreSQL database every day on each server, from its own
+  PostgreSQL (a standby's too), with `pg_dump` and `openssl cms`
+  (AES-256-GCM, RSA-OAEP) for a certificate whose private key is kept off
+  the servers; the dump is never on disk in clear. It keeps `KEEP` of
+  them, 7 by default, in `/var/backups` (`yubikey-db.cms.0`, the newest,
+  to `.6`, group `adm`). `check` decrypts one and reads it back whole,
+  `decrypt` writes it out, both only when the file is whole and
+  unchanged, and on any machine with `openssl` and `pg_restore`.
+  `restore`, on the primary, says what it would undo (YubiKeys, service
+  accounts and groups added, deleted or changed since), asks, and
+  replaces every table in one transaction, keeping the counters that are
+  ahead and the anycast checks' keys; it waits at most 10 s for a lock.
+  `status` exits 0 while the newest is less than 26 hours old. See the
+  guide's [Automatic backups](docs/guide.md#automatic-backups).
+- Turn-key setup: `[backup]` in `site.toml` (`certificate`, `keep`; in
+  `site.example.toml`): `setup.sh` installs the certificate and the
+  settings, starts the timer and makes the first backup; `--status` warns
+  when the newest backup is more than 26 hours old, the last one failed,
+  or the timer is off; `--reset` leaves the backups. `yubikey-turnkey`
+  checks the certificate (RSA, 3072 bits or more, no private key in the
+  file), and writes `secrets.toml` encrypted for it
+  (`out/secrets.toml.cms`, and on each server
+  `/var/backups/yubikey-turnkey-secrets.toml.cms`), made again only when
+  `secrets.toml` or the certificate changes. Without `[backup]` it says
+  that the servers make no backups. See the guide's
+  [Turn-key backups](docs/guide.md#turn-key-backups).
 
 ### Changed
 
 - `yubikey-partition.sh status` says why the copy isn't updated, while it
   isn't (`copy not updated: ...`).
+- The turn-key runbook checks each server with `setup.sh --status`, and
+  says where the backups are.
+- `yubikey-turnkey` says `removed out/FILE` for a file of its own it
+  removed from `out/`.
 
 ### Tests
 
-- `tests/radiator/turnkey.sh` (114 checks): `setup.sh --status` on
+- `tests/radiator/turnkey.sh` (155 checks): `setup.sh --status` on
   the three servers, from the package without the folder, and not as root;
   and what it says with etcd stopped on one server, a router down, the
-  primary moved, the anycast addresses withdrawn, and a folder copied but
-  not set up.
-- `tests/run-tests.sh`: `turnkey` runs `setup.sh --status` as a normal user
-  and with another option; `pg_partition` shows the copy that isn't
-  updated.
+  primary moved, the anycast addresses withdrawn, a folder copied but not
+  set up, a backup 30 hours old and the backups' timer stopped. The
+  backups: the first, made by `setup.sh`; more on a standby, of which it
+  keeps `keep`; one checked and decrypted on the admins' machine with a
+  key pair made as the guide says; a restore on the primary after a login,
+  a deleted YubiKey, a group change and a renewed anycast key (what it
+  undoes, the counters and the checks' keys it keeps, logins right after),
+  refused on a standby; and after `--reset` on all three, the last backup
+  restored into the new cluster.
+- `tests/radiator/geo.sh` (212 checks): the guide's steps for automatic
+  backups on the three sites, a backup checked and decrypted on the
+  client, and restored on the primary at its prompt after a login (the OTP
+  stays used; logins and anycast go on).
+- `tests/radiator/package.sh`: the backups' units are installed, neither
+  enabled nor started, and pass `systemd-analyze verify`.
+- `tests/run-tests.sh` (48 scenarios): `turnkey` runs `setup.sh --status`
+  as a normal user and with another option, and checks `secrets.toml.cms`
+  (it decrypts to `secrets.toml`, is made again only when it or the
+  certificate changes, and goes with `[backup]`); `turnkey_errors` the
+  checks of `[backup]`; `pg_partition` shows the copy that isn't updated;
+  new: `backup` (the settings, `status`, and `decrypt` of whole, changed
+  and cut files, with right and wrong keys and passphrases) and
+  `pg_backup` (`run` and how many it keeps, `check`, and `restore`: its
+  list of changes, the counters and anycast keys it keeps, Radiator's
+  rights after it, a changed file, a wrong passphrase, a dump cut short, a
+  lock held for long, and a database without the tables). Their test key
+  pair is in `tests/turnkey/`.
 
 ## 1.11.0 - 2026-10-16
 

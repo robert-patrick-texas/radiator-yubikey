@@ -1,0 +1,176 @@
+$ yubikey-backup.sh status
+no backup yet in <WORK>/bk
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 1]
+
+$ yubikey-backup.sh run
+made <WORK>/bk/yubikey-db.cms.0 (<N> KB, of database <T>_db on the primary); keeping 3
+[exit 0]
+
+$ yubikey-backup.sh run
+made <WORK>/bk/yubikey-db.cms.0 (<N> KB, of database <T>_db on the primary); keeping 3
+[exit 0]
+
+$ yubikey-backup.sh run
+made <WORK>/bk/yubikey-db.cms.0 (<N> KB, of database <T>_db on the primary); keeping 3
+[exit 0]
+
+$ yubikey-backup.sh run
+made <WORK>/bk/yubikey-db.cms.0 (<N> KB, of database <T>_db on the primary); keeping 3
+[exit 0]
+
+640 yubikey-db.cms.0
+640 yubikey-db.cms.1
+640 yubikey-db.cms.2
+$ yubikey-backup.sh status
+the newest backup is 0 min old
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 3 of 3, the oldest yubikey-db.cms.2 of <TIMESTAMP> UTC
+last run: <TIMESTAMP> UTC, ok
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 0]
+
+$ yubikey-backup.sh run
+made <WORK>/bk/yubikey-db.cms.0 (<N> KB, of database <T>_db on the primary); keeping 2
+[exit 0]
+
+640 yubikey-db.cms.0
+640 yubikey-db.cms.1
+time=<TIME>
+result=ok
+text=made <WORK>/bk/yubikey-db.cms.0
+
+$ yubikey-backup.sh check bk/yubikey-db.cms.0
+yubikey-backup.sh: error: bk/yubikey-db.cms.0 is not a dump: to decrypt it (a backup), name the private key (--key KEY)
+[exit 3]
+
+$ yubikey-backup.sh check --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+bk/yubikey-db.cms.0: a whole backup of the YubiKey database, made <TIMESTAMP> UTC (PostgreSQL 18.6)
+  it holds 3 YubiKeys (of 3 users), 1 service account, 1 group
+[exit 0]
+
+$ yubikey-backup.sh check --key backup.key --passin pass:test-only bk/yubikey-db.cms.0 bk/yubikey-db.cms.1
+yubikey-backup.sh: error: check: name one file
+[exit 3]
+
+$ yubikey-backup.sh check other.dump
+yubikey-backup.sh: not a backup of the YubiKey database: it has no table yubikeys
+[exit 1]
+
+$ yubikey-backup.sh check backup.conf
+yubikey-backup.sh: error: backup.conf is not a dump: to decrypt it (a backup), name the private key (--key KEY)
+[exit 3]
+
+$ yubikey-backup.sh restore --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+The backup, made <TIMESTAMP> UTC: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The database <T>_db now: 4 YubiKeys (of 4 users), 1 service account, 1 group.
+The restore puts the backup's tables back, and so undoes what changed since:
+  YubiKeys added since the backup, which go: carol vvccccdddddd
+  YubiKeys changed since the backup, which are put back as they were: test.user2 cbdefghijklr (enabled again)
+  Service accounts changed since the backup, which are put back as they were: svc.backup (its password)
+  Groups added since the backup, which go: helpdesk
+  Groups deleted since the backup, which come back: netadmins
+Counters that are ahead now stay, and so do the anycast checks' keys.
+yubikey-backup.sh: error: restore: answer on a terminal, or add --yes
+[exit 3]
+
+$ yubikey-backup.sh restore --yes --key backup.key --passin pass:test-only bk/yubikey-db.cms.0
+The backup, made <TIMESTAMP> UTC: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The database <T>_db now: 4 YubiKeys (of 4 users), 1 service account, 1 group.
+The restore puts the backup's tables back, and so undoes what changed since:
+  YubiKeys added since the backup, which go: carol vvccccdddddd
+  YubiKeys changed since the backup, which are put back as they were: test.user2 cbdefghijklr (enabled again)
+  Service accounts changed since the backup, which are put back as they were: svc.backup (its password)
+  Groups added since the backup, which go: helpdesk
+  Groups deleted since the backup, which come back: netadmins
+Counters that are ahead now stay, and so do the anycast checks' keys.
+Restored the backup of <TIMESTAMP> UTC into <T>_db: 3 YubiKeys, 1 service account, 1 group.
+Kept the counters of 1 YubiKey(s) that were ahead, and the keys of 1 anycast check(s).
+[exit 0]
+
+username | tokenid | userid | active | counter | low
+anycast-a | vvcccccccccb | aaaaaaaaaaaa | 1 | 0 | 0
+test.user | cbdefghijkln | 456789abcdef | 1 | 9 | 1
+test.user2 | cbdefghijklr | 0a1b2c3d4e5f | 1 | 0 | 0
+name | username
+netadmins | svc.backup
+netadmins | test.user
+user_group | device_group | seq | rule
+netadmins | core | 10 | permit service=shell cmd=show
+
+read | save | renew
+t | t | t
+# ERROR:  counter violation: YubiKey cbdefghijkln already used this OTP or a later one
+# CONTEXT:  PL/pgSQL function yubikeys_counters_forward() line 10 at RAISE
+
+$ yubikey-backup.sh restore --yes --key backup.key --passin pass:test-only changed.cms
+yubikey-backup.sh: changed.cms didn't decrypt: a wrong key, or the file isn't whole or was changed (openssl: Error decrypting CMS structure)
+[exit 1]
+
+$ yubikey-backup.sh restore --yes --key backup.key --passin pass:wrong bk/yubikey-db.cms.1
+yubikey-backup.sh: cannot read the private key backup.key: a wrong passphrase
+[exit 1]
+
+$ yubikey-backup.sh decrypt --key backup.key --passin pass:test-only bk/yubikey-db.cms.1 plain.dump
+decrypted bk/yubikey-db.cms.1 to plain.dump (<N> KB, mode 0600)
+[exit 0]
+
+$ yubikey-backup.sh restore --yes short.dump
+yubikey-backup.sh: not a dump that pg_restore can read: pg_restore: error: could not read from input file: end of file
+[exit 1]
+
+username | active | counter | low
+anycast-a | 1 | 0 | 0
+test.user | 1 | 9 | 1
+test.user2 | 1 | 0 | 0
+
+$ yubikey-backup.sh restore --yes plain.dump
+The backup, made <TIMESTAMP> UTC: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The database <T>_db now: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The YubiKeys, service accounts and groups are as in the backup.
+Counters that are ahead now stay, and so do the anycast checks' keys.
+yubikey-backup.sh: nothing restored: ERROR:  canceling statement due to lock timeout
+[exit 1]
+
+$ yubikey-backup.sh restore --yes plain.dump
+The backup, made <TIMESTAMP> UTC: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The database <T>_db now: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The YubiKeys, service accounts and groups are as in the backup.
+Counters that are ahead now stay, and so do the anycast checks' keys.
+Restored the backup of <TIMESTAMP> UTC into <T>_db: 3 YubiKeys, 1 service account, 1 group.
+Kept the counters of 1 YubiKey(s) that were ahead, and the keys of 1 anycast check(s).
+[exit 0]
+
+$ yubikey-backup.sh restore --yes plain.dump
+The backup, made <TIMESTAMP> UTC: 3 YubiKeys (of 3 users), 1 service account, 1 group.
+The database <T>_empty now: 0 YubiKeys (of 0 users), 0 service accounts, 0 groups.
+The restore puts the backup's tables back, and so undoes what changed since:
+  YubiKeys deleted since the backup, which come back: test.user cbdefghijkln, test.user2 cbdefghijklr
+  Service accounts deleted since the backup, which come back: svc.backup
+  Groups deleted since the backup, which come back: netadmins
+Counters that are ahead now stay, and so do the anycast checks' keys.
+Restored the backup of <TIMESTAMP> UTC into <T>_empty: 3 YubiKeys, 1 service account, 1 group.
+Kept the counters of 0 YubiKey(s) that were ahead, and the keys of 0 anycast check(s).
+[exit 0]
+
+username | tokenid | active | counter
+anycast-a | vvcccccccccb | 1 | 0
+test.user | cbdefghijkln | 1 | 0
+test.user2 | cbdefghijklr | 1 | 0
+name
+netadmins
+
+$ yubikey-backup.sh run
+yubikey-backup.sh: no backup made: pg_dump: error: connection to server <SERVER> failed: FATAL:  database "<T>_none" does not exist
+[exit 1]
+
+$ yubikey-backup.sh status
+the last backup failed, 0 min ago: pg_dump: error: connection to server <SERVER> failed: FATAL:  database "<T>_none" does not exist
+newest: <WORK>/bk/yubikey-db.cms.0, <TIMESTAMP> UTC, <N> KB
+kept: 2 of 2, the oldest yubikey-db.cms.1 of <TIMESTAMP> UTC
+last run: <TIMESTAMP> UTC, failed
+encrypted to: CN = radiator-yubikey tests: backups (test only) (SHA-256 6C:32:76:82:F1:7D:C5:9B:BC:8F:66:5F:D8:A8:C1:91:F6:B2:72:BF:8B:34:E6:A8:3F:B1:30:DD:6F:E5:99:A8), until 2046-10-11
+[exit 1]
+
+640 yubikey-db.cms.0
+640 yubikey-db.cms.1

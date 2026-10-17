@@ -26,6 +26,8 @@
 #   - apt-get works on the servers (Ubuntu's archive): setup.sh installs
 #     PostgreSQL, Patroni, etcd, FRR and the rest from it.
 #   - The servers' clocks are synchronized (NTP).
+#   - The backups' certificate, backup.crt, next to this file (see
+#     [backup] below), with its private key elsewhere.
 #   - Each site has one or two routers that peer with its server over BGP,
 #     with BFD, over IPv4 and IPv6: out/routers.md says what they need.
 #   - The devices (switches, routers, firewalls) send RADIUS to UDP port
@@ -139,6 +141,15 @@ enabled = true
 # anyway.
 [firewall]
 enabled = true
+
+# Backups: each server dumps the database every day, encrypted to this
+# certificate (a file next to this one), and keeps the last ones in
+# /var/backups. Its private key is kept off the servers: make the pair as
+# the guide's "Turn-key backups" says. yubikey-turnkey also writes
+# secrets.toml encrypted to it. Without this table, no backups.
+[backup]
+certificate = "backup.crt"
+keep = 7                    # yubikey-db.cms.0 (the newest) to .6
 
 # The catch-all client: a device that isn't listed below may log in too,
 # with the catch-all's own secret and key, in this device group. Without

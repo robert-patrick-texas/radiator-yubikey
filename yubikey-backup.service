@@ -1,0 +1,33 @@
+# yubikey-backup.service - Runs 'yubikey-backup.sh run' once: an encrypted
+# backup of the YubiKey database from this server's own PostgreSQL, in
+# /var/backups (see the guide's "Automatic backups"). yubikey-backup.timer
+# starts it every day. The radiator-yubikey package installs both, not
+# enabled; with the scripts in /opt/radiator-yubikey from git instead:
+#
+#   sudo install -m 0644 yubikey-backup.service yubikey-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+
+[Unit]
+Description=Encrypted backup of the YubiKey database
+Documentation=https://robert-patrick-texas.github.io/radiator-yubikey/#automatic-backups
+After=postgresql.service patroni@18-main.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/radiator-yubikey/yubikey-backup.sh run
+StateDirectory=yubikey-backup
+StateDirectoryMode=0700
+Nice=10
+IOSchedulingClass=idle
+# Root: it runs pg_dump as postgres, through the local socket, and writes
+# the backups as root.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+SystemCallArchitectures=native

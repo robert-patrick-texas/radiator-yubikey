@@ -1,0 +1,15 @@
+# yubikey-backup.timer - Starts yubikey-backup.service every day at about
+# 03:00 (this server's time), or at the next boot when the server was off
+# then. Turn it on with: sudo systemctl enable --now yubikey-backup.timer
+
+[Unit]
+Description=Daily encrypted backup of the YubiKey database
+Documentation=https://robert-patrick-texas.github.io/radiator-yubikey/#automatic-backups
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

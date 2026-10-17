@@ -101,6 +101,50 @@ site.toml: [[device]]: list the devices, or enable the catch-all client
 yubikey-turnkey: error: nothing written: fix the input first
 [exit 2]
 
+# backups: no certificate, keep out of range, an unknown setting
+$ yubikey-turnkey site.toml
+site.toml: backup.retain: unknown setting
+site.toml: backup.certificate: missing
+site.toml: backup.keep: must be a whole number from 1 to 366
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: missing.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: cannot read <WORK>/missing.crt: No such file or directory (make it as the guide's "Turn-key backups" says, and keep its private key elsewhere)
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: text.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: <WORK>/text.crt is not one certificate (PEM)
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: with-key.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: <WORK>/with-key.crt holds a private key: name a file with the certificate only, and keep the key off the servers
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: ec.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: <WORK>/ec.crt must have an RSA key of 3072 bits or more
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: small.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: <WORK>/small.crt must have an RSA key of 3072 bits or more
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
+# backups: two.crt
+$ yubikey-turnkey site.toml
+site.toml: backup.certificate: <WORK>/two.crt is not one certificate (PEM)
+yubikey-turnkey: error: nothing written: fix the input first
+[exit 2]
+
 # groups
 $ yubikey-turnkey site.toml
 site.toml: group[1].name: 'anycast-check' is the anycast check's own group
@@ -113,4 +157,9 @@ site.toml: group[3].name: 'ops' is listed twice
 yubikey-turnkey: error: nothing written: fix the input first
 [exit 2]
 
+ec.crt
 site.toml
+small.crt
+text.crt
+two.crt
+with-key.crt
