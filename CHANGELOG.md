@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 1.12.0 - 2026-10-17
+
+Day two for the turn-key setup: `setup.sh --status` checks a server;
+encrypted daily backups with `yubikey-backup.sh` (also for an installation
+set up by hand); a lost server set up again, and `setup.sh --alone` when
+two are lost; a server replaced with new addresses or a new name; new
+passwords and keys with `yubikey-turnkey --rotate`; and upgrades, of
+radiator-yubikey, of Radiator's packages and Ubuntu's (see the guide's
+[Turn-key setup](docs/guide.md#turn-key-setup)). Nothing changes for an
+installation that doesn't use it, except that the package adds the
+backups' units, neither enabled nor started. To upgrade a turn-key setup
+from 1.11.0, run this release's `yubikey-turnkey` with the same
+`site.toml` and `secrets.toml` (it adds two SCRAM verifiers), copy the
+folders, and run `setup.sh` on the primary first, then on the other two
+(see [Upgrade a turn-key setup](docs/guide.md#upgrade-a-turn-key-setup)).
 
 ### Added
 

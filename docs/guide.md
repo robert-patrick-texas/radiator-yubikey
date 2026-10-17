@@ -381,7 +381,7 @@ seven tests of real Radiator logins:
   `turnkey.sh`'s lab: three servers set up with radiator-yubikey 1.11.0
   (its `yubikey-turnkey` and package, from the git tag `v1.11.0`), then
   upgraded to this version (built from the working tree, as `1.11.0.1`
-  while `VERSION` is still `1.11.0`), the primary first, with `--status`
+  if `VERSION` is still `1.11.0`), the primary first, with `--status`
   OK after; a newer Radiator (4.30-1 again, as 4.30-1+lab1, with a changed
   sample `radiator.conf`: the server's stays) on each; and PostgreSQL
   updated on each with `needrestart` installed (the standbys, a
@@ -494,9 +494,9 @@ another release, set `v` to its version instead.
 is installed, and exits 0 only when nothing is missing or left to do:
 
 ```text
-install.sh 1.11.0
+install.sh 1.12.0
 Radiator:  4.30-1, Radiator Software's package radiator (with radiator-radius-utilxs 2.4-4): /opt/radiator/radiator/radiusd
-Package:   radiator-yubikey 1.11.0, installed
+Package:   radiator-yubikey 1.12.0, installed
 
 Packages:
   ok       libauth-yubikey-decrypter-perl 0.07-2.1
@@ -3044,7 +3044,7 @@ sudo /root/turnkey/setup.sh --check                        # on each server
   ok    address 2001:db8:31::31/
   ok    clock synchronized
   ok    Radiator's packages are here
-  ok    radiator-yubikey 1.11.0's package and install.sh are here
+  ok    radiator-yubikey 1.12.0's package and install.sh are here
   ok    ports
   ok    198.51.100.32 reachable
   ok    203.0.113.33 reachable
@@ -3069,8 +3069,8 @@ database):
 ```text
 == packages
   ..    installing postgresql postgresql-client libdbd-pg-perl etcd-server etcd-client patroni python3-etcd frr sqlite3 curl openssl ca-certificates iptables iptables-persistent radiator_4.30-1_all.deb radiator-radius-utilxs_2.4-4.resolute_amd64.deb (apt-get's output is in /var/log/yubikey-turnkey.log)
-  ..    installing radiator-yubikey 1.11.0 with its install.sh (its output is in /var/log/yubikey-turnkey.log)
-  ok    packages: Radiator 4.30-1, radiator-yubikey 1.11.0, PostgreSQL 18+290ubuntu1, Patroni 4.1.0-2, etcd 3.5.16-10, FRR 10.5.1-1ubuntu4.1
+  ..    installing radiator-yubikey 1.12.0 with its install.sh (its output is in /var/log/yubikey-turnkey.log)
+  ok    packages: Radiator 4.30-1, radiator-yubikey 1.12.0, PostgreSQL 18+290ubuntu1, Patroni 4.1.0-2, etcd 3.5.16-10, FRR 10.5.1-1ubuntu4.1
 
 == system
   ..    updated /etc/hosts
@@ -3180,7 +3180,7 @@ east1: OK
   ok    certificates: this server's until 2029-01-19, the CA's until 2036-10-14
   ok    disk: 41 GiB free in /var/lib
   ok    clock synchronized
-  ok    setup.sh: finished 2026-10-16 13:46:20 UTC, radiator-yubikey 1.11.0
+  ok    setup.sh: finished 2026-10-16 13:46:20 UTC, radiator-yubikey 1.12.0
 ```
 
 Each line is `ok`, `WARN` (it works, but something needs you) or `FAIL`
