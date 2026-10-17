@@ -130,6 +130,22 @@
 
 ### Tests
 
+- `tests/radiator/run.sh` runs the labs named (`run.sh DIR turnkey
+  upgrade`), and stops a lab after about twice its usual time (60 minutes
+  for `turnkey`, 30 for `geo`), then goes on with the next; `e2e` and
+  `groups` run with `docker run --init`, so they stop too. In `turnkey.sh`
+  and `upgrade.sh`, `setup.sh` waits at most 5 minutes for the other
+  servers (`TURNKEY_WAIT=300`), not 30. The guide's Testing says which
+  labs a change needs; a release runs all seven.
+- `tests/radiator/geo.sh` (214 checks, 212 or 213 before): the same
+  number each run (a login at East1 when a switchover back to it isn't
+  needed). At West, cut off, a login is now expected to be rejected
+  within 11 s, not 7: within 10 s of a new connection, the hooks allow
+  its query 6 s, so it takes 10 s (2 of 8 tries in the lab). The guide
+  says so too.
+- `tests/radiator/turnkey.sh`: where it reads an anycast check's last
+  login, it waits up to 30 s for one that passes; the last one, right
+  after a switchover, may be from during it.
 - `tests/radiator/upgrade.sh` (59 checks), new, run by `run.sh` as
   `upgrade`: in `turnkey.sh`'s lab, three servers set up with
   radiator-yubikey 1.11.0 from its git tag, then upgraded to this version

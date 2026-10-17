@@ -308,6 +308,16 @@ switchover() {
     node "$1" ctl switchover --candidate "$1" --force >/dev/null
     login_until "OTP at $2 after a planned switchover to $1" "$2" 30
 }
+# back_to_east1: the same to East1, unless Patroni chose it already (then a
+# login there instead: the same number of checks either way).
+back_to_east1() {
+    if [[ $(node east1 members) == "$NORMAL" ]]; then
+        T0=$SECONDS
+        login_until "OTP at east1, already the primary" east1 30
+    else
+        switchover east1 east1
+    fi
+}
 
 # Four more users for each site, each with a YubiKey of their own, who log in
 # there during the planned switchovers under load, as USER:PUBLIC_ID:PRIVATE_ID
@@ -693,7 +703,9 @@ T0=$SECONDS
 logins "5 OTPs at East1, West cut off" east1
 between "...no slower than usual (median ms)" 1 100 "$MS"
 login "OTP at West: no primary within reach"    "REJECT: Yubikey secret not found in database" west
-between "...answered within 7 s (ms)" 1 7000 "$MS"
+# The query times out (2 s), then 2 s for each East server: 6 s. Within 10 s
+# of a new connection the hooks allow the query 6 s: 10 s.
+between "...answered within 11 s (ms)" 1 11000 "$MS"
 routes_until "West withdraws: its check can't log in" "$EAST" 40
 nas "OTP from the NAS: East1 answers (the router still reaches it)" "ACCEPT from $ANY4 by east1" 4
 login "OTP at East2"                            ACCEPT east2
@@ -785,7 +797,7 @@ docker start yk-geo-east2 yk-geo-west >/dev/null
 booted east2
 booted west
 one_leader "East2 and West back: a new leader"
-[[ $(node east1 members) == "$NORMAL" ]] || switchover east1 east1
+back_to_east1
 cluster "back to normal, East1 the primary" "$NORMAL" east1
 login_until "OTP at West" west 30
 T0=$SECONDS
@@ -901,7 +913,7 @@ booted west
 T0=$SECONDS
 mode_until "East1 leaves partition mode once there is a primary again" east1 normal 120
 one_leader "a leader in the East, all streaming"
-[[ $(node east1 members) == "$NORMAL" ]] || switchover east1 east1
+back_to_east1
 cluster "back to normal, East1 the primary" "$NORMAL" east1
 login "OTP $alone_otp (used at East1 alone) at West: a replay" "REJECT: Replay attack detected" west "$alone_otp"
 login_until "OTP at West" west 30

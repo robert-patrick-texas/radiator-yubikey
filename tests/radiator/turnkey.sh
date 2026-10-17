@@ -146,7 +146,7 @@ for n in "${SITES[@]}"; do
     check "$n: the anycast check advertises" advertised \
         "$(until_eq 30 advertised on "$n" '/opt/radiator-yubikey/yubikey-anycast.sh status | head -1 | cut -d" " -f1')"
     check_match "$n: its last check logged in over RADIUS and TACACS+" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS in [0-9]+ ms' \
-        "$(on "$n" '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+        "$(until_match 30 '^ACCEPT in [0-9]+ ms; TACACS\+ PASS in [0-9]+ ms' on "$n" '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
     check "$n: partition mode, normal" "normal" \
         "$(on "$n" '/opt/radiator-yubikey/yubikey-partition.sh status | head -1 | cut -d" " -f1')"
 done
@@ -449,7 +449,7 @@ check "rtr1: West advertises again, first" "west,east1,east2 west,east1,east2" \
 check "rtr2 too" "west west" "$(until_eq 30 "west west" routes rtr2)"
 check "west: BGP and BFD with both routers" "BGP 4, BFD 4" "$(until_eq 30 "BGP 4, BFD 4" sessions west)"
 check_match "west's check logs in over RADIUS and TACACS+" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' \
-    "$(on west '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+    "$(until_match 30 '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' on west '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
 check "with the database's counter: none of its OTPs refused as used" 0 \
     "$(on west 'journalctl -u yubikey-anycast -o cat | grep -c "moved ahead"')"
 otp "${ALICE[@]}"
@@ -808,8 +808,9 @@ check "the primary moved to east1b" "east1b=leader east2=quorum west=quorum" \
     "$(until_eq 60 "east1b=leader east2=quorum west=quorum" members east1b)"
 check "rtr1: all three advertise" "west,east1b,east2 west,east1b,east2" \
     "$(until_eq 60 "west,east1b,east2 west,east1b,east2" routes rtr1)"
+# (its last check may be from during the switchover)
 check_match "east1b's check logs in over RADIUS and TACACS+" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' \
-    "$(on east1b '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+    "$(until_match 30 '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' on east1b '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
 otp "${ALICE[@]}"
 check "alice logs in" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
 for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done

@@ -674,7 +674,7 @@ it.</p>
 <h3>The automated test</h3>
 <p><code>tests/radiator/run.sh</code> builds the same image, with
 Patroni, etcd and FRR (and debhelper and lintian, to build and check the
-package) added, and runs six tests of real Radiator logins:</p>
+package) added, and runs seven tests of real Radiator logins:</p>
 <ul>
 <li><p><code>e2e.sh</code>, 145 checks in a throwaway container: SQLite
 with and without <code>Require2Factor</code>, PostgreSQL over the local
@@ -716,7 +716,7 @@ standby is promoted, and one held for 5 s, then rejected, when none is),
 the replay window (see <a href="#two-database-servers">Two database
 servers</a>), and the same OTP sent to both Radiator servers at the same
 moment.</p></li>
-<li><p><code>geo.sh</code>, 212 checks with three containers, one per
+<li><p><code>geo.sh</code>, 214 checks with three containers, one per
 site, each running systemd with etcd, PostgreSQL under Patroni,
 Radiator, FRR and <code>yubikey-anycast.sh</code> from the package, set
 up as in <a href="#three-sites">Three sites</a> and <a
@@ -826,21 +826,28 @@ server's stays) on each; and PostgreSQL updated on each with
 primary), and on the primary without the switchover, which fails over. A
 TACACS+ login every second all along.</p></li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all seven, about 65 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)</code></pre>
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages                   # all seven, about 65 minutes
+tests/radiator/run.sh ~/radiator-packages ha                # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)
+tests/radiator/run.sh ~/radiator-packages turnkey upgrade   # these two</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
 <code>Radiator 4.30-1: 145 passed, 0 failed</code> (and
 <code>133 passed</code> for <code>groups.sh</code>),
 <code>Two database servers: 63 passed, 0 failed</code>,
-<code>Three sites: 212 passed, 0 failed</code>,
+<code>Three sites: 214 passed, 0 failed</code>,
 <code>Package: 49 passed, 0 failed</code>,
 <code>Turnkey: 334 passed, 0 failed</code> and
 <code>Upgrade: 59 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
-around.</p>
+around. <code>run.sh</code> stops a lab after about twice its usual time
+(60 minutes for <code>turnkey.sh</code>, 30 for <code>geo.sh</code>) and
+says so, and goes on with the next; the lab removes its containers as it
+stops. In <code>turnkey.sh</code> and <code>upgrade.sh</code>,
+<code>setup.sh</code> waits at most 5 minutes for the other servers
+(<code>TURNKEY_WAIT=300</code>), not 30, so one that hangs fails within
+minutes.</p>
 </section>
 </section>
 <section id="install-on-the-servers" class="level2">
@@ -2340,8 +2347,10 @@ promoted. No OTP is lost.</td>
 <td>West is cut off from both East sites</td>
 <td>No change at the East sites. At West, every login is rejected
 (<code>Yubikey secret not found in database</code>) after 4 to 6 s,
-until the network is back. West stays a standby and catches up within a
-minute afterwards.</td>
+until the network is back; after 10 s when the cut comes within 10 s of
+a new connection, whose query may take 6 s (see
+<code>ConnectionHook</code> above). West stays a standby and catches up
+within a minute afterwards.</td>
 </tr>
 <tr>
 <td>East1's site is cut off from the others</td>
@@ -6194,6 +6203,90 @@ named <code>yk_test_&lt;pid&gt;_*</code>.</p>
 <p><code>tests/radiator/run.sh DIR</code> tests against Radiator itself,
 in containers built from the Radiator packages in <code>DIR</code> (see
 <a href="#the-automated-test">The automated test</a>).</p>
+<section id="which-tests-a-change-needs" class="level3">
+<h3>Which tests a change needs</h3>
+<p><code>tests/run-tests.sh</code> (about 3 minutes) and
+<code>shellcheck -x</code> on the scripts run for every change. The
+seven labs of <code>tests/radiator/run.sh</code> take about 65 minutes
+together (<code>turnkey.sh</code> half of it), so a change runs the labs
+that use what it changed, and a release, or a new Radiator version, runs
+all seven:</p>
+<table>
+<thead>
+<tr>
+<th>What changed</th>
+<th>Labs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>yubikey-db.sh</code>'s commands,
+<code>yubikey-db-migrate.sh</code>,
+<code>yubikey-db-user.example.sh</code></td>
+<td><code>e2e</code>; <code>turnkey</code> too for the commands
+<code>setup.sh</code> runs (<code>init-pg</code>, <code>import</code>,
+<code>delete</code>, and those for groups, members, rules, access and
+service accounts)</td>
+</tr>
+<tr>
+<td><code>yubikey-db.sh config</code> (Radiator's clauses and hooks),
+<code>radiator.example.conf</code>, <code>dictionary.yubikey</code></td>
+<td><code>e2e</code>, <code>groups</code>, <code>ha</code>,
+<code>geo</code>, <code>turnkey</code></td>
+</tr>
+<tr>
+<td>The groups: <code>radiator-groups.example.conf</code>, and their
+queries in <code>config</code></td>
+<td><code>groups</code>, <code>turnkey</code></td>
+</tr>
+<tr>
+<td>The database's tables</td>
+<td>all seven</td>
+</tr>
+<tr>
+<td><code>yubikey-anycast.sh</code></td>
+<td><code>e2e</code>, <code>groups</code>, <code>geo</code>,
+<code>turnkey</code></td>
+</tr>
+<tr>
+<td><code>yubikey-partition.sh</code>,
+<code>yubikey-backup.sh</code></td>
+<td><code>geo</code>, <code>turnkey</code></td>
+</tr>
+<tr>
+<td><code>install.sh</code></td>
+<td><code>package</code>, <code>turnkey</code>,
+<code>upgrade</code></td>
+</tr>
+<tr>
+<td><code>packaging/</code>, the systemd units</td>
+<td><code>package</code>, <code>geo</code>, <code>turnkey</code>,
+<code>upgrade</code></td>
+</tr>
+<tr>
+<td><code>yubikey-turnkey</code>,
+<code>yubikey-turnkey-setup.sh</code></td>
+<td><code>turnkey</code>; <code>upgrade</code> too when it changes what
+<code>setup.sh</code> installs, or how a server is upgraded</td>
+</tr>
+<tr>
+<td>A lab's script</td>
+<td>that lab; <code>turnkey-lib.sh</code>: <code>turnkey</code> and
+<code>upgrade</code>; <code>run.sh</code>, <code>Dockerfile</code>: all
+seven</td>
+</tr>
+<tr>
+<td>Only this guide, <code>README.md</code> or
+<code>CHANGELOG.md</code></td>
+<td>none (rebuild <code>yubikey-db-guide.html</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>For example, a change to how <code>setup.sh</code> installs
+packages:</p>
+<pre class="bash"><code>tests/run-tests.sh &amp;&amp; shellcheck -x *.sh tests/*.sh tests/radiator/*.sh
+tests/radiator/run.sh ~/radiator-packages turnkey upgrade   # about 40 minutes</code></pre>
+</section>
 </section>
 <section id="references" class="level2">
 <h2>References</h2>

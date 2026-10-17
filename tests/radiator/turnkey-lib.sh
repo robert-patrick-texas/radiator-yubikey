@@ -249,14 +249,16 @@ print(d)' '$1'"
 # reboot. The servers may bind to addresses they don't have (Docker mounts
 # /proc/sys read-only, so setup.sh can't set this itself; it checks it).
 # Docker writes /etc/hosts anew at each start, without setup.sh's lines: it
-# gets the servers' names too, as DNS would.
+# gets the servers' names too, as DNS would. TURNKEY_WAIT=300: every setup.sh
+# run in the lab waits at most 5 min for the other servers, not 30, so a lab
+# that hangs fails within minutes.
 names=(--add-host "east1.$DOMAIN:${IP[east1]}" --add-host "east2.$DOMAIN:${IP[east2]}" --add-host "west.$DOMAIN:${IP[west]}")
 # server NAME: a fresh server (also for one rebuilt).
 server() {
     docker run -d --name "yk-tk-$1" --hostname "$1" --network yk-tk --ip "${IP[$1]}" --ip6 "${IP6[$1]}" "${names[@]}" \
         --sysctl net.ipv4.ip_nonlocal_bind=1 --sysctl net.ipv6.ip_nonlocal_bind=1 \
         --cap-add SYS_ADMIN --cap-add NET_ADMIN --cap-add SYS_PTRACE --security-opt apparmor=unconfined --cgroupns private \
-        --tmpfs /run --tmpfs /run/lock --stop-signal SIGRTMIN+3 -v yk-tk-lab:/lab:ro \
+        --tmpfs /run --tmpfs /run/lock --stop-signal SIGRTMIN+3 -v yk-tk-lab:/lab:ro -e TURNKEY_WAIT=300 \
         "$BASE" sh -c 'mount -o remount,rw /sys/fs/cgroup && exec /lib/systemd/systemd' >/dev/null
 }
 # The network around the servers: their routes to the device's network

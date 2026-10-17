@@ -248,7 +248,7 @@ Leave the container with `exit`; `--rm` deletes it.
 
 `tests/radiator/run.sh` builds the same image, with Patroni, etcd and FRR
 (and debhelper and lintian, to build and check the package) added, and runs
-six tests of real Radiator logins:
+seven tests of real Radiator logins:
 
 - `e2e.sh`, 145 checks in a throwaway container: SQLite with and without
   `Require2Factor`, PostgreSQL over the local socket and over TLS, the example
@@ -287,7 +287,7 @@ six tests of real Radiator logins:
   held for 5 s, then rejected, when none is), the replay window (see
   [Two database servers](#two-database-servers)), and the same OTP sent to
   both Radiator servers at the same moment.
-- `geo.sh`, 212 checks with three containers, one per site, each running
+- `geo.sh`, 214 checks with three containers, one per site, each running
   systemd with etcd, PostgreSQL under Patroni, Radiator, FRR and
   `yubikey-anycast.sh` from the package, set up as in
   [Three sites](#three-sites) and [Anycast](#anycast), with traffic control adding the WAN delays (55 ms
@@ -389,18 +389,24 @@ six tests of real Radiator logins:
   switchover, which fails over. A TACACS+ login every second all along.
 
 ```bash
-tests/radiator/run.sh ~/radiator-packages        # all seven, about 65 minutes
-tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)
+tests/radiator/run.sh ~/radiator-packages                   # all seven, about 65 minutes
+tests/radiator/run.sh ~/radiator-packages ha                # only ha.sh (or e2e, groups, geo, package, turnkey, or upgrade)
+tests/radiator/run.sh ~/radiator-packages turnkey upgrade   # these two
 ```
 
 Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 145 passed, 0 failed` (and `133 passed` for `groups.sh`),
 `Two database servers: 63 passed, 0 failed`,
-`Three sites: 212 passed, 0 failed`,
+`Three sites: 214 passed, 0 failed`,
 `Package: 49 passed, 0 failed`, `Turnkey: 334 passed, 0 failed` and
 `Upgrade: 59 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
+`run.sh` stops a lab after about twice its usual time (60 minutes for
+`turnkey.sh`, 30 for `geo.sh`) and says so, and goes on with the next; the
+lab removes its containers as it stops. In `turnkey.sh` and `upgrade.sh`,
+`setup.sh` waits at most 5 minutes for the other servers
+(`TURNKEY_WAIT=300`), not 30, so one that hangs fails within minutes.
 
 ## Install on the servers
 
@@ -1730,7 +1736,7 @@ Measured by the test:
 | A planned switchover | Nothing is rejected or left unanswered: Radiator holds the logins until East2 is promoted, so the slowest take 3 to 6 s (measured with four logins at a time at each site). No OTP is lost. |
 | East1 loses power | Rejected for about 35 s, until the lease expires and East2 is promoted. No OTP is lost. |
 | Patroni crashes on the primary | Nothing: systemd starts it again, and it keeps the lease. |
-| West is cut off from both East sites | No change at the East sites. At West, every login is rejected (`Yubikey secret not found in database`) after 4 to 6 s, until the network is back. West stays a standby and catches up within a minute afterwards. |
+| West is cut off from both East sites | No change at the East sites. At West, every login is rejected (`Yubikey secret not found in database`) after 4 to 6 s, until the network is back; after 10 s when the cut comes within 10 s of a new connection, whose query may take 6 s (see `ConnectionHook` above). West stays a standby and catches up within a minute afterwards. |
 | East1's site is cut off from the others | At East1: no answer at first, then rejected. Elsewhere: rejected for about 45 s, then East2 is the primary. |
 | The link between East1 and East2 fails | Logins at East1 and West work; East1's take about 85 ms, because West now confirms them. At East2 they are rejected until the link is back. |
 | East2 and West down at once | East1 alone has no majority and stops being the primary: every login is rejected until one of them is back. |
@@ -4324,6 +4330,35 @@ they are skipped. They create and drop databases and roles named
 `tests/radiator/run.sh DIR` tests against Radiator itself, in containers
 built from the Radiator packages in `DIR` (see
 [The automated test](#the-automated-test)).
+
+### Which tests a change needs
+
+`tests/run-tests.sh` (about 3 minutes) and `shellcheck -x` on the scripts
+run for every change. The seven labs of `tests/radiator/run.sh` take about
+65 minutes together (`turnkey.sh` half of it), so a change runs the labs
+that use what it changed, and a release, or a new Radiator version, runs
+all seven:
+
+| What changed | Labs |
+|---|---|
+| `yubikey-db.sh`'s commands, `yubikey-db-migrate.sh`, `yubikey-db-user.example.sh` | `e2e`; `turnkey` too for the commands `setup.sh` runs (`init-pg`, `import`, `delete`, and those for groups, members, rules, access and service accounts) |
+| `yubikey-db.sh config` (Radiator's clauses and hooks), `radiator.example.conf`, `dictionary.yubikey` | `e2e`, `groups`, `ha`, `geo`, `turnkey` |
+| The groups: `radiator-groups.example.conf`, and their queries in `config` | `groups`, `turnkey` |
+| The database's tables | all seven |
+| `yubikey-anycast.sh` | `e2e`, `groups`, `geo`, `turnkey` |
+| `yubikey-partition.sh`, `yubikey-backup.sh` | `geo`, `turnkey` |
+| `install.sh` | `package`, `turnkey`, `upgrade` |
+| `packaging/`, the systemd units | `package`, `geo`, `turnkey`, `upgrade` |
+| `yubikey-turnkey`, `yubikey-turnkey-setup.sh` | `turnkey`; `upgrade` too when it changes what `setup.sh` installs, or how a server is upgraded |
+| A lab's script | that lab; `turnkey-lib.sh`: `turnkey` and `upgrade`; `run.sh`, `Dockerfile`: all seven |
+| Only this guide, `README.md` or `CHANGELOG.md` | none (rebuild `yubikey-db-guide.html`) |
+
+For example, a change to how `setup.sh` installs packages:
+
+```bash
+tests/run-tests.sh && shellcheck -x *.sh tests/*.sh tests/radiator/*.sh
+tests/radiator/run.sh ~/radiator-packages turnkey upgrade   # about 40 minutes
+```
 
 ## References
 
