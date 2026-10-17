@@ -1140,6 +1140,118 @@ otp "${ALICE[@]}"
 check "alice logs in" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
 for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
 
+echo
+echo "== New passwords and keys: --rotate"
+leader_now() { members west | tr ' ' '\n' | sed -n 's/=leader$//p'; }
+prim=$(leader_now)
+others=()
+for n in "${SITES[@]}"; do
+    [[ $n == "$prim" ]] || others+=("$n")
+    # (The admin's machine, by the servers' names, as DNS would.)
+    on nas "grep -q ' $n\.$DOMAIN\$' /etc/hosts || echo '${IP[$n]} $n.$DOMAIN' >>/etc/hosts" || exit 1
+done
+# A TACACS+ login through the anycast address every second, from now on.
+on nas 'rm -f /tmp/probe.stop /tmp/probe.log' || exit 1
+docker exec -d yk-tk-nas bash -c "until [ -e /tmp/probe.stop ]; do
+        r=\$(timeout 8 perl /repo/tests/radiator/tacacs.pl $ANY4 '$CORE_KEY' $NAS4 authen svc.backup backup-password-1234 2>&1 | head -1)
+        echo \"\$(date +%s) \${r:-NONE}\" >>/tmp/probe.log
+        sleep 1
+    done" || exit 1
+out=$(gen '--rotate radiator,patroni,admins,localhost -p /lab/pkgs site.toml')
+check_match "the generator: new passwords, and the order to run setup.sh in" \
+    'new database passwords \(radiator, replicator, rewinder and opsadmin\): copy the folders, and run setup\.sh on the primary first' "$out"
+for n in "${SITES[@]}"; do on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1; done
+# West, a standby, first: it waits until the primary has the new passwords.
+on west '/root/turnkey/setup.sh' >"$work/west.log" 2>&1 &
+west_pid=$!
+check "west, a standby, first: it waits for the primary" 1 \
+    "$(until_eq 120 1 grep -c "waiting for the primary, $prim, to have the new passwords of replicator and rewinder (run setup.sh there first)" "$work/west.log")"
+check "Patroni: West streams all along" "quorum" \
+    "$(members west | tr ' ' '\n' | sed -n 's/^west=//p')"
+out=$(on "$prim" '/root/turnkey/setup.sh'); rc=$?
+check "$prim, the primary: setup.sh" "0 $prim is set up." "$rc $(tail -1 <<<"$out")"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+check_match "$prim: it gives the roles their new passwords" \
+    $'  \\.\\.    set radiator\'s new password\n  \\.\\.    set replicator\'s new password\n  \\.\\.    set rewinder\'s new password\n  \\.\\.    set opsadmin\'s new password\n' "$out"
+wait "$west_pid"; rc=$?
+check "west: then it goes on" "0 west is set up." "$rc $(tail -1 "$work/west.log")"
+[[ $rc == 0 ]] || cat "$work/west.log"
+for n in "${others[@]}"; do
+    [[ $n == west ]] && continue
+    out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
+    check "$n: setup.sh, after the primary: no wait" "0 $n is set up. 0" \
+        "$rc $(tail -1 <<<"$out") $(grep -c 'waiting for the primary' <<<"$out")"
+    [[ $rc == 0 ]] || printf '%s\n' "$out"
+done
+want="$prim=leader"
+for n in "${others[@]}"; do want+=" $n=quorum"; done
+want=$(tr ' ' '\n' <<<"$want" | sort | paste -sd' ')
+check "Patroni: the two stream" "$want" "$(until_eq 60 "$want" members west)"
+check "replicator has its new SCRAM verifier" "$(secret 'cluster|replication_scram' | tr -d '\n' | md5sum | cut -d' ' -f1)" \
+    "$(on "$prim" "runuser -u postgres -- psql -X -At -c \"SELECT md5(rolpassword) FROM pg_authid WHERE rolname = 'replicator'\"")"
+# The standbys' replication connections cut on the primary: they connect
+# again, with the new password.
+check "the primary's WAL senders stopped" "t t" \
+    "$(on "$prim" "runuser -u postgres -- psql -X -At -c 'SELECT pg_terminate_backend(pid) FROM pg_stat_replication'" | paste -sd' ')"
+sleep 2
+check "the standbys stream again, with the new replication password" 2 \
+    "$(until_eq 60 2 on "$prim" "runuser -u postgres -- psql -X -At -c \"SELECT count(*) FROM pg_stat_replication WHERE state = 'streaming'\"")"
+check "Patroni: both standbys again" "$want" "$(until_eq 60 "$want" members west)"
+# Patroni's REST API: a switchover, asked on a standby, and back.
+on west "patronictl -c /etc/patroni/18-main.yml switchover --candidate ${others[0]} --force >/dev/null 2>&1"
+check "a switchover asked on West, with the new REST API password" "${others[0]}" "$(until_eq 60 "${others[0]}" leader_now)"
+want2="${others[0]}=leader"
+for n in "$prim" "${others[@]:1}"; do want2+=" $n=quorum"; done
+want2=$(tr ' ' '\n' <<<"$want2" | sort | paste -sd' ')
+check "Patroni: $prim a standby" "$want2" "$(until_eq 90 "$want2" members west)"
+on "$prim" "patronictl -c /etc/patroni/18-main.yml switchover --candidate $prim --force >/dev/null 2>&1"
+check "and back" "$want" "$(until_eq 90 "$want" members west)"
+# The admin: the old ~/.pgpass is refused, the new one works.
+admin_login() { if admin 'list' >/dev/null 2>&1 </dev/null; then echo works; else echo refused; fi; }
+check "the admin's old password: refused" refused "$(admin_login)"
+on nas 'install -m 0600 /lab/out/admin/pgpass /root/.pgpass' || exit 1
+check "the new one, from admin/pgpass" works "$(admin_login)"
+# localhost's new secret and key: each check logs in, all three advertise.
+for n in "${SITES[@]}"; do
+    check_match "$n's check logs in, with localhost's new secret and key" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' \
+        "$(until_match 60 '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' on "$n" '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+done
+check_match "rtr1: all three advertise" '^([a-z0-9]+,){2}[a-z0-9]+ ([a-z0-9]+,){2}[a-z0-9]+$' \
+    "$(until_match 60 '^([a-z0-9]+,){2}[a-z0-9]+ ([a-z0-9]+,){2}[a-z0-9]+$' routes rtr1)"
+on nas 'touch /tmp/probe.stop'
+sleep 2
+check_match "logins all along: at most 15 s without one" '^[0-9]+ logins, [0-9]+ failed, the longest gap ([0-9]|1[0-5]) s$' \
+    "$(on nas "awk '{ if (\$2 == \"PASS\") { if (start) { g = \$1 - start; if (g > max) max = g; start = 0 } }
+                      else { bad++; if (!start) start = \$1 } }
+                END { printf \"%d logins, %d failed, the longest gap %d s\\n\", NR, bad, max }' /tmp/probe.log")"
+on nas "grep -v ' PASS\$' /tmp/probe.log | head -20"
+
+# An admin's own new password stays, until secrets.toml has a new one.
+on nas ". /lab/out/admin/pg.env && psql -X -q 'dbname=yubikey target_session_attrs=read-write' \
+             -c \"ALTER ROLE opsadmin PASSWORD 'MyOwnPassword-2026'\" && sed -i 's/:opsadmin:.*/:opsadmin:MyOwnPassword-2026/' /root/.pgpass" \
+    || exit 1
+out=$(on "$prim" '/root/turnkey/setup.sh'); rc=$?
+check "$prim: setup.sh again" "0 $prim is set up." "$rc $(tail -1 <<<"$out")"
+check "the admin's own password stays" works "$(admin_login)"
+# A device's new secret and key, and the admin's: the old key is refused
+# once setup.sh has run on the three; the new one works.
+out=$(gen '--rotate device:172.31.100.20,admin:opsadmin -p /lab/pkgs site.toml')
+check_match "the generator: new secrets for the device" \
+    'new RADIUS secrets and TACACS\+ keys for 172\.31\.100\.20: once setup\.sh has run on the three servers, put them on the devices' "$out"
+for n in "$prim" "${others[@]}"; do
+    on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
+    out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
+    check "$n: setup.sh with the device's new secrets" "0 $n is set up." "$rc $(tail -1 <<<"$out")"
+    [[ $rc == 0 ]] || printf '%s\n' "$out"
+done
+check_match "the device's old key: refused" '^(FAIL|ERROR)' "$(tac "$ANY4" "$LAB2_KEY" 172.31.100.20 authen svc.backup backup-password-1234)"
+LAB2_KEY=$(secret 'device|172.31.100.20|tacacs_key')
+check "the new one" PASS "$(tac "$ANY4" "$LAB2_KEY" 172.31.100.20 authen svc.backup backup-password-1234)"
+check "the admin's own password: replaced" refused "$(admin_login)"
+on nas 'install -m 0600 /lab/out/admin/pgpass /root/.pgpass' || exit 1
+check "the new one from admin/pgpass" works "$(admin_login)"
+for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
+
 rm -rf -- "$work"
 echo
 echo "Turnkey: $pass passed, $fail failed"

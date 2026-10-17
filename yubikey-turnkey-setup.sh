@@ -20,10 +20,10 @@
 #     patroni    PostgreSQL under Patroni: the first server creates the
 #                cluster, the others copy it from there
 #     database   the primary (the first server, unless it failed over):
-#                the yubikey database, its roles and passwords, the
-#                anycast checks' keys and service accounts (those of
-#                servers no longer listed removed), and the groups; the
-#                others wait for their anycast check
+#                the yubikey database, its roles, the roles' passwords
+#                when they are new, the anycast checks' keys and service
+#                accounts (those of servers no longer listed removed), and
+#                the groups; the others wait for their anycast check
 #     radiator   Radiator's configuration (radiator-groups.example.conf with
 #                this server's settings), its devices, and its database clause
 #     partition  partition mode (when on in site.toml)
@@ -51,6 +51,10 @@
 #   folders on the other two (on a member already, etcd needs only quorum;
 #   the primary's run swaps the anycast checks), then on the new server,
 #   which removes the old one's etcd member before adding its own.
+#   New passwords (yubikey-turnkey --rotate): on the primary first, it
+#   gives the database's roles theirs (an admin's only when secrets.toml
+#   has a new one: their own change stays until then); on the other two, it
+#   waits until the primary has, before Radiator and Patroni use them.
 #   '--status' shows whether the server works, for people and for
 #   monitoring; it changes nothing.
 #
@@ -90,8 +94,8 @@
 #                             setup.sh uses itself
 #   files/, files.list        the files it installs, with their modes
 #   hosts                     the lines for /etc/hosts
-#   db/                       the first server only: the database's first
-#                             contents
+#   db/                       the database's contents, which the
+#                             primary's setup.sh applies
 #   *.deb, install.sh         Radiator's packages, radiator-yubikey's and its
 #                             install.sh
 # It keeps its state in /var/lib/yubikey-turnkey, a copy of server.env and
@@ -130,7 +134,8 @@ VERSION='' SITE_NAME='' NAME='' FQDN='' IPV4='' IPV6='' FIRST=''
 SERVERS='' FQDNS='' IPV4S='' ANYCAST4='' ANYCAST6=''
 ADMINS='' ADMIN_SUBNETS='' PARTITION='' FIREWALL='' BACKUP=''
 # From secrets.env
-RADIATOR_PASSWORD='' RADIATOR_SCRAM=''
+RADIATOR_PASSWORD='' RADIATOR_SCRAM='' REPLICATION_PASSWORD='' REPLICATION_SCRAM=''
+REWIND_PASSWORD='' REWIND_SCRAM=''
 declare -A ADMIN_SCRAM=()
 
 CHECK=0 NO_FIREWALL=0 RESET='' STATUS=0 ALONE=0 YES=0
@@ -187,7 +192,8 @@ read_env() {
         name=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
         case $name in
             VERSION|SITE_NAME|NAME|FQDN|IPV4|IPV6|FIRST|SERVERS|FQDNS|IPV4S|ANYCAST4|ANYCAST6|\
-            ADMINS|ADMIN_SUBNETS|PARTITION|FIREWALL|BACKUP|RADIATOR_PASSWORD|RADIATOR_SCRAM)
+            ADMINS|ADMIN_SUBNETS|PARTITION|FIREWALL|BACKUP|RADIATOR_PASSWORD|RADIATOR_SCRAM|\
+            REPLICATION_PASSWORD|REPLICATION_SCRAM|REWIND_PASSWORD|REWIND_SCRAM)
                 printf -v "$name" '%s' "$value" ;;
             ADMIN_SCRAM_*) ADMIN_SCRAM[${name#ADMIN_SCRAM_}]=$value ;;
             *) die "$1 line $n: unknown name '$name'" ;;
@@ -765,6 +771,14 @@ patroni_step() {
     if done_ patroni; then
         if systemctl -q is-active "$PATRONI_UNIT"; then
             if [[ ${#CHANGED[@]} -gt 0 ]]; then
+                # New passwords of replicator's and rewinder's: on a standby,
+                # Patroni uses them as soon as it reloads, so the primary must
+                # have given them to the roles first.
+                if ! local_primary && ! repl_passwords; then
+                    lead=$(leader)
+                    wait_for "the primary${lead:+, $lead,} to have the new passwords of replicator and rewinder (run $PROG there first)" \
+                        "$WAIT" repl_passwords || exit 1
+                fi
                 # Patroni reads its settings and its REST API's certificate
                 # again; PostgreSQL its certificate, on a reload of its own.
                 systemctl reload "$PATRONI_UNIT"
@@ -797,6 +811,63 @@ exists() {
 
 db_loaded() { exists yubikeys username "anycast-$NAME" && exists service_accounts username "svc.anycast-$NAME"; }
 
+# scram_ok: whether the password on the second line of standard input
+# matches the SCRAM-SHA-256 verifier on the first (as pg_authid has it).
+scram_ok() {
+    # shellcheck disable=SC2016  # Python's dollar signs
+    python3 -c '
+import base64, hashlib, hmac, re, sys
+v = sys.stdin.readline().rstrip("\n")
+pw = sys.stdin.readline().rstrip("\n")
+m = re.match(r"^SCRAM-SHA-256\$(\d+):([A-Za-z0-9+/=]+)\$([A-Za-z0-9+/=]+):([A-Za-z0-9+/=]+)$", v)
+if not m:
+    sys.exit(1)
+salted = hashlib.pbkdf2_hmac("sha256", pw.encode(), base64.b64decode(m[2]), int(m[1]))
+stored = hashlib.sha256(hmac.new(salted, b"Client Key", "sha256").digest()).digest()
+sys.exit(0 if hmac.compare_digest(base64.b64encode(stored).decode(), m[3]) else 1)'
+}
+
+# role_verifier ROLE: the role's SCRAM verifier, from this server's
+# PostgreSQL (a standby has the primary's).
+role_verifier() { pg_var postgres "$1" "SELECT rolpassword FROM pg_authid WHERE rolname = :'v';"; }
+
+# role_ok ROLE PASSWORD: whether the role has the password.
+role_ok() {
+    local v
+    v=$(role_verifier "$1" 2>/dev/null) || return 1
+    printf '%s\n%s\n' "$v" "$2" | scram_ok
+}
+
+# role_password ROLE PASSWORD VERIFIER: on the primary, the role's password,
+# set (as its SCRAM verifier) when the role has another. (Patroni sets
+# replicator's and rewinder's only when it makes the cluster.)
+role_password() {
+    role_ok "$1" "$2" && return 0
+    pg_var postgres "$3" "ALTER ROLE \"$1\" PASSWORD :'v';" || die "cannot set $1's password"
+    if done_ database; then info "set $1's new password"; fi
+}
+
+# admin_password LOGIN: on the primary, an admin's password from
+# secrets.toml, set only when it is new there: the admin's own change stays
+# until then. The role's comment (which the standbys have too) names the
+# one set last, by a hash of its SCRAM verifier.
+admin_password() {
+    local v=${ADMIN_SCRAM[$1]-} mark
+    [[ -n $v ]] || die "secrets.env has no ADMIN_SCRAM_$1"
+    mark="yubikey-turnkey: password $(printf '%s' "$v" | sha256sum | cut -c1-16)"
+    [[ $(pg_var postgres "$1" "SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = :'v';") \
+           == "$mark" ]] && return 0
+    if [[ $(role_verifier "$1") != "$v" ]]; then
+        pg_var postgres "$v" "ALTER ROLE \"$1\" PASSWORD :'v';" || die "cannot set $1's password"
+        if done_ database; then info "set $1's new password"; fi
+    fi
+    pg_var postgres "$mark" "COMMENT ON ROLE \"$1\" IS :'v';" || die "cannot note $1's password"
+}
+
+# repl_passwords: whether replicator and rewinder have this folder's
+# passwords (on a standby: the primary has given them).
+repl_passwords() { role_ok replicator "$REPLICATION_PASSWORD" && role_ok rewinder "$REWIND_PASSWORD"; }
+
 # database_step: on the primary (the first server, unless it failed over),
 # the database as db/ has it: made if need be, the roles' passwords, the
 # anycast checks of the three servers (each loaded once: a key the check
@@ -826,12 +897,10 @@ database_step() {
     fi
     # shellcheck disable=SC2046,SC2086  # one --admin per login
     out=$(ydb init-pg $(printf -- '--admin %s ' $ADMINS) 2>&1) || { printf '%s\n' "$out"; die "yubikey-db.sh init-pg failed"; }
-    pg_var postgres "$RADIATOR_SCRAM" "ALTER ROLE radiator PASSWORD :'v';" || die "cannot set radiator's password"
-    for login in $ADMINS; do
-        [[ -n ${ADMIN_SCRAM[$login]-} ]] || die "secrets.env has no ADMIN_SCRAM_$login"
-        pg_var postgres "${ADMIN_SCRAM[$login]}" "ALTER ROLE \"$login\" PASSWORD :'v';" \
-            || die "cannot set $login's password"
-    done
+    role_password radiator "$RADIATOR_PASSWORD" "$RADIATOR_SCRAM"
+    role_password replicator "$REPLICATION_PASSWORD" "$REPLICATION_SCRAM"
+    role_password rewinder "$REWIND_PASSWORD" "$REWIND_SCRAM"
+    for login in $ADMINS; do admin_password "$login"; done
     ok "database yubikey; roles radiator and $ADMINS, with their passwords"
 
     # The anycast checks' keys and service accounts, each once: a key the
@@ -902,8 +971,15 @@ database_step() {
 }
 
 radiator_step() {
-    local f clause target restart=0
+    local f clause target restart=0 lead
     step radiator
+    # A new password of radiator's: on a standby, Radiator would use it
+    # before the primary has given it to the role.
+    if ! local_primary && ! role_ok radiator "$RADIATOR_PASSWORD"; then
+        lead=$(leader)
+        wait_for "the primary${lead:+, $lead,} to have radiator's new password (run $PROG there first)" \
+            "$WAIT" role_ok radiator "$RADIATOR_PASSWORD" || exit 1
+    fi
     if put /etc/radiator/dictionary.yubikey 0644 root:root <"$PKG/dictionary.yubikey"; then restart=1; fi
     install_files radiator
     [[ ${#CHANGED[@]} -gt 0 ]] && restart=1
@@ -1489,6 +1565,7 @@ main() {
     read_env "$HERE/server.env"
     read_env "$HERE/secrets.env"
     [[ -n $NAME && -n $VERSION ]] || die "$HERE/server.env is incomplete"
+    [[ -n $RADIATOR_SCRAM && -n $REPLICATION_SCRAM && -n $REWIND_SCRAM ]] || die "$HERE/secrets.env is incomplete"
     if [[ -n $RESET ]]; then reset; exit 0; fi
     if [[ $ALONE == 1 ]]; then alone; exit 0; fi
     if [[ $CHECK == 0 ]]; then

@@ -1,0 +1,178 @@
+$ yubikey-turnkey --rotate radiator site.toml
+yubikey-turnkey: error: --rotate: there is no secrets.toml yet (the first run makes it)
+[exit 2]
+
+$ yubikey-turnkey site.toml
+secrets.toml: new replicator's SCRAM verifier, rewinder's SCRAM verifier
+out/admin/: 3 written
+wrote out/devices.md
+out/east1/: 34 written
+out/east2/: 34 written
+wrote out/routers.md
+wrote out/runbook.md
+wrote out/secrets.toml.cms
+out/west/: 34 written
+[exit 0]
+
+changed: cluster.replication_scram cluster.rewind_scram
+4
+$ yubikey-turnkey --rotate radiator site.toml
+secrets.toml: new radiator's password
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east1/secrets.env
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/secrets.env
+wrote out/secrets.toml.cms
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/west/secrets.env
+yubikey-turnkey: new database passwords (radiator): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+[exit 0]
+
+changed: cluster.radiator cluster.radiator_scram
+$ yubikey-turnkey --rotate patroni site.toml
+secrets.toml: new Patroni's REST API password, replicator's password, rewinder's password
+wrote out/east1/files/etc/patroni/18-main.yml
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east1/secrets.env
+wrote out/east2/files/etc/patroni/18-main.yml
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/secrets.env
+wrote out/secrets.toml.cms
+wrote out/west/files/etc/patroni/18-main.yml
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/west/secrets.env
+yubikey-turnkey: new database passwords (replicator and rewinder): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+[exit 0]
+
+changed: cluster.patroni_api cluster.replication cluster.replication_scram cluster.rewind cluster.rewind_scram
+$ yubikey-turnkey --rotate admins site.toml
+secrets.toml: new opsadmin's password
+wrote out/admin/pgpass
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east1/secrets.env
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/secrets.env
+wrote out/secrets.toml.cms
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/west/secrets.env
+yubikey-turnkey: new database passwords (opsadmin): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: give opsadmin the new line of admin/pgpass, for ~/.pgpass
+[exit 0]
+
+changed: admin.opsadmin.password admin.opsadmin.scram
+$ yubikey-turnkey --rotate admin:opsadmin site.toml
+secrets.toml: new opsadmin's password
+wrote out/admin/pgpass
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east1/secrets.env
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/secrets.env
+wrote out/secrets.toml.cms
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/west/secrets.env
+yubikey-turnkey: new database passwords (opsadmin): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: give opsadmin the new line of admin/pgpass, for ~/.pgpass
+[exit 0]
+
+changed: admin.opsadmin.password admin.opsadmin.scram
+$ yubikey-turnkey --rotate localhost site.toml
+secrets.toml: new localhost's RADIUS secret, localhost's TACACS+ key
+wrote out/east1/files/etc/radiator/anycast.conf
+wrote out/east1/files/etc/radiator/radiator.conf
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/files/etc/radiator/anycast.conf
+wrote out/east2/files/etc/radiator/radiator.conf
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/secrets.toml.cms
+wrote out/west/files/etc/radiator/anycast.conf
+wrote out/west/files/etc/radiator/radiator.conf
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+yubikey-turnkey: copy the folders, and run setup.sh on each server (see the runbook, and the guide's "Rotate passwords and keys")
+[exit 0]
+
+changed: localhost.secret localhost.tacacs_key
+$ yubikey-turnkey --rotate catch-all site.toml
+secrets.toml: new catch-all's RADIUS secret, catch-all's TACACS+ key
+wrote out/devices.md
+wrote out/east1/files/etc/radiator/clients.d/catch-all.conf
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/files/etc/radiator/clients.d/catch-all.conf
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/secrets.toml.cms
+wrote out/west/files/etc/radiator/clients.d/catch-all.conf
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+yubikey-turnkey: copy the folders, and run setup.sh on each server (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: new RADIUS secrets and TACACS+ keys for the catch-all: once setup.sh has run on the three servers, put them on the devices (devices.md); until then, their logins fail
+[exit 0]
+
+changed: catch_all.secret catch_all.tacacs_key
+$ yubikey-turnkey --rotate devices site.toml
+secrets.toml: new device secrets
+wrote out/devices.md
+out/east1/: 3 written
+out/east2/: 3 written
+wrote out/secrets.toml.cms
+out/west/: 3 written
+yubikey-turnkey: copy the folders, and run setup.sh on each server (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: new RADIUS secrets and TACACS+ keys for 10.1.0.1, 10.1.0.2, 10.2.0.0/22: once setup.sh has run on the three servers, put them on the devices (devices.md); until then, their logins fail
+[exit 0]
+
+changed: device.10.1.0.1.secret device.10.1.0.1.tacacs_key device.10.1.0.2.secret device.10.1.0.2.tacacs_key device.10.2.0.0/22.secret device.10.2.0.0/22.tacacs_key
+$ yubikey-turnkey --rotate device:10.2.0.0/22 site.toml
+secrets.toml: new device secrets
+wrote out/devices.md
+wrote out/east1/files/etc/radiator/clients.d/access.conf
+wrote out/east1/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/east2/files/etc/radiator/clients.d/access.conf
+wrote out/east2/files/var/backups/yubikey-turnkey-secrets.toml.cms
+wrote out/secrets.toml.cms
+wrote out/west/files/etc/radiator/clients.d/access.conf
+wrote out/west/files/var/backups/yubikey-turnkey-secrets.toml.cms
+yubikey-turnkey: copy the folders, and run setup.sh on each server (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: new RADIUS secrets and TACACS+ keys for 10.2.0.0/22: once setup.sh has run on the three servers, put them on the devices (devices.md); until then, their logins fail
+[exit 0]
+
+changed: device.10.2.0.0/22.secret device.10.2.0.0/22.tacacs_key
+$ yubikey-turnkey --rotate device:10.1.0.1,localhost --rotate radiator site.toml
+secrets.toml: new radiator's password, localhost's RADIUS secret, localhost's TACACS+ key, device secrets
+wrote out/devices.md
+out/east1/: 5 written
+out/east2/: 5 written
+wrote out/secrets.toml.cms
+out/west/: 5 written
+yubikey-turnkey: new database passwords (radiator): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: new RADIUS secrets and TACACS+ keys for 10.1.0.1: once setup.sh has run on the three servers, put them on the devices (devices.md); until then, their logins fail
+[exit 0]
+
+changed: cluster.radiator cluster.radiator_scram device.10.1.0.1.secret device.10.1.0.1.tacacs_key localhost.secret localhost.tacacs_key
+1
+1
+$ yubikey-turnkey --rotate nothing site.toml
+yubikey-turnkey: error: --rotate nothing: not one of radiator, patroni, admins, admin:LOGIN, localhost, catch-all, devices, device:ADDRESS
+[exit 2]
+
+$ yubikey-turnkey --rotate admin:nobody site.toml
+yubikey-turnkey: error: --rotate admin:nobody: nobody isn't one of the admins in site.toml
+[exit 2]
+
+$ yubikey-turnkey --rotate device:10.9.9.9 site.toml
+yubikey-turnkey: error: --rotate device:10.9.9.9: 10.9.9.9 isn't a device's address in site.toml
+[exit 2]
+
+$ yubikey-turnkey --rotate device:10.2.0.1/22 site.toml
+yubikey-turnkey: error: --rotate device:10.2.0.1/22: 10.2.0.1/22 isn't a device's address in site.toml
+[exit 2]
+
+$ yubikey-turnkey --rotate , site.toml
+yubikey-turnkey: error: --rotate: name what (radiator, patroni, admins, admin:LOGIN, localhost, catch-all, devices, device:ADDRESS)
+[exit 2]
+
+$ yubikey-turnkey --check --rotate radiator site.toml
+yubikey-turnkey: error: --check changes nothing: not with --rotate
+[exit 2]
+
+$ yubikey-turnkey --rotate catch-all site.toml
+yubikey-turnkey: error: --rotate catch-all: site.toml has no catch-all
+[exit 2]
+
+changed: nothing

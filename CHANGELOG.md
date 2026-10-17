@@ -73,6 +73,22 @@
   anycast key and certificate with it). The runbook has an "A server
   replaced" section. See the guide's
   [Replace a turn-key server](docs/guide.md#replace-a-turn-key-server).
+- Turn-key: `yubikey-turnkey --rotate WHAT[,WHAT]` makes new passwords,
+  secrets or keys in `secrets.toml`: `radiator` (Radiator's database
+  password), `patroni` (Patroni's REST API password, and the passwords of
+  the roles `replicator` and `rewinder`), `admins` or `admin:LOGIN`,
+  `localhost` (the secret and TACACS+ key of each server's own client),
+  `catch-all`, `devices` or `device:ADDRESS`; it says in what order to run
+  `setup.sh`. On the primary, `setup.sh` gives the database's roles their
+  new passwords (Patroni sets `replicator`'s and `rewinder`'s only when it
+  makes the cluster); on the other two, it waits until the primary has,
+  from their own copy of the database, before Patroni or Radiator use
+  them. An admin's password is set only when `secrets.toml` has a new one,
+  so one the admin changed stays until then (the role's comment names the
+  one set last). The anycast checks' PINs and TACACS+ passwords aren't
+  rotated: their logins work only from the server itself, and each check
+  renews its key by itself. See the guide's
+  [Rotate passwords and keys](docs/guide.md#rotate-passwords-and-keys).
 
 ### Changed
 
@@ -94,10 +110,15 @@
 - `setup.sh --reset NAME` says what to run next: `setup.sh` on this server
   alone joins the other two again; after `--reset` on all three, on all
   three.
+- Turn-key: `setup.sh` sets the roles' passwords only when they are new
+  (it set radiator's and the admins' on every run on the primary, which
+  undid an admin's own change). `secrets.toml` gets the SCRAM verifiers
+  of the replication and rewind passwords (the first run of this version
+  makes them), and `secrets.env` has those passwords and verifiers.
 
 ### Tests
 
-- `tests/radiator/turnkey.sh` (299 checks): `setup.sh --status` on
+- `tests/radiator/turnkey.sh` (334 checks): `setup.sh --status` on
   the three servers, from the package without the folder, and not as root;
   and what it says with etcd stopped on one server, a router down, the
   primary moved, the anycast addresses withdrawn, a folder copied but not
@@ -115,34 +136,42 @@
   stopping at etcd while East2's is stopped, and joining when all three's
   was; two servers lost (East1 and East2: logins through West from its
   copy, `setup.sh --alone` on West, refused while they run, without a
-  terminal and when not answered yes, the two set up again at the same time, the OTP used on West
-  alone refused after, the primary moved back); after `--reset` on all
-  three, the last backup restored into the new cluster; and servers
-  replaced: West moved to new addresses, after `--reset` on it (its
-  `--check` warning before the two that stay knew it), and East1, lost
-  while the primary, replaced by a server of a new name and addresses,
-  which then became the primary.
+  terminal and when not answered yes, the two set up again at the same
+  time, the OTP used on West alone refused after, the primary moved
+  back); after `--reset` on all three, the last backup restored into the
+  new cluster; servers replaced: West moved to new addresses, after
+  `--reset` on it (its `--check` warning before the two that stay knew
+  it), and East1, lost while the primary, replaced by a server of a new
+  name and addresses, which then became the primary; and new passwords
+  and keys with `--rotate` (a standby run first waits for the primary;
+  a TACACS+ login every second all along; the standbys' replication cut
+  and connected again with the new password; a switchover with the new
+  REST API password; the admin's old password refused, the new one
+  working, and their own kept until `--rotate admin:LOGIN`; a device's
+  old TACACS+ key refused, the new one working).
 - `tests/radiator/geo.sh` (212 checks): the guide's steps for automatic
   backups on the three sites, a backup checked and decrypted on the
   client, and restored on the primary at its prompt after a login (the OTP
   stays used; logins and anycast go on).
 - `tests/radiator/package.sh`: the backups' units are installed, neither
   enabled nor started, and pass `systemd-analyze verify`.
-- `tests/run-tests.sh` (48 scenarios): `turnkey` runs `setup.sh --status`
+- `tests/run-tests.sh` (49 scenarios): `turnkey` runs `setup.sh --status`
   as a normal user and with another option, `--alone` as a normal user and
   with another option, and `--yes` alone, and checks `secrets.toml.cms`
   (it decrypts to `secrets.toml`, is made again only when it or the
   certificate changes, and goes with `[backup]`), and `db/` in every
   folder; `turnkey_errors` the checks of `[backup]`; `turnkey_secrets` a
   server with new addresses and a server renamed (what the tool says, and
-  the keys and certificate that go and come); `pg_partition` shows the copy that isn't updated;
-  new: `backup` (the settings, `status`, and `decrypt` of whole, changed
-  and cut files, with right and wrong keys and passphrases) and
-  `pg_backup` (`run` and how many it keeps, `check`, and `restore`: its
-  list of changes, the counters and anycast keys it keeps, Radiator's
-  rights after it, a changed file, a wrong passphrase, a dump cut short, a
-  lock held for long, and a database without the tables). Their test key
-  pair is in `tests/turnkey/`.
+  the keys and certificate that go and come); `pg_partition` shows the
+  copy that isn't updated; new: `backup` (the settings, `status`, and
+  `decrypt` of whole, changed and cut files, with right and wrong keys and
+  passphrases), `pg_backup` (`run` and how many it keeps, `check`, and
+  `restore`: its list of changes, the counters and anycast keys it keeps,
+  Radiator's rights after it, a changed file, a wrong passphrase, a dump
+  cut short, a lock held for long, and a database without the tables),
+  whose test key pair is in `tests/turnkey/`, and `turnkey_rotate` (what
+  each `--rotate` makes anew, and nothing else; its errors; a
+  `secrets.toml` of 1.11.0 gets the new SCRAM verifiers).
 
 ## 1.11.0 - 2026-10-16
 

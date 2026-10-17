@@ -41,6 +41,14 @@
 #   -n, --check          Change nothing: check the input, and whether out/ and
 #                        secrets.toml are up to date
 #   --renew-certs        New certificates for the three servers (the CA stays)
+#   --rotate WHAT[,WHAT] New passwords, secrets or keys (also given again):
+#                        radiator (Radiator's database password), patroni
+#                        (Patroni's REST API, replication and rewind
+#                        passwords), admins or admin:LOGIN (the admins'
+#                        database passwords), localhost (the secret and
+#                        TACACS+ key of each server's own client), catch-all,
+#                        devices or device:ADDRESS. Then setup.sh on the
+#                        primary first (see the runbook)
 #   -h, --help, -V, --version
 #
 # EXIT STATUS
@@ -53,6 +61,7 @@
 
 import argparse
 import base64
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -595,6 +604,61 @@ def write(d, name, text):
         f.write(text)
 
 
+ROTATE = ("radiator", "patroni", "admins", "admin:LOGIN", "localhost", "catch-all", "devices",
+          "device:ADDRESS")
+
+
+def rotate_paths(site, whats):
+    """The paths in secrets.toml that --rotate WHAT,... makes anew."""
+    paths = []
+    names = [x.strip() for arg in whats for x in arg.split(",") if x.strip()]
+    if whats and not names:
+        raise InputError(f"--rotate: name what ({', '.join(ROTATE)})")
+    for w in names:
+        if w == "radiator":
+            paths.append(("cluster", "radiator"))
+        elif w == "patroni":
+            paths += [("cluster", k) for k in ("patroni_api", "replication", "rewind")]
+        elif w == "admins":
+            paths += [("admin", login, "password") for login in site.admins]
+        elif w.startswith("admin:"):
+            if w[6:] not in site.admins:
+                raise InputError(f"--rotate {w}: {w[6:]} isn't one of the admins in {site.src}")
+            paths.append(("admin", w[6:], "password"))
+        elif w == "localhost":
+            paths += [("localhost", "secret"), ("localhost", "tacacs_key")]
+        elif w == "catch-all":
+            if not site.catch_all:
+                raise InputError(f"--rotate catch-all: {site.src} has no catch-all")
+            paths += [("catch_all", "secret"), ("catch_all", "tacacs_key")]
+        elif w == "devices":
+            paths += [("device", d["address"], k) for d in site.devices for k in ("secret", "tacacs_key")]
+        elif w.startswith("device:"):
+            try:
+                net = ipaddress.ip_network(w[7:], strict=True)
+            except ValueError:
+                net = None
+            d = [d for d in site.devices if d["net"] == net]
+            if not d:
+                raise InputError(f"--rotate {w}: {w[7:]} isn't a device's address in {site.src}")
+            paths += [("device", d[0]["address"], k) for k in ("secret", "tacacs_key")]
+        else:
+            raise InputError(f"--rotate {w}: not one of {', '.join(ROTATE)}")
+    return paths
+
+
+def without(old, paths):
+    """OLD (secrets.toml) without the values at PATHS."""
+    old = copy.deepcopy(old)
+    for path in paths:
+        d = old
+        for k in path[:-1]:
+            d = d.get(k) if isinstance(d, dict) else None
+        if isinstance(d, dict):
+            d.pop(path[-1], None)
+    return old
+
+
 def fill_secrets(site, old, renew_certs):
     """The secrets for SITE: those in OLD (secrets.toml), and new ones for
     anything that has none yet. Returns (secrets, what is new)."""
@@ -623,8 +687,9 @@ def fill_secrets(site, old, renew_certs):
     is_secret = lambda v: isinstance(v, str) and SECRET_RE.match(v) is not None
     for k in ("radiator", "patroni_api", "replication", "rewind"):
         get(["cluster", k], pw, is_pw)
-    r = sec["cluster"]["radiator"]
-    get(["cluster", "radiator_scram"], lambda: scram(r), lambda v: scram_matches(v, r), derived=True)
+    for k in ("radiator", "replication", "rewind"):
+        p = sec["cluster"][k]
+        get(["cluster", f"{k}_scram"], lambda: scram(p), lambda v: scram_matches(v, p), derived=True)
     for login in site.admins:
         p = get(["admin", login, "password"], pw, is_pw)
         get(["admin", login, "scram"], lambda: scram(p), lambda v: scram_matches(v, p), derived=True)
@@ -707,8 +772,9 @@ def dump_secrets(sec, site):
         "# and keeps the rest, so keep this file: back it up, readable by you only",
         "# (mode 0600). A device's RADIUS secret or TACACS+ key may be changed by hand",
         "# (8 to 128 printable characters, without spaces, quotes, '\\', '#' or '%');",
-        "# remove a value to have a new one made. The anycast keys and the passwords",
-        "# are loaded into the database once, when setup.sh first runs.",
+        "# remove a value to have a new one made, or run yubikey-turnkey --rotate. The",
+        "# anycast keys are loaded into the database once, when setup.sh first runs;",
+        "# the passwords whenever they are new here.",
     ]
 
     def emit(d, path):
@@ -797,9 +863,11 @@ def gen_server(site, sec, out, sv):
     ]))
     # secrets.env: what setup.sh needs itself (the rest is in files/).
     # (The roles' passwords, which the primary's setup.sh sets, as SCRAM
-    # verifiers: every server has those in its PostgreSQL anyway.)
-    pairs = [("RADIATOR_PASSWORD", sec["cluster"]["radiator"]),
-             ("RADIATOR_SCRAM", sec["cluster"]["radiator_scram"])]
+    # verifiers: every server has those in its PostgreSQL anyway. The others
+    # check with the passwords that the primary has them, before using them.)
+    pairs = []
+    for k, env in (("radiator", "RADIATOR"), ("replication", "REPLICATION"), ("rewind", "REWIND")):
+        pairs += [(f"{env}_PASSWORD", sec["cluster"][k]), (f"{env}_SCRAM", sec["cluster"][f"{k}_scram"])]
     for login in site.admins:
         pairs.append((f"ADMIN_SCRAM_{login}", sec["admin"][login]["scram"]))
     out.add(d + "secrets.env", env_file(site, "secrets.env", pairs))
@@ -1356,6 +1424,18 @@ the primary's takes the old server's anycast check out of the database
 and puts the new one's in. Then set up the new server as in steps 1 to 3.
 The guide's "Replace a turn-key server" says the rest.
 
+## New passwords and keys
+
+`yubikey-turnkey --rotate WHAT` makes new ones in `secrets.toml`: radiator,
+patroni, admins or admin:LOGIN, localhost, catch-all, devices or
+device:ADDRESS (several, with commas). Copy the folders, and run setup.sh
+on the primary first: it gives the database's roles their new passwords;
+on the other two, setup.sh waits until the primary has, before Radiator and
+Patroni use them. Give each admin their new line of `admin/pgpass`. New
+device secrets: once setup.sh has run on the three servers, put them on the
+devices (`devices.md`); until then, their logins fail. The guide's "Rotate
+passwords and keys" says the rest.
+
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and
@@ -1559,13 +1639,23 @@ def summary(paths):
             k = f"{part[1]}'s " + ("SCRAM verifier" if part[-1] == "scram" else "password")
         elif part[0] == "anycast":
             k = f"{part[1]}'s anycast key"
-        elif p == "cluster.radiator_scram":
-            k = "radiator's SCRAM verifier"
+        elif part[0] == "cluster":
+            # (By the roles' names: replicator's and rewinder's.)
+            k = {"radiator": "radiator's password", "patroni_api": "Patroni's REST API password",
+                 "replication": "replicator's password", "rewind": "rewinder's password",
+                 "radiator_scram": "radiator's SCRAM verifier",
+                 "replication_scram": "replicator's SCRAM verifier",
+                 "rewind_scram": "rewinder's SCRAM verifier"}.get(part[1], p)
+        elif part[0] in ("localhost", "catch_all"):
+            k = part[0].replace("_", "-") + "'s " + ("TACACS+ key" if part[-1] == "tacacs_key" else "RADIUS secret")
         else:
             k = p
         if k not in seen:
             seen.append(k)
-    return ", ".join(seen)
+
+    # A SCRAM verifier goes without saying with its new password.
+    return ", ".join(k for k in seen
+                     if not (k.endswith("'s SCRAM verifier") and k.replace("SCRAM verifier", "password") in seen))
 
 
 DIGEST = ".secrets.toml.cms.sha256"
@@ -1601,10 +1691,34 @@ def save_secrets(path, text):
     os.replace(tmp, path)
 
 
+def rotate_notes(site, paths):
+    """What to do after --rotate: the order to run setup.sh in."""
+    role = {"radiator": "radiator", "replication": "replicator", "rewind": "rewinder"}
+    roles = [role[p[1]] for p in paths if p[0] == "cluster" and p[1] in role]
+    roles += [p[1] for p in paths if p[0] == "admin"]
+    roles = list(dict.fromkeys(roles))
+    devices = [p[1] for p in paths if p[0] == "device" and p[2] == "secret"]
+    devices += ["the catch-all"] if ("catch_all", "secret") in paths else []
+    guide = "see the runbook, and the guide's \"Rotate passwords and keys\""
+    if roles:
+        names = ", ".join(roles[:-1]) + " and " + roles[-1] if len(roles) > 1 else roles[0]
+        note(f"new database passwords ({names}): copy the folders, and run setup.sh on the primary first, "
+             f"which gives them to the roles; on the other two, setup.sh waits until the primary has ({guide})")
+    else:
+        note(f"copy the folders, and run setup.sh on each server ({guide})")
+    admins = [p[1] for p in paths if p[0] == "admin"]
+    if admins:
+        note(f"give {', '.join(admins)} the new line{'s' if len(admins) > 1 else ''} of admin/pgpass, "
+             f"for ~/.pgpass")
+    if devices:
+        note(f"new RADIUS secrets and TACACS+ keys for {', '.join(devices)}: once setup.sh has run on the "
+             f"three servers, put them on the devices (devices.md); until then, their logins fail")
+
+
 def main():
     ap = argparse.ArgumentParser(
         prog=PROG, add_help=False,
-        usage=f"{PROG} [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml",
+        usage=f"{PROG} [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] [--rotate WHAT,...] SITE.toml",
         description="Make everything that sets up a three-site deployment of Radiator with the YubiKey "
                     "database: one folder per server with its setup.sh, and the hand-off sheets for the "
                     "routers and the devices, from SITE.toml (see site.example.toml).")
@@ -1618,6 +1732,8 @@ def main():
     ap.add_argument("-n", "--check", action="store_true",
                     help="change nothing: check the input, and whether the output is up to date")
     ap.add_argument("--renew-certs", action="store_true", help="new certificates for the three servers")
+    ap.add_argument("--rotate", metavar="WHAT,...", action="append", default=[],
+                    help="new passwords, secrets or keys: " + ", ".join(ROTATE))
     ap.add_argument("-h", "--help", action="help", help="show this help")
     ap.add_argument("-V", "--version", action="version", version=f"{PROG} {VERSION}")
     args = ap.parse_args()
@@ -1627,6 +1743,8 @@ def main():
         die("name the input file, such as site.toml")
     if args.check and args.renew_certs:
         die("--check changes nothing: not with --renew-certs")
+    if args.check and args.rotate:
+        die("--check changes nothing: not with --rotate")
 
     base = os.path.dirname(os.path.abspath(args.site))
     outdir = os.path.abspath(args.out or os.path.join(base, "out"))
@@ -1655,7 +1773,10 @@ def main():
             # What is missing is made, here only, to report it.
             sec, new = fill_secrets(site, old, False) if old else ({}, ["everything"])
         else:
-            sec, new = fill_secrets(site, old, args.renew_certs)
+            rotate = rotate_paths(site, args.rotate)
+            if rotate and not old:
+                raise InputError(f"--rotate: there is no {show(secpath)} yet (the first run makes it)")
+            sec, new = fill_secrets(site, without(old, rotate), args.renew_certs)
     except InputError as e:
         die(str(e))
 
@@ -1731,6 +1852,8 @@ def main():
     if not write_ and not remove:
         print(f"{show(outdir)}: up to date")
 
+    if args.rotate:
+        rotate_notes(site, rotate)
     if not site.backup and (write_ or remove):
         note(f"no [backup] in {site.src}: the servers make no backups (see the guide's \"Turn-key backups\")")
     gone = sorted(set((old.get("device") or {})) - {d["address"] for d in site.devices})

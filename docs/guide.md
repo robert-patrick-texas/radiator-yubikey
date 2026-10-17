@@ -332,7 +332,7 @@ six tests of real Radiator logins:
   the install, and found sound by `systemd-analyze verify`, restarted by
   an upgrade only while they run, stopped by a removal, and gone after a
   purge.
-- `turnkey.sh`, 299 checks of [the turn-key setup](#turn-key-setup):
+- `turnkey.sh`, 334 checks of [the turn-key setup](#turn-key-setup):
   `yubikey-turnkey` makes the folders from a `site.toml` with two routers
   at West's site, and `setup.sh` runs on three fresh Ubuntu 26.04
   containers (systemd and `iproute2` only) at the same time, installing
@@ -371,7 +371,11 @@ six tests of real Radiator logins:
   restored into the new cluster; and servers replaced (West moved to new
   addresses, its `--check` warning before the other two knew it, and
   East1, lost while it was the primary, replaced by a server of a new name
-  and addresses, which then becomes the primary).
+  and addresses, which then becomes the primary); and new passwords and
+  keys (`--rotate`: a standby run first waits for the primary, logins
+  every second all along, replication with the new password, a
+  switchover, the admin's old and new passwords and their own kept, a
+  device's new TACACS+ key).
 
 ```bash
 tests/radiator/run.sh ~/radiator-packages        # all six, about 50 minutes
@@ -382,7 +386,7 @@ Each prints one `PASS` or `FAIL` line per check and ends with a count, such as
 `Radiator 4.30-1: 145 passed, 0 failed` (and `133 passed` for `groups.sh`),
 `Two database servers: 63 passed, 0 failed`,
 `Three sites: 212 passed, 0 failed`,
-`Package: 49 passed, 0 failed` and `Turnkey: 299 passed, 0 failed`. Run them again with each new
+`Package: 49 passed, 0 failed` and `Turnkey: 334 passed, 0 failed`. Run them again with each new
 Radiator version. `KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1` (or
 `geo.sh`) leaves the containers running afterwards, to look around.
 
@@ -2893,8 +2897,9 @@ and the sheets to hand to whoever runs the routers and the devices.
   TACACS+ keys, the anycast checks' keys, and the cluster's CA and
   certificates are made the first time, in `secrets.toml` next to
   `site.toml` (mode `0600`), and taken from there on every later run: the
-  same input always gives the same output. Keep `secrets.toml`, and back it
-  up.
+  same input always gives the same output, until `--rotate` makes new ones
+  (see [Rotate passwords and keys](#rotate-passwords-and-keys)). Keep
+  `secrets.toml`, and back it up.
 - **A folder per server, made by the tool.** In `out/` next to
   `site.toml`: `east1/`, `east2/` and `west/`, each with `setup.sh`, the
   server's settings (`server.env`, `secrets.env`), every file it installs
@@ -3495,6 +3500,98 @@ first in `site.toml`, it is a standby: move the primary to it, as in step
   `--reset` on it, and replaces East1, lost while it was the primary, with
   a server of a new name and addresses, which then becomes the primary.
 
+### Rotate passwords and keys
+
+`yubikey-turnkey --rotate` makes new passwords, secrets and keys in
+`secrets.toml`, and `setup.sh` puts them in place in an order that keeps
+logins and replication working:
+
+| `--rotate` | New | Used by |
+|---|---|---|
+| `radiator` | Radiator's database password | Radiator on each server, and the role `radiator` |
+| `patroni` | Patroni's REST API password, and the passwords of the roles `replicator` and `rewinder` | Patroni on each server (`patronictl`, replication, `pg_rewind`) |
+| `admins`, `admin:LOGIN` | The admins' database passwords | The admins' `~/.pgpass`, from `admin/pgpass` |
+| `localhost` | The RADIUS secret and TACACS+ key of each server's own client, `127.0.0.1` | Radiator and the anycast check on each server |
+| `catch-all`, `devices`, `device:ADDRESS` | The devices' RADIUS secrets and TACACS+ keys | Radiator, and the devices (`devices.md`) |
+
+Name several with commas, or give `--rotate` again. Not rotated: the
+anycast checks' PINs and TACACS+ passwords (Radiator takes their logins
+from `127.0.0.1` only, and each check renews its key by itself, every
+`RENEW_DAYS` days, or now with `yubikey-anycast.sh renew`), the servers'
+certificates (`--renew-certs`, in
+[Change a turn-key setup](#change-a-turn-key-setup)), and the CA.
+
+**1. Make them:**
+
+```bash
+yubikey-turnkey --rotate radiator,patroni,admins site.toml
+```
+
+```text
+secrets.toml: new radiator's password, Patroni's REST API password, replicator's password, rewinder's password, opsadmin's password
+...
+yubikey-turnkey: new database passwords (radiator, replicator, rewinder and opsadmin): copy the folders, and run setup.sh on the primary first, which gives them to the roles; on the other two, setup.sh waits until the primary has (see the runbook, and the guide's "Rotate passwords and keys")
+yubikey-turnkey: give opsadmin the new line of admin/pgpass, for ~/.pgpass
+```
+
+**2. The primary first:** copy the folders, and run `setup.sh` on the
+primary. It gives the database's roles their new passwords (Patroni sets
+`replicator`'s and `rewinder`'s only when it makes the cluster, so
+`setup.sh` does it):
+
+```text
+== database
+  ..    set radiator's new password
+  ..    set replicator's new password
+  ..    set rewinder's new password
+  ..    set opsadmin's new password
+  ok    database yubikey; roles radiator and opsadmin, with their passwords
+```
+
+Connections made before keep working, so the other two's Radiator and
+replication go on with the old passwords until they change.
+
+**3. The other two:** run `setup.sh` on each. Before Patroni or Radiator
+use a new password, it checks in its own copy of the database that the
+primary has given it to the role. Run on one of them before the primary,
+it waits, and goes on once the primary's `setup.sh` has run:
+
+```text
+== patroni
+  ..    installed /etc/patroni/18-main.yml
+  ..    waiting for the primary, east1, to have the new passwords of replicator and rewinder (run setup.sh there first) (10 s)
+  ok    Patroni: east1=Leader/running east2=Quorum_Standby/streaming west=Quorum_Standby/streaming
+```
+
+**4. The admins:** give each one their new line of `admin/pgpass`, for
+`~/.pgpass`. `setup.sh` sets an admin's password only when `secrets.toml`
+has a new one, so a password an admin changed (with `ALTER ROLE` or
+psql's `\password`) stays until the next `--rotate admin:LOGIN`. The
+role's comment names the one it set last.
+
+**5. Devices:** `--rotate device:ADDRESS` (or `devices`, `catch-all`),
+`setup.sh` on the three servers, in any order, then the new RADIUS secret
+and TACACS+ key on the device, from `devices.md`. Radiator 4.30 takes one
+secret and one key per device, so the device's logins fail from the
+moment its server has the new ones until the device has them too: do it
+one device at a time, with the device's admin ready, or in a maintenance
+window.
+
+`localhost` needs no order either: Radiator and the anycast check on each
+server change together. The check starts again, and its server withdraws
+the anycast addresses for about 10 seconds while the other two answer.
+
+- **Logins go on.** `tests/radiator/turnkey.sh` logs in over TACACS+ at
+  the anycast address every second while it rotates `radiator`,
+  `patroni`, `admins` and `localhost`, with West run first: no login
+  failed, or one, 1 second, when Radiator restarted on the server the
+  login went to. It cuts the standbys' replication connections after the
+  change, which connect again with the new password; moves the primary
+  with `patronictl` and back; and checks the admin's old password
+  refused, the new one working, an admin's own password kept until
+  `--rotate admin:LOGIN`, and a device's old TACACS+ key refused once the
+  servers have the new one.
+
 ### Change a turn-key setup
 
 - **Devices, groups to start with, admin subnets, partition mode, the
@@ -3506,7 +3603,8 @@ first in `site.toml`, it is a standby: move the primary to it, as in step
 - **A device's existing secret or key:** put it in `secrets.toml` (8 to
   128 printable characters, without spaces, quotes, `\`, `#`, `%`, `` ` ``
   or `|`), and run `yubikey-turnkey`. Remove a value to have a new one
-  made.
+  made. New passwords, secrets and keys: see
+  [Rotate passwords and keys](#rotate-passwords-and-keys).
 - **New certificates for the servers** (they last 825 days; the tool warns
   60 days before): `yubikey-turnkey --renew-certs site.toml`, then copy the
   folders and run `setup.sh` on each server, one at a time.
@@ -3683,6 +3781,7 @@ doesn't, the problem is in Radiator's configuration or the network.
 | `password authentication failed for user "radiator"` | A `DBAuth` line doesn't match the password set with `init-pg --set-password` (`config` writes three: one for each clause). |
 | `setup.sh` keeps `waiting for etcd on all three servers` | Run `setup.sh` on the other servers too. If it runs there, the servers can't reach each other on TCP 2379 and 2380: a firewall on the way, or a wrong address in `site.toml`. |
 | `setup.sh` keeps `waiting for the primary, NAME, to add this server's anycast check` | A server replaced, with a new name: run `setup.sh` with the new folder on the primary (see [Replace a turn-key server](#replace-a-turn-key-server)). |
+| `setup.sh` keeps `waiting for the primary, NAME, to have the new passwords of replicator and rewinder` (or `radiator's new password`) | After `yubikey-turnkey --rotate`, `setup.sh` ran here before it ran on the primary: run it on the primary, and this one goes on (see [Rotate passwords and keys](#rotate-passwords-and-keys)) |
 | `setup.sh: error: etcd: the cluster has the member of NAME (URL), which isn't one of the three servers in this folder, and it runs` | The server this one replaces still runs etcd: stop it first (`setup.sh --reset NAME` on it). |
 | `setup.sh` keeps `waiting for east1 to create the database` | `setup.sh` on the first server hasn't got that far, or stopped: see its output, fix the cause, and run it again there. |
 | `setup.sh: error: this server's PostgreSQL isn't the primary` | The first server found another primary before it had made the database (a failover during its first run): move the primary to it with `patronictl switchover --candidate NAME --force`, and run `setup.sh` again. (Once the database is made, a first server that isn't the primary, as when rebuilt, leaves it as it is.) |
@@ -3867,7 +3966,7 @@ the options or the system.
 ### `yubikey-turnkey`
 
 ```text
-yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml
+yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] [--rotate WHAT,...] SITE.toml
 ```
 
 Checks `SITE.toml` (every error at once), makes the secrets it lacks, and
@@ -3882,6 +3981,7 @@ folder stay.
 | `-p DIR`, `--packages DIR` | Copy Radiator's packages (`radiator_*_all.deb` or `radiator-locked_*_all.deb`, and `radiator-radius-utilxs_*.deb`), and `radiator-yubikey_VERSION_all.deb` with `install.sh`, from `DIR` into each server's folder |
 | `-n`, `--check` | Change nothing: check the input, and say what would be written or removed |
 | `--renew-certs` | New certificates for the three servers; the CA stays |
+| `--rotate WHAT,...` | New passwords, secrets or keys: `radiator`, `patroni`, `admins` or `admin:LOGIN`, `localhost`, `catch-all`, `devices` or `device:ADDRESS`, several with commas or `--rotate` again; then `setup.sh` on the primary first (see [Rotate passwords and keys](#rotate-passwords-and-keys)). Not with `--check` |
 
 `SITE.toml`'s settings are in `site.example.toml`'s comments. It exits
 with 0 on success (`--check`: everything is up to date), 1 when `--check`
@@ -4082,7 +4182,7 @@ same steps.
 
 ## Testing
 
-`tests/run-tests.sh` runs the scripts through 48 scenarios against throwaway
+`tests/run-tests.sh` runs the scripts through 49 scenarios against throwaway
 SQLite and PostgreSQL databases and compares each transcript (commands,
 output, exit codes, and the final table) with `tests/expected/`, where the
 scripts' version shows as `<VERSION>`. The two `anycast` scenarios run
@@ -4098,8 +4198,9 @@ runs `install.sh` with stand-ins for `apt-get`, `dpkg-query` and Radiator,
 installed in each of the ways it recognizes. `turnkey` runs
 `yubikey-turnkey` on `site.example.toml` with fixed secrets
 (`tests/turnkey/example-secrets.toml`) and shows everything it writes;
-`turnkey_errors` its checks of the input, and `turnkey_secrets` the
-secrets it makes, and changed by hand. `backup` runs `yubikey-backup.sh`'s
+`turnkey_errors` its checks of the input, `turnkey_secrets` the
+secrets it makes, and changed by hand, and `turnkey_rotate` what each
+`--rotate` makes anew (and nothing else). `backup` runs `yubikey-backup.sh`'s
 settings, `status` and `decrypt` (of whole, changed and cut files), and
 `pg_backup` its backups, checks and restores in the test's PostgreSQL,
 with the test key pair in `tests/turnkey/` (passphrase `test-only`). It needs `bash`, `sqlite3`,

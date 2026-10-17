@@ -3114,6 +3114,56 @@ EOF
     ls "$WORK/out/b"
 }
 
+# changed_secrets OLD NEW: the values that differ between two secrets.toml.
+changed_secrets() {
+    python3 - "$1" "$2" <<'EOF'
+import sys, tomllib
+def flat(d, path=()):
+    for k, v in d.items():
+        if isinstance(v, dict):
+            yield from flat(v, path + (k,))
+        else:
+            yield ".".join(path + (k,)), v
+a, b = (dict(flat(tomllib.load(open(f, "rb")))) for f in sys.argv[1:3])
+print("changed: " + (" ".join(k for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)) or "nothing"))
+EOF
+}
+
+# --rotate: new values for what it names, and nothing else, and what to do
+# next. From a secrets.toml of 1.11.0, without the SCRAM verifiers of
+# replicator's and rewinder's passwords: the first run makes them.
+scenario_turnkey_rotate() {
+    cp "$ROOT/site.example.toml" "$WORK/site.toml"
+    cp "$TESTS_DIR/turnkey/backup.crt" "$WORK/backup.crt"
+    tk --rotate radiator site.toml
+    grep -v '^\(replication\|rewind\)_scram = ' "$TESTS_DIR/turnkey/example-secrets.toml" >"$WORK/secrets.toml"
+    chmod 600 "$WORK/secrets.toml"
+    tk site.toml
+    changed_secrets "$TESTS_DIR/turnkey/example-secrets.toml" "$WORK/secrets.toml"
+    grep -c '^RE\(PLICATION\|WIND\)_\(PASSWORD\|SCRAM\)=' "$WORK/out/west/secrets.env"
+    local what
+    for what in radiator patroni admins admin:opsadmin localhost catch-all devices device:10.2.0.0/22 \
+                "device:10.1.0.1,localhost --rotate radiator"; do
+        cp "$WORK/secrets.toml" "$WORK/before.toml"
+        # shellcheck disable=SC2086  # the second --rotate
+        tk --rotate $what site.toml
+        changed_secrets "$WORK/before.toml" "$WORK/secrets.toml"
+    done
+    # The new password is in admin/pgpass, and its verifier in secrets.env.
+    grep -c "$(sed -n '/^\[admin\.opsadmin\]/,/^$/s/^password = "\(.*\)"/\1/p' "$WORK/secrets.toml")" "$WORK/out/admin/pgpass"
+    grep -c "$(sed -n '/^\[admin\.opsadmin\]/,/^$/s/^scram = "\(.*\)"/\1/p' "$WORK/secrets.toml")" "$WORK/out/east2/secrets.env"
+    cp "$WORK/secrets.toml" "$WORK/before.toml"
+    tk --rotate nothing site.toml
+    tk --rotate admin:nobody site.toml
+    tk --rotate device:10.9.9.9 site.toml
+    tk --rotate device:10.2.0.1/22 site.toml
+    tk --rotate , site.toml
+    tk --check --rotate radiator site.toml
+    perl -0pi -e 's/(\[catch_all\]\nenabled = )true/${1}false/' "$WORK/site.toml"
+    tk --rotate catch-all site.toml
+    changed_secrets "$WORK/before.toml" "$WORK/secrets.toml"
+}
+
 # --------------------------------------------------------------------------
 # yubikey-backup.sh
 # --------------------------------------------------------------------------
@@ -3304,7 +3354,7 @@ ALL=(help init import import_formats import_errors add encodings modify permissi
      pg_update pg_verify pg_labels
      migrate_offline migrate_new migrate_sync migrate_invalid migrate_errors
      anycast anycast_run pg_anycast pg_partition groups pg_groups install
-     turnkey turnkey_errors turnkey_secrets backup pg_backup)
+     turnkey turnkey_errors turnkey_secrets turnkey_rotate backup pg_backup)
 
 # Scenarios that need a PostgreSQL server, or openssl and Crypt::Rijndael.
 needs_pg() { [[ ($1 == pg_* || $1 == migrate_*) && $1 != *_offline ]]; }

@@ -3,7 +3,7 @@ yubikey-turnkey <VERSION>
 [exit 0]
 
 $ yubikey-turnkey 
-usage: yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] SITE.toml
+usage: yubikey-turnkey [-o DIR] [-s FILE] [-p DIR] [-n] [--renew-certs] [--rotate WHAT,...] SITE.toml
 yubikey-turnkey: error: name the input file, such as site.toml
 [exit 2]
 
@@ -203,6 +203,10 @@ BACKUP="1"
 # lines, which setup.sh reads (never runs as shell code).
 RADIATOR_PASSWORD="SZtegVTbbrD5zVRr9BzjnPoUVvPfjmgB"
 RADIATOR_SCRAM="SCRAM-SHA-256$4096:Ra1vW2aXtRKWDqjPxho9jw==$Tt0HuMqueE5yYykn2CwGyeFG0VoV92Fum8mlWVd/GCI=:rwaq1hdNIthIGVrvP0E33T37cKY+PZh8KKy2gwE9K2w="
+REPLICATION_PASSWORD="RqR5nOeiflu8tsV04HG386wSRB7hMZe0"
+REPLICATION_SCRAM="SCRAM-SHA-256$4096:Y6oJ5P+g59lVkyf/8c55Tw==$3ariDr6P6IkYCg4QYCJ0EhKyAO9yq7cfdc4uIoDAsgw=:iTFKB5SLi77rf6JzFky2Gi3weKMTBGqYuyM5UTEm9xs="
+REWIND_PASSWORD="69w02QHE5uJIJ1JMmeB5TJ6kaMU5lSrx"
+REWIND_SCRAM="SCRAM-SHA-256$4096:PYarzJ0KeG+x8JzS7WsO3g==$Ehtyxcc7bvz5TisLP5Yi0oQSlJALb+cYUKBvhPJIJ34=:dnHB7DuHPg493crVvFV7NeZB5MiUt2olpcMQQNq4w7E="
 ADMIN_SCRAM_opsadmin="SCRAM-SHA-256$4096:h5MfWw9BuaqGfcStpD8Kow==$7Dc7BIx4dSrwEPJTGlTXlIqRX8MAsYsJjTttnH3pAE0=:iSVfGDe6b9korbyJ4xMqZU1PFqDTGR5zLIcVxRjY9mQ="
 
 --- out/east1/hosts (600)
@@ -294,6 +298,10 @@ BACKUP="1"
 # lines, which setup.sh reads (never runs as shell code).
 RADIATOR_PASSWORD="SZtegVTbbrD5zVRr9BzjnPoUVvPfjmgB"
 RADIATOR_SCRAM="SCRAM-SHA-256$4096:Ra1vW2aXtRKWDqjPxho9jw==$Tt0HuMqueE5yYykn2CwGyeFG0VoV92Fum8mlWVd/GCI=:rwaq1hdNIthIGVrvP0E33T37cKY+PZh8KKy2gwE9K2w="
+REPLICATION_PASSWORD="RqR5nOeiflu8tsV04HG386wSRB7hMZe0"
+REPLICATION_SCRAM="SCRAM-SHA-256$4096:Y6oJ5P+g59lVkyf/8c55Tw==$3ariDr6P6IkYCg4QYCJ0EhKyAO9yq7cfdc4uIoDAsgw=:iTFKB5SLi77rf6JzFky2Gi3weKMTBGqYuyM5UTEm9xs="
+REWIND_PASSWORD="69w02QHE5uJIJ1JMmeB5TJ6kaMU5lSrx"
+REWIND_SCRAM="SCRAM-SHA-256$4096:PYarzJ0KeG+x8JzS7WsO3g==$Ehtyxcc7bvz5TisLP5Yi0oQSlJALb+cYUKBvhPJIJ34=:dnHB7DuHPg493crVvFV7NeZB5MiUt2olpcMQQNq4w7E="
 ADMIN_SCRAM_opsadmin="SCRAM-SHA-256$4096:h5MfWw9BuaqGfcStpD8Kow==$7Dc7BIx4dSrwEPJTGlTXlIqRX8MAsYsJjTttnH3pAE0=:iSVfGDe6b9korbyJ4xMqZU1PFqDTGR5zLIcVxRjY9mQ="
 
 
@@ -805,6 +813,18 @@ the primary's takes the old server's anycast check out of the database
 and puts the new one's in. Then set up the new server as in steps 1 to 3.
 The guide's "Replace a turn-key server" says the rest.
 
+## New passwords and keys
+
+`yubikey-turnkey --rotate WHAT` makes new ones in `secrets.toml`: radiator,
+patroni, admins or admin:LOGIN, localhost, catch-all, devices or
+device:ADDRESS (several, with commas). Copy the folders, and run setup.sh
+on the primary first: it gives the database's roles their new passwords;
+on the other two, setup.sh waits until the primary has, before Radiator and
+Patroni use them. Give each admin their new line of `admin/pgpass`. New
+device secrets: once setup.sh has run on the three servers, put them on the
+devices (`devices.md`); until then, their logins fail. The guide's "Rotate
+passwords and keys" says the rest.
+
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and
@@ -1294,6 +1314,6 @@ yubikey-turnkey: error: <WORK>/secrets.toml is readable by others (mode 0640): c
 [exit 2]
 
 $ yubikey-turnkey site.toml
-yubikey-turnkey: error: <WORK>/secrets.toml: Invalid value (at line 353, column 5)
+yubikey-turnkey: error: <WORK>/secrets.toml: Invalid value (at line 356, column 5)
 [exit 2]
 
