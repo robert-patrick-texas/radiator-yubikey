@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.12.1 - 2026-10-17
+
+A fix for the anycast check, which sometimes took the anycast addresses
+off `lo` twice when it stopped, and logged an error the second time (see
+Fixed). Nothing else changes. To upgrade, install this release's package
+as before; on a turn-key setup, run this release's `yubikey-turnkey` with
+the same `site.toml` and `secrets.toml` and its package (`-p`; it makes
+no new secrets), copy the folders, and run `setup.sh` on the primary
+first, then on the other two (see
+[Upgrade a turn-key setup](docs/guide.md#upgrade-a-turn-key-setup)).
 
 ### Fixed
 
