@@ -3,10 +3,10 @@
 # upgrade.sh - Test the upgrades of a turn-key setup, as the guide's
 # "Upgrade a turn-key setup" says to do them, with a TACACS+ login at the
 # anycast address every second all along: three servers set up with
-# radiator-yubikey 1.11.0 (its yubikey-turnkey and package, from the git tag
-# v1.11.0), then upgraded to this version (yubikey-turnkey again with the
+# radiator-yubikey 1.12.0 (its yubikey-turnkey and package, from the git tag
+# v1.12.0), then upgraded to this version (yubikey-turnkey again with the
 # new package, setup.sh on the primary first, then on the other two; built
-# from the working tree, as 1.11.0.1 while VERSION is still 1.11.0); then
+# from the working tree, as 1.12.0.1 while VERSION is still 1.12.0); then
 # a newer Radiator (4.30-1 again as 4.30-1+lab1, with a changed sample
 # radiator.conf: this server's stays); then Ubuntu's updates one server at
 # a time, with needrestart as Ubuntu Server has it (a new PostgreSQL, which
@@ -34,7 +34,7 @@ image=$1
 rads=$(cd -- "$2" && pwd)
 # shellcheck source=tests/radiator/turnkey-lib.sh disable=SC1091
 . "$here/turnkey-lib.sh"
-OLD=1.11.0
+OLD=1.12.0
 git -C "$root" rev-parse -q --verify "v$OLD^{tag}" >/dev/null || { echo "upgrade.sh: no git tag v$OLD" >&2; exit 2; }
 lab_start
 lab_prepare
@@ -50,12 +50,12 @@ lab 'mkdir -p /lab/pkgs-up && /lab/new/packaging/build-deb.sh /lab/pkgs-up >/dev
 gen_new() { lab "cd /lab && python3 /lab/new/yubikey-turnkey $1 2>&1"; }
 
 echo "== radiator-yubikey $OLD on three fresh servers"
-# Its tree, from the tag, its package, and its folders, from a site.toml
-# that it takes (no [backup]: it came later).
+# Its tree, from the tag, its package, and its folders, from turnkey.sh's
+# site.toml.
 git -C "$root" archive "v$OLD" | docker run --rm -i -v yk-tk-lab:/lab "$image" bash -c 'mkdir -p /lab/old && tar -x -C /lab/old' \
     || exit 1
 lab 'mkdir -p /lab/pkgs-old && /lab/old/packaging/build-deb.sh /lab/pkgs-old >/dev/null && cp /radiator/*.deb /lab/pkgs-old/' || exit 1
-site_toml '' | sed '/^\[backup\]$/,$d' | docker run --rm -i -v yk-tk-lab:/lab "$image" bash -c 'cat >/lab/site.toml' || exit 1
+site_toml '' | docker run --rm -i -v yk-tk-lab:/lab "$image" bash -c 'cat >/lab/site.toml' || exit 1
 out=$(lab 'cd /lab && python3 /lab/old/yubikey-turnkey -p /lab/pkgs-old site.toml 2>&1'); rc=$?
 check "yubikey-turnkey $OLD makes the folders" 0 "$rc"
 [[ $rc == 0 ]] || { printf '%s\n' "$out"; exit 1; }
@@ -97,7 +97,9 @@ echo "== Upgraded to $NEW: the primary first, then the other two"
 probe_start
 out=$(gen_new '-p /lab/pkgs-up site.toml'); rc=$?
 check "yubikey-turnkey $NEW: the folders again" 0 "$rc"
-check_match "it makes what the new version needs" "secrets\.toml: new replicator's SCRAM verifier, rewinder's SCRAM verifier" "$out"
+# Nothing new from 1.12.0. (A release that makes new secrets shows them
+# here, and in the guide's sample.)
+check "it keeps every secret, and makes none" "" "$(grep '^secrets\.toml' <<<"$out")"
 for n in east1 east2 west; do
     on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
     out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
@@ -111,7 +113,7 @@ for n in east1 east2 west; do
 done
 check "radiator-yubikey $NEW on the three" "$NEW $NEW $NEW" \
     "$(for n in "${SITES[@]}"; do on "$n" "dpkg-query -W -f '\${Version}' radiator-yubikey"; echo; done | paste -sd' ')"
-check "opsadmin's password: as set before, noted now" t \
+check "opsadmin's password: as set before, still noted" t \
     "$(on east1 "runuser -u postgres -- psql -X -At -c \"SELECT shobj_description(oid, 'pg_authid') LIKE 'yubikey-turnkey: password %' FROM pg_roles WHERE rolname = 'opsadmin'\"")"
 check "the admin logs in as before" 1 "$(admin 'list alice' 2>/dev/null </dev/null | grep -c vvccccbbcdef)"
 for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done

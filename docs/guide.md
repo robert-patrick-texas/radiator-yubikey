@@ -378,10 +378,10 @@ seven tests of real Radiator logins:
   device's new TACACS+ key).
 
 - `upgrade.sh`, 59 checks of [upgrades](#upgrade-a-turn-key-setup), in
-  `turnkey.sh`'s lab: three servers set up with radiator-yubikey 1.11.0
-  (its `yubikey-turnkey` and package, from the git tag `v1.11.0`), then
-  upgraded to this version (built from the working tree, as `1.11.0.1`
-  if `VERSION` is still `1.11.0`), the primary first, with `--status`
+  `turnkey.sh`'s lab: three servers set up with radiator-yubikey 1.12.0
+  (its `yubikey-turnkey` and package, from the git tag `v1.12.0`), then
+  upgraded to this version (built from the working tree, as `1.12.0.1`
+  if `VERSION` is still `1.12.0`), the primary first, with `--status`
   OK after; a newer Radiator (4.30-1 again, as 4.30-1+lab1, with a changed
   sample `radiator.conf`: the server's stays) on each; and PostgreSQL
   updated on each with `needrestart` installed (the standbys, a
@@ -3621,11 +3621,14 @@ settings in `site.toml` stay off until you add them. On the admins'
 machine, run the new release's `yubikey-turnkey` with the same
 `site.toml` and `secrets.toml`, and its package in the packages folder
 (`-p`, with Radiator's packages as before). It keeps every secret, and
-makes what the new release needs; from 1.11.0:
+makes what the new release needs, in a line like this one (1.11.0 to
+1.12.0):
 
 ```text
 secrets.toml: new replicator's SCRAM verifier, rewinder's SCRAM verifier
 ```
+
+From 1.12.0, there is nothing new to make, and no such line.
 
 Copy the folders, and run `setup.sh` on the primary first (its
 `yubikey-db.sh init` brings the database up to date before the other
@@ -3691,12 +3694,13 @@ time, the primary last:
 Not covered yet: PostgreSQL's next major version, Ubuntu's next release,
 and a new CA.
 
-- `tests/radiator/upgrade.sh` sets up three servers with 1.11.0 (from its
+- `tests/radiator/upgrade.sh` sets up three servers with 1.12.0 (from its
   git tag), upgrades them to this version, then to a newer Radiator, and
   then updates PostgreSQL on each (with `needrestart`) as above, and on the
   primary without the switchover, as the automatic updates do, with a
-  TACACS+ login every second: in the upgrade one missed, for a second,
-  while Radiator restarted; none in the updates or the failover.
+  TACACS+ login every second: in three runs, one missed or none in each
+  upgrade (radiator-yubikey's, Radiator's), for a second or two while
+  Radiator restarted; none in the updates or the failover.
 
 ### Change a turn-key setup
 

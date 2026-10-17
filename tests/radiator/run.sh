@@ -28,7 +28,7 @@
 #        anycast addresses over RADIUS and TACACS+, the firewall, a second
 #        run, a reboot, a new device, backups, servers rebuilt and replaced,
 #        new passwords (about 30 min; apt-get needs network access)
-#   upgrade  upgrade.sh: the same lab, set up with radiator-yubikey 1.11.0
+#   upgrade  upgrade.sh: the same lab, set up with radiator-yubikey 1.12.0
 #        (from its git tag), then upgraded to this version, to a newer
 #        Radiator, and Ubuntu's updates one server at a time (about 10 min)
 # Each lab stops after about twice its usual time (LIMIT below), so one that

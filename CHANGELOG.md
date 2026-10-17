@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- `tests/radiator/upgrade.sh` starts from 1.12.0 (its git tag), not
+  1.11.0, with `turnkey.sh`'s whole `site.toml` (`[backup]` too), and
+  checks that `yubikey-turnkey` makes no new secrets. The guide's
+  [Upgrade a turn-key setup](docs/guide.md#upgrade-a-turn-key-setup)
+  keeps the line from 1.11.0 to 1.12.0 as its example.
+
 ## 1.12.0 - 2026-10-17
 
 Day two for the turn-key setup: `setup.sh --status` checks a server;

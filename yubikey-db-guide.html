@@ -815,10 +815,10 @@ passwords and their own kept, a device's new TACACS+ key).</p></li>
 <li><p><code>upgrade.sh</code>, 59 checks of <a
 href="#upgrade-a-turn-key-setup">upgrades</a>, in
 <code>turnkey.sh</code>'s lab: three servers set up with
-radiator-yubikey 1.11.0 (its <code>yubikey-turnkey</code> and package,
-from the git tag <code>v1.11.0</code>), then upgraded to this version
-(built from the working tree, as <code>1.11.0.1</code> if
-<code>VERSION</code> is still <code>1.11.0</code>), the primary first,
+radiator-yubikey 1.12.0 (its <code>yubikey-turnkey</code> and package,
+from the git tag <code>v1.12.0</code>), then upgraded to this version
+(built from the working tree, as <code>1.12.0.1</code> if
+<code>VERSION</code> is still <code>1.12.0</code>), the primary first,
 with <code>--status</code> OK after; a newer Radiator (4.30-1 again, as
 4.30-1+lab1, with a changed sample <code>radiator.conf</code>: the
 server's stays) on each; and PostgreSQL updated on each with
@@ -4403,8 +4403,10 @@ you add them. On the admins' machine, run the new release's
 <code>yubikey-turnkey</code> with the same <code>site.toml</code> and
 <code>secrets.toml</code>, and its package in the packages folder
 (<code>-p</code>, with Radiator's packages as before). It keeps every
-secret, and makes what the new release needs; from 1.11.0:</p>
+secret, and makes what the new release needs, in a line like this one
+(1.11.0 to 1.12.0):</p>
 <pre class="text"><code>secrets.toml: new replicator&#39;s SCRAM verifier, rewinder&#39;s SCRAM verifier</code></pre>
+<p>From 1.12.0, there is nothing new to make, and no such line.</p>
 <p>Copy the folders, and run <code>setup.sh</code> on the primary first
 (its <code>yubikey-db.sh init</code> brings the database up to date
 before the other servers' Radiator needs it), then on the other two, one
@@ -4457,11 +4459,12 @@ sudo /root/turnkey/setup.sh --status     # OK once it streams again</code></pre>
 release, and a new CA.</p>
 <ul>
 <li><code>tests/radiator/upgrade.sh</code> sets up three servers with
-1.11.0 (from its git tag), upgrades them to this version, then to a
+1.12.0 (from its git tag), upgrades them to this version, then to a
 newer Radiator, and then updates PostgreSQL on each (with
 <code>needrestart</code>) as above, and on the primary without the
 switchover, as the automatic updates do, with a TACACS+ login every
-second: in the upgrade one missed, for a second, while Radiator
+second: in three runs, one missed or none in each upgrade
+(radiator-yubikey's, Radiator's), for a second or two while Radiator
 restarted; none in the updates or the failover.</li>
 </ul>
 </section>
