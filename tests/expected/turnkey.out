@@ -16,11 +16,11 @@ $ yubikey-turnkey site.toml
 out/admin/: 3 written
 wrote out/devices.md
 out/east1/: 34 written
-out/east2/: 31 written
+out/east2/: 34 written
 wrote out/routers.md
 wrote out/runbook.md
 wrote out/secrets.toml.cms
-out/west/: 31 written
+out/west/: 34 written
 [exit 0]
 
 secrets.toml.cms: secrets.toml, encrypted
@@ -42,6 +42,7 @@ secrets.toml.cms: secrets.toml, encrypted
 600 east1/server.env
 700 east1/setup.sh
 700 east2
+700 east2/db
 700 east2/files
 600 east2/files.list
 600 east2/hosts
@@ -52,6 +53,7 @@ secrets.toml.cms: secrets.toml, encrypted
 600 runbook.md
 600 secrets.toml.cms
 700 west
+700 west/db
 700 west/files
 600 west/files.list
 600 west/hosts
@@ -291,6 +293,8 @@ BACKUP="1"
 # secrets.env - Made by yubikey-turnkey <VERSION> from site.toml: NAME=value
 # lines, which setup.sh reads (never runs as shell code).
 RADIATOR_PASSWORD="SZtegVTbbrD5zVRr9BzjnPoUVvPfjmgB"
+RADIATOR_SCRAM="SCRAM-SHA-256$4096:Ra1vW2aXtRKWDqjPxho9jw==$Tt0HuMqueE5yYykn2CwGyeFG0VoV92Fum8mlWVd/GCI=:rwaq1hdNIthIGVrvP0E33T37cKY+PZh8KKy2gwE9K2w="
+ADMIN_SCRAM_opsadmin="SCRAM-SHA-256$4096:h5MfWw9BuaqGfcStpD8Kow==$7Dc7BIx4dSrwEPJTGlTXlIqRX8MAsYsJjTttnH3pAE0=:iSVfGDe6b9korbyJ4xMqZU1PFqDTGR5zLIcVxRjY9mQ="
 
 
 --- out/east1/files/etc/default/etcd (600)
@@ -790,6 +794,17 @@ Only when both are lost for good, not cut off: on the third, `setup.sh
 other two again as above, and run setup.sh on both; the guide's "Two
 servers lost" says the rest.
 
+## A server replaced
+
+With a new name or new addresses (a site moved, say). First the old one,
+unless it is lost: if it is the primary, move the primary to another
+server, then run `setup.sh --reset NAME` on it. Change it in `site.toml`,
+run `yubikey-turnkey` again, and give the routers' admins the new
+`routers.md`. Copy the folders to the other two and run setup.sh on each:
+the primary's takes the old server's anycast check out of the database
+and puts the new one's in. Then set up the new server as in steps 1 to 3.
+The guide's "Replace a turn-key server" says the rest.
+
 ## Keep
 
 `secrets.toml` and this folder hold every password and key: keep them, and
@@ -1176,6 +1191,10 @@ FIREWALL="0"
 BACKUP="1"
 
 --- the files in out/west
+700 db
+600 db/anycast.csv
+600 db/groups
+600 db/services
 700 files
 600 files.list
 700 files/etc

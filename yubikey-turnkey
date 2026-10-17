@@ -15,8 +15,8 @@
 #   the same output. Then it writes, in out/ next to site.toml:
 #     SERVER/          one folder per server, to copy to it and run there:
 #                      setup.sh, its settings (server.env), the files it
-#                      installs (files/), and on the first server the
-#                      database's first contents (db/)
+#                      installs (files/), and the database's contents
+#                      (db/), which the primary's setup.sh applies
 #     admin/           for the admins' machines: the cluster's CA
 #                      certificate, PostgreSQL settings, ~/.pgpass lines
 #     runbook.md       the order to do things in
@@ -763,7 +763,6 @@ def env_file(site, title, pairs):
 def gen_server(site, sec, out, sv):
     n = sv["name"]
     d = f"{n}/"
-    first = sv is site.first
     servers = site.servers
     others = [o for o in servers if o is not sv]
     a = sec["anycast"][n]
@@ -797,11 +796,12 @@ def gen_server(site, sec, out, sv):
         ("BACKUP", int(site.backup is not None)),
     ]))
     # secrets.env: what setup.sh needs itself (the rest is in files/).
-    pairs = [("RADIATOR_PASSWORD", sec["cluster"]["radiator"])]
-    if first:
-        pairs.append(("RADIATOR_SCRAM", sec["cluster"]["radiator_scram"]))
-        for login in site.admins:
-            pairs.append((f"ADMIN_SCRAM_{login}", sec["admin"][login]["scram"]))
+    # (The roles' passwords, which the primary's setup.sh sets, as SCRAM
+    # verifiers: every server has those in its PostgreSQL anyway.)
+    pairs = [("RADIATOR_PASSWORD", sec["cluster"]["radiator"]),
+             ("RADIATOR_SCRAM", sec["cluster"]["radiator_scram"])]
+    for login in site.admins:
+        pairs.append((f"ADMIN_SCRAM_{login}", sec["admin"][login]["scram"]))
     out.add(d + "secrets.env", env_file(site, "secrets.env", pairs))
     with open(SETUP_SCRIPT) as fh:
         out.add(d + "setup.sh", fh.read(), 0o700)
@@ -1046,26 +1046,27 @@ KEEP={site.backup['keep']}
     f("firewall", "etc/iptables/rules.v4", v4)
     f("firewall", "etc/iptables/rules.v6", v6)
 
-    # The database's first contents, loaded by the first server.
-    if first:
-        rows = ["username,public_id,private_id,aes_key,password,active"]
-        svc = []
-        for o in servers:
-            k = sec["anycast"][o["name"]]
-            rows.append(f"anycast-{o['name']},{k['public_id']},{k['private_id']},{k['aes_key']},{k['pin']},1")
-            svc.append(f"svc.anycast-{o['name']}\t{k['tacacs_password']}")
-        out.add(d + "db/anycast.csv", "\n".join(rows) + "\n")
-        out.add(d + "db/services", "\n".join(svc) + "\n")
-        lines = [f"# {HEADER} {VERSION} from {site.src}: the groups setup.sh creates",
-                 "# (each once), as tab-separated lines: group NAME LABEL, access NAME",
-                 "# DEVICE_GROUP LEVEL REPLY, rule NAME DEVICE_GROUP RULE."]
-        for g in site.groups:
-            lines.append(f"group\t{g['name']}\t{g['label']}")
-            for ac in g["access"]:
-                lines.append(f"access\t{g['name']}\t{ac['devices']}\t{ac['level']}\t{ac['reply']}")
-                for r in ac["rules"]:
-                    lines.append(f"rule\t{g['name']}\t{ac['devices']}\t{r}")
-        out.add(d + "db/groups", "\n".join(lines) + "\n")
+    # The database's contents, which the primary's setup.sh applies: in
+    # every folder, as any server may be the primary. (Every server has the
+    # anycast checks' keys in its PostgreSQL anyway.)
+    rows = ["username,public_id,private_id,aes_key,password,active"]
+    svc = []
+    for o in servers:
+        k = sec["anycast"][o["name"]]
+        rows.append(f"anycast-{o['name']},{k['public_id']},{k['private_id']},{k['aes_key']},{k['pin']},1")
+        svc.append(f"svc.anycast-{o['name']}\t{k['tacacs_password']}")
+    out.add(d + "db/anycast.csv", "\n".join(rows) + "\n")
+    out.add(d + "db/services", "\n".join(svc) + "\n")
+    lines = [f"# {HEADER} {VERSION} from {site.src}: the groups setup.sh creates",
+             "# (each once), as tab-separated lines: group NAME LABEL, access NAME",
+             "# DEVICE_GROUP LEVEL REPLY, rule NAME DEVICE_GROUP RULE."]
+    for g in site.groups:
+        lines.append(f"group\t{g['name']}\t{g['label']}")
+        for ac in g["access"]:
+            lines.append(f"access\t{g['name']}\t{ac['devices']}\t{ac['level']}\t{ac['reply']}")
+            for r in ac["rules"]:
+                lines.append(f"rule\t{g['name']}\t{ac['devices']}\t{r}")
+    out.add(d + "db/groups", "\n".join(lines) + "\n")
 
     out.add(d + "files.list", "\n".join([
         f"# files.list - {HEADER} {VERSION} from {site.src}: the files setup.sh",
@@ -1343,6 +1344,17 @@ Only when both are lost for good, not cut off: on the third, `setup.sh
 --alone` makes it the cluster alone (it asks first). Then set up the
 other two again as above, and run setup.sh on both; the guide's "Two
 servers lost" says the rest.
+
+## A server replaced
+
+With a new name or new addresses (a site moved, say). First the old one,
+unless it is lost: if it is the primary, move the primary to another
+server, then run `setup.sh --reset NAME` on it. Change it in `site.toml`,
+run `yubikey-turnkey` again, and give the routers' admins the new
+`routers.md`. Copy the folders to the other two and run setup.sh on each:
+the primary's takes the old server's anycast check out of the database
+and puts the new one's in. Then set up the new server as in steps 1 to 3.
+The guide's "Replace a turn-key server" says the rest.
 
 ## Keep
 
@@ -1714,7 +1726,8 @@ def main():
             elif gone == [top]:
                 print(f"removed {show(outdir, top)}")
             else:
-                print(f"{show(outdir, top)}/: {len(mine)} written" + (f", {len(gone)} removed" if gone else ""))
+                print(f"{show(outdir, top)}/: " + ", ".join(
+                    ([f"{len(mine)} written"] if mine or not gone else []) + ([f"{len(gone)} removed"] if gone else [])))
     if not write_ and not remove:
         print(f"{show(outdir)}: up to date")
 
@@ -1723,6 +1736,18 @@ def main():
     gone = sorted(set((old.get("device") or {})) - {d["address"] for d in site.devices})
     if gone and (write_ or remove):
         note(f"{show(secpath)} keeps the secrets of devices no longer in {site.src}: {', '.join(gone)}")
+    # A server replaced: one no longer listed, or listed with new addresses.
+    replaced = "a server replaced: see the guide's \"Replace a turn-key server\""
+    names = {sv["name"] for sv in site.servers}
+    gone = sorted(set(old.get("anycast") or {}) - names)
+    if gone:
+        note(f"{show(secpath)}: the anycast keys and certificates of servers no longer in {site.src} "
+             f"are gone: {', '.join(gone)} ({replaced})")
+    oldpki = old.get("pki") if isinstance(old.get("pki"), dict) else {}
+    for sv in site.servers:
+        o = oldpki.get(sv["name"])
+        if isinstance(o, dict) and o.get("san") and o["san"] != sec["pki"][sv["name"]]["san"]:
+            note(f"{sv['name']} has new addresses, and so a new certificate ({replaced})")
     for sv in site.servers:
         if expires_within(sec["pki"][sv["name"]]["crt"], 60):
             note(f"warning: the certificate of {sv['name']} expires within 60 days: "

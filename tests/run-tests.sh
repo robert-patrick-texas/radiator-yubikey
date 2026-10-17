@@ -3093,6 +3093,12 @@ EOF
     sed -i 's/^ipv4 = "198.51.100.3"/ipv4 = "198.51.100.4"/' "$WORK/site.toml"
     tk site.toml
     openssl x509 -noout -ext subjectAltName -in "$WORK/out/c/files/etc/etcd/tls/server.crt"
+    # c replaced by d: its keys and certificate go; d's are made.
+    sed -i 's/^name = "c"/name = "d"/; s/^fqdn = "c.example.com"/fqdn = "d.example.com"/' "$WORK/site.toml"
+    tk site.toml
+    grep -c '^\[anycast\.c\]\|^\[pki\.c\]' "$WORK/secrets.toml"
+    grep -c '^\[anycast\.d\]\|^\[pki\.d\]' "$WORK/secrets.toml"
+    grep -o 'anycast-[a-z]*' "$WORK/out/a/db/anycast.csv" | paste -sd' '
 
     # --packages: Radiator's, and radiator-yubikey's with install.sh.
     mkdir "$WORK/pkgs"

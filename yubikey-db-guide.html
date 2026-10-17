@@ -765,7 +765,7 @@ commands; the package's units (and the backups' timer) neither enabled
 nor started by the install, and found sound by
 <code>systemd-analyze verify</code>, restarted by an upgrade only while
 they run, stopped by a removal, and gone after a purge.</li>
-<li><code>turnkey.sh</code>, 255 checks of <a href="#turn-key-setup">the
+<li><code>turnkey.sh</code>, 299 checks of <a href="#turn-key-setup">the
 turn-key setup</a>: <code>yubikey-turnkey</code> makes the folders from
 a <code>site.toml</code> with two routers at West's site, and
 <code>setup.sh</code> runs on three fresh Ubuntu 26.04 containers
@@ -802,11 +802,14 @@ moved back; East2 started over in place with <code>--reset</code>),
 joining when all three's was; two servers lost (East1 and East2: logins
 through West from its copy, <code>setup.sh --alone</code> on West, the
 two set up again at the same time, the OTP used on West alone refused
-after); and <code>--reset</code> on all three, then
-<code>setup.sh</code> again, and the last backup restored into the new
-cluster.</li>
+after); <code>--reset</code> on all three, then <code>setup.sh</code>
+again, and the last backup restored into the new cluster; and servers
+replaced (West moved to new addresses, its <code>--check</code> warning
+before the other two knew it, and East1, lost while it was the primary,
+replaced by a server of a new name and addresses, which then becomes the
+primary).</li>
 </ul>
-<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 35 minutes
+<pre class="bash"><code>tests/radiator/run.sh ~/radiator-packages        # all six, about 50 minutes
 tests/radiator/run.sh ~/radiator-packages ha     # only ha.sh (or e2e, groups, geo, package, or turnkey)</code></pre>
 <p>Each prints one <code>PASS</code> or <code>FAIL</code> line per check
 and ends with a count, such as
@@ -815,7 +818,7 @@ and ends with a count, such as
 <code>Two database servers: 63 passed, 0 failed</code>,
 <code>Three sites: 212 passed, 0 failed</code>,
 <code>Package: 49 passed, 0 failed</code> and
-<code>Turnkey: 255 passed, 0 failed</code>. Run them again with each new
+<code>Turnkey: 299 passed, 0 failed</code>. Run them again with each new
 Radiator version.
 <code>KEEP=1 tests/radiator/ha.sh yk-radiator-test:4.30-1</code> (or
 <code>geo.sh</code>) leaves the containers running afterwards, to look
@@ -3630,12 +3633,12 @@ back it up.</li>
 <code>east2/</code> and <code>west/</code>, each with
 <code>setup.sh</code>, the server's settings (<code>server.env</code>,
 <code>secrets.env</code>), every file it installs (<code>files/</code>,
-listed with their modes in <code>files.list</code>), and on the first
-server the database's first contents (<code>db/</code>). Next to them,
-<code>runbook.md</code> (the order to do things in),
-<code>routers.md</code>, <code>devices.md</code>, <code>admin/</code>
-(the files for the admins' machines), and with <code>[backup]</code>,
-<code>secrets.toml.cms</code>.</li>
+listed with their modes in <code>files.list</code>), and the database's
+contents (<code>db/</code>), which the primary's <code>setup.sh</code>
+applies. Next to them, <code>runbook.md</code> (the order to do things
+in), <code>routers.md</code>, <code>devices.md</code>,
+<code>admin/</code> (the files for the admins' machines), and with
+<code>[backup]</code>, <code>secrets.toml.cms</code>.</li>
 <li><strong><code>setup.sh</code> does the steps of the sections
 above,</strong> in order: the packages (PostgreSQL, Patroni, etcd and
 FRR from Ubuntu; Radiator and radiator-yubikey from the packages next to
@@ -3675,12 +3678,14 @@ href="#automatic-backups">automatic backups</a>, and
 <code>yubikey-turnkey</code> writes <code>secrets.toml</code> encrypted
 for the same certificate, which each server keeps too (see <a
 href="#turn-key-backups">Turn-key backups</a>).</li>
-<li><strong>The database's first contents, once.</strong> The first
-server loads the three anycast checks' keys and TACACS+ service
-accounts, the group <code>anycast-check</code>, and the groups in
-<code>site.toml</code>, each only if it isn't there yet. After that,
-change the groups with <code>yubikey-db.sh</code>: a later run doesn't
-undo it, and a key the check has renewed stays.</li>
+<li><strong>The database's contents, each once.</strong> The primary's
+<code>setup.sh</code> (the first server's, unless it failed over) loads
+the three anycast checks' keys and TACACS+ service accounts, the group
+<code>anycast-check</code>, and the groups in <code>site.toml</code>,
+each only if it isn't there yet, and removes the anycast checks of
+servers no longer in <code>site.toml</code>. After that, change the
+groups with <code>yubikey-db.sh</code>: a later run doesn't undo it, and
+a key the check has renewed stays.</li>
 <li><strong>The devices are in the folders.</strong> Radiator's
 <code>&lt;Client&gt;</code> clauses come from <code>site.toml</code>. To
 add a device, add it there, run <code>yubikey-turnkey</code> again, copy
@@ -4055,9 +4060,9 @@ database saw.</li>
 <pre class="text"><code>== etcd
   ..    installed /etc/etcd/tls/ca.crt /etc/etcd/tls/server.crt /etc/etcd/tls/server.key /etc/default/etcd
   ..    etcd: removed this server&#39;s member from before (512d880f0d6ebf0e), to add it again
-  ..    etcd: added this server&#39;s member again (9ac3382badfb3812), as a learner until it has caught up
+  ..    etcd: added this server&#39;s member (9ac3382badfb3812), as a learner until it has caught up
   ..    etcd: promoted this server&#39;s member, which has caught up
-  ok    etcd: joined the cluster again; 3 members healthy
+  ok    etcd: joined the cluster; 3 members healthy
 
 == patroni
   ..    removed the postgresql package&#39;s empty cluster 18/main
@@ -4100,8 +4105,9 @@ starts as the member it was at first, which the others removed: they
 refuse it, and <code>setup.sh</code> says
 <code>etcd: the others refused this server's etcd, started as in a new cluster: they have its member under another ID</code>,
 and adds its member again.</p></li>
-<li><p><strong>New names or addresses</strong> can't be had this way:
-not covered yet.</p></li>
+<li><p><strong>New names or addresses:</strong> see <a
+href="#replace-a-turn-key-server">Replace a turn-key
+server</a>.</p></li>
 <li><p><code>tests/radiator/turnkey.sh</code> rebuilds West, whose check
 had renewed its key, and East1, lost while it was the primary, on new
 servers; starts East2 over in place with <code>--reset</code>; and
@@ -4180,6 +4186,67 @@ two again at the same time, and checks that the OTP used on West alone
 is refused after.</li>
 </ul>
 </section>
+<section id="replace-a-turn-key-server" class="level3">
+<h3>Replace a turn-key server</h3>
+<p>To move a server to new addresses, or to replace it with one of a new
+name (when a site moves, say), the other two take the new one in: the
+old server's etcd member goes, and with a new name, its anycast check
+and service account too; the new server joins as a rebuilt one does.</p>
+<p><strong>1. The old server,</strong> unless it is lost: if it is the
+primary, move the primary to another server first, then start it over,
+which stops its services, and switch it off:</p>
+<pre class="bash"><code>sudo patronictl -c /etc/patroni/18-main.yml switchover --candidate east2 --force   # if it is the primary
+sudo /root/turnkey/setup.sh --reset NAME</code></pre>
+<p><strong>2. <code>site.toml</code>:</strong> the server's new name and
+FQDN, or its new addresses (and its routers, if they change), then run
+<code>yubikey-turnkey</code> again. It makes the new server's
+certificate, and for a new name its anycast key, and says why:</p>
+<pre class="text"><code>yubikey-turnkey: west has new addresses, and so a new certificate (a server replaced: see the guide&#39;s &quot;Replace a turn-key server&quot;)</code></pre>
+<p>For a new name it says that the old one's anycast key and certificate
+are gone from <code>secrets.toml</code>. Give the routers' admins the
+new <code>routers.md</code>: the server's routers peer with its new
+addresses.</p>
+<p><strong>3. The two that stay:</strong> copy their folders and run
+<code>setup.sh</code> on each. Each lets the new server through its
+firewall, and updates <code>/etc/hosts</code> and Patroni's settings
+(PostgreSQL's <code>pg_hba.conf</code>), and for a new name Radiator's
+list of database servers and partition mode's peers (Radiator restarts,
+so logins at that site wait a few seconds). Their etcd needs only quorum
+now, and isn't restarted for the new member list:</p>
+<pre class="text"><code>  ok    etcd: 2 of 3 members healthy (not west), with quorum</code></pre>
+<p>For a new name, the primary's <code>setup.sh</code> takes the old
+server's anycast check out of the database and puts the new one's
+in:</p>
+<pre class="text"><code>  ..    removed the anycast check of NAME, which isn&#39;t one of the servers now
+  ..    removed the service account svc.anycast-NAME</code></pre>
+<p><strong>4. The new server:</strong> steps 1 to 3 of the runbook, as
+for a rebuilt one. Its <code>setup.sh</code> removes the old server's
+etcd member (it stops if that one still answers: stop the old server
+first), and adds its own:</p>
+<pre class="text"><code>== etcd
+  ..    installed /etc/etcd/tls/ca.crt /etc/etcd/tls/server.crt /etc/etcd/tls/server.key /etc/default/etcd
+  ..    etcd: removed the member of west (https://172.31.99.13:2380), which isn&#39;t one of the three servers now
+  ..    etcd: added this server&#39;s member (5c25fbdaec985409), as a learner until it has caught up
+  ..    etcd: promoted this server&#39;s member, which has caught up
+  ok    etcd: joined the cluster; 3 members healthy</code></pre>
+<p>With a new name, its anycast check's key comes from the database,
+where the primary put it in step 3.</p>
+<p><strong>5. Check all three</strong> with
+<code>setup.sh --status</code>. If the new server is the first in
+<code>site.toml</code>, it is a standby: move the primary to it, as in
+step 5 of <a href="#rebuild-a-turn-key-server">Rebuild a turn-key
+server</a>.</p>
+<ul>
+<li><strong>Until the two that stay have run
+<code>setup.sh</code></strong>, their firewall drops the new server's
+connections, and its <code>setup.sh --check</code> warns:
+<code>no answer from ADDRESS on TCP 2380 within 3 s: the servers must reach each other on TCP 2379, 2380, 5432 and 8008</code>.</li>
+<li><code>tests/radiator/turnkey.sh</code> moves West to new addresses,
+after <code>--reset</code> on it, and replaces East1, lost while it was
+the primary, with a server of a new name and addresses, which then
+becomes the primary.</li>
+</ul>
+</section>
 <section id="change-a-turn-key-setup" class="level3">
 <h3>Change a turn-key setup</h3>
 <ul>
@@ -4201,9 +4268,9 @@ days; the tool warns 60 days before):
 <code>yubikey-turnkey --renew-certs site.toml</code>, then copy the
 folders and run <code>setup.sh</code> on each server, one at a
 time.</li>
-<li><strong>A server's name or address</strong> can't change this way
-once the cluster runs: etcd and Patroni keep them. That isn't covered
-yet. A server lost or broken is set up again with the same ones: see <a
+<li><strong>A server's name or addresses:</strong> see <a
+href="#replace-a-turn-key-server">Replace a turn-key server</a>. A
+server lost or broken is set up again with the same ones: see <a
 href="#rebuild-a-turn-key-server">Rebuild a turn-key server</a>.</li>
 <li><strong>Start over:</strong>
 <code>sudo /root/turnkey/setup.sh --reset NAME</code>
@@ -4738,6 +4805,18 @@ one for each clause).</td>
 <td>Run <code>setup.sh</code> on the other servers too. If it runs
 there, the servers can't reach each other on TCP 2379 and 2380: a
 firewall on the way, or a wrong address in <code>site.toml</code>.</td>
+</tr>
+<tr>
+<td><code>setup.sh</code> keeps
+<code>waiting for the primary, NAME, to add this server's anycast check</code></td>
+<td>A server replaced, with a new name: run <code>setup.sh</code> with
+the new folder on the primary (see <a
+href="#replace-a-turn-key-server">Replace a turn-key server</a>).</td>
+</tr>
+<tr>
+<td><code>setup.sh: error: etcd: the cluster has the member of NAME (URL), which isn't one of the three servers in this folder, and it runs</code></td>
+<td>The server this one replaces still runs etcd: stop it first
+(<code>setup.sh --reset NAME</code> on it).</td>
 </tr>
 <tr>
 <td><code>setup.sh</code> keeps

@@ -48,7 +48,12 @@
 # --yes; the two set up again at once, the
 # counters of West's logins in between kept, the primary moved back);
 # --reset on all three, then the last backup restored into the new
-# cluster.
+# cluster; then servers replaced (West moved to new addresses, after
+# --reset on it; East1, lost while the primary, replaced by east1b, a new
+# name and addresses): site.toml, the routers, setup.sh on the two that
+# stay (etcd with quorum only, the anycast checks swapped by the primary),
+# then on the new one (the old etcd member removed), the primary moved to
+# the new first server.
 #
 # Needs Docker, usable without sudo. KEEP=1 leaves the containers running.
 # Exits 0 when every check passes.
@@ -65,15 +70,17 @@ rads=$(cd -- "$2" && pwd)
 pass=0 fail=0
 SITES=(east1 east2 west)
 BASE=yk-turnkey-base:26.04
-declare -A IP=([east1]=172.31.99.11 [east2]=172.31.99.12 [west]=172.31.99.13 [rtr1]=172.31.99.2 [rtr2]=172.31.99.3)
-declare -A IP6=([east1]=fd53:99::11 [east2]=fd53:99::12 [west]=fd53:99::13 [rtr1]=fd53:99::2 [rtr2]=fd53:99::3)
+declare -A IP=([east1]=172.31.99.11 [east2]=172.31.99.12 [west]=172.31.99.13 [rtr1]=172.31.99.2 [rtr2]=172.31.99.3
+               [east1b]=172.31.99.15)
+declare -A IP6=([east1]=fd53:99::11 [east2]=fd53:99::12 [west]=fd53:99::13 [rtr1]=fd53:99::2 [rtr2]=fd53:99::3
+                [east1b]=fd53:99::15)
 NAS4=172.31.100.10 NAS6=fd53:100::10 NAS_NET4=172.31.100.0/24 NAS_NET6=fd53:100::/64
 ANY4=192.0.2.153 ANY6=2001:db8:153::153
 K1=6b1f0a9d2c7e4f3a8b5d0c1e9f2a7b6d
 DOMAIN=tk.test
 
 remove_lab() {
-    docker rm -f yk-tk-east1 yk-tk-east2 yk-tk-west yk-tk-rtr1 yk-tk-rtr2 yk-tk-nas >/dev/null 2>&1
+    docker rm -f yk-tk-east1 yk-tk-east1b yk-tk-east2 yk-tk-west yk-tk-rtr1 yk-tk-rtr2 yk-tk-nas >/dev/null 2>&1
     docker network rm yk-tk yk-tk-nas >/dev/null 2>&1
     docker volume rm yk-tk-lab >/dev/null 2>&1
 }
@@ -353,7 +360,7 @@ on nas "ip route replace $ANY4/32 via 172.31.100.2 && ip -6 route replace $ANY6/
 # East1, then East2; rtr2 with West only.
 router_conf() {
     local name=$1; shift
-    local -A pref=([west]=300 [east1]=200 [east2]=100)
+    local -A pref=([west]=300 [east1]=200 [east1b]=200 [east2]=100)
     local n a af
     printf 'frr defaults traditional\nhostname %s\nlog syslog informational\n!\n' "$name"
     printf 'ip prefix-list RADIUS-ANYCAST seq 10 permit %s/32\nipv6 prefix-list RADIUS-ANYCAST seq 10 permit %s/128\n!\n' "$ANY4" "$ANY6"
@@ -755,7 +762,7 @@ check "west: setup.sh on the new server, the other two running" "0 west is set u
 [[ $rc == 0 ]] || printf '%s\n' "$out"
 echo "(it took $((SECONDS - t)) s)"
 check_match "etcd: West's member from before removed, added again as a learner, promoted, and joined" \
-    $'== etcd\n.*  \\.\\.    etcd: removed this server\'s member from before \\([0-9a-f]+\\), to add it again\n  \\.\\.    etcd: added this server\'s member again \\([0-9a-f]+\\), as a learner until it has caught up\n.*  \\.\\.    etcd: promoted this server\'s member, which has caught up\n(  \\.\\.    [^\n]*\n)*  ok    etcd: joined the cluster again; 3 members healthy' "$out"
+    $'== etcd\n.*  \\.\\.    etcd: removed this server\'s member from before \\([0-9a-f]+\\), to add it again\n  \\.\\.    etcd: added this server\'s member \\([0-9a-f]+\\), as a learner until it has caught up\n.*  \\.\\.    etcd: promoted this server\'s member, which has caught up\n(  \\.\\.    [^\n]*\n)*  ok    etcd: joined the cluster; 3 members healthy' "$out"
 check "/etc/default/etcd: the folder's again" "" \
     "$(on west 'cmp /root/turnkey/files/etc/default/etcd /etc/default/etcd')"
 check "Patroni: West copied the database" "east1=leader east2=quorum west=quorum" \
@@ -792,7 +799,7 @@ on east1 "cp -a /lab/out/east1 /root/turnkey && chmod 700 /root/turnkey" || exit
 out=$(on east1 '/root/turnkey/setup.sh'); rc=$?
 check "east1: setup.sh on the new server" "0 east1 is set up." "$rc $(tail -1 <<<"$out")"
 [[ $rc == 0 ]] || printf '%s\n' "$out"
-check_match "etcd: joined again" "  ok    etcd: joined the cluster again; 3 members healthy" "$out"
+check_match "etcd: joined again" "  ok    etcd: joined the cluster; 3 members healthy" "$out"
 check_match "Patroni: it copies the cluster that runs" \
     "  \.\.    the cluster exists, with east2 as its primary: this server copies it, as a standby" "$out"
 check_match "the database: left as it is" \
@@ -827,7 +834,7 @@ since=$(on east2 'date +%s')
 out=$(on east2 '/root/turnkey/setup.sh'); rc=$?
 check "east2: setup.sh" "0 east2 is set up." "$rc $(tail -1 <<<"$out")"
 [[ $rc == 0 ]] || printf '%s\n' "$out"
-check_match "etcd: joined again" "  ok    etcd: joined the cluster again; 3 members healthy" "$out"
+check_match "etcd: joined again" "  ok    etcd: joined the cluster; 3 members healthy" "$out"
 check "Patroni: East2 copied the database" "east1=leader east2=quorum west=quorum" \
     "$(until_eq 60 "east1=leader east2=quorum west=quorum" members)"
 check "rtr1: all three advertise" "west,east1,east2 west,east1,east2" \
@@ -855,7 +862,7 @@ out=$(on west '/root/turnkey/setup.sh'); rc=$?
 check "with etcd on east2 again, west joins" "0 west is set up." "$rc $(tail -1 <<<"$out")"
 [[ $rc == 0 ]] || printf '%s\n' "$out"
 check_match "etcd: West's member removed, added again, and joined" \
-    "  \.\.    etcd: removed this server's member from before .*  ok    etcd: joined the cluster again; 3 members healthy" "$out"
+    "  \.\.    etcd: removed this server's member from before .*  ok    etcd: joined the cluster; 3 members healthy" "$out"
 # (Without quorum, Patroni demoted East1: either East may lead now.)
 east1_primary
 for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
@@ -881,7 +888,7 @@ check "west: setup.sh, once East1 and East2 run etcd" "0 west is set up." "$rc $
 check_match "etcd: refused, as the member it was at first" \
     "  \.\.    etcd: the others refused this server's etcd, started as in a new cluster: they have its member under another ID" "$out"
 check_match "removed, added again, and joined" \
-    "  \.\.    etcd: removed this server's member from before .*  ok    etcd: joined the cluster again; 3 members healthy" "$out"
+    "  \.\.    etcd: removed this server's member from before .*  ok    etcd: joined the cluster; 3 members healthy" "$out"
 check "/etc/default/etcd: the folder's again" "" \
     "$(on west 'cmp /root/turnkey/files/etc/default/etcd /etc/default/etcd')"
 east1_primary
@@ -949,9 +956,15 @@ done
 for n in east1 east2; do
     wait "$(cat "$work/$n.pid")"; rc=$?
     check "$n: setup.sh on the new server, with West alone" "0 $n is set up." "$rc $(tail -1 "$work/$n.log")"
-    if [[ $rc != 0 ]]; then echo "--- $n's setup.sh:"; cat "$work/$n.log"; fi
+    if [[ $rc != 0 ]]; then
+        echo "--- $n's setup.sh:"; cat "$work/$n.log"
+        for s in west east1 east2; do
+            echo "--- $s's etcd: its warnings"
+            on "$s" "journalctl -u etcd --since '-40 min' -o cat | grep -E '\"level\":\"(warn|error)\"' | tail -30 | cut -c1-300"
+        done
+    fi
     check_match "$n: etcd: added as a learner, promoted, and joined" \
-        $'  \\.\\.    etcd: added this server\'s member again \\([0-9a-f]+\\), as a learner until it has caught up\n.*  \\.\\.    etcd: promoted this server\'s member, which has caught up\n(  \\.\\.    [^\n]*\n)*  ok    etcd: joined the cluster again; 3 members healthy' \
+        $'  \\.\\.    etcd: added this server\'s member \\([0-9a-f]+\\), as a learner until it has caught up\n.*  \\.\\.    etcd: promoted this server\'s member, which has caught up\n(  \\.\\.    [^\n]*\n)*  ok    etcd: joined the cluster; 3 members healthy' \
         "$(cat "$work/$n.log")"
 done
 echo "(the two setup.sh took $((SECONDS - t)) s)"
@@ -1015,6 +1028,116 @@ check "the groups are back: svc.backup over TACACS+" PASS "$(tac "$ANY4" "$CORE_
 sleep 10
 check "rtr1: all three still advertise" "west,east1,east2 west,east1,east2" \
     "$(until_eq 30 "west,east1,east2 west,east1,east2" routes rtr1)"
+for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
+
+echo
+echo "== West moves: new addresses, the same name"
+# Planned: West, a standby, started over and gone; then site.toml, the
+# routers, the two that stay, and West at its new addresses.
+on west '/root/turnkey/setup.sh --reset west >/dev/null' || exit 1
+docker rm -f yk-tk-west >/dev/null
+check "rtr1: West gone" "east1,east2 east1,east2" "$(until_eq 60 "east1,east2 east1,east2" routes rtr1)"
+old4=${IP[west]} old6=${IP6[west]}
+IP[west]=172.31.99.14 IP6[west]=fd53:99::14
+lab "sed -i 's/^ipv4 = \"$old4\"\$/ipv4 = \"${IP[west]}\"/; s/^ipv6 = \"$old6\"\$/ipv6 = \"${IP6[west]}\"/' /lab/site.toml" || exit 1
+out=$(gen '-p /lab/pkgs site.toml')
+check_match "the generator: West's new certificate" \
+    'west has new addresses, and so a new certificate \(a server replaced: see the guide.s "Replace a turn-key server"\)' "$out"
+# The routers' admin, from routers.md.
+router_conf rtr1 east1 east2 west | docker exec -i yk-tk-rtr1 bash -c 'cat >/etc/frr/frr.conf && systemctl restart frr' || exit 1
+router_conf rtr2 west | docker exec -i yk-tk-rtr2 bash -c 'cat >/etc/frr/frr.conf && systemctl restart frr' || exit 1
+check "rtr1: East1 and East2 again" "east1,east2 east1,east2" "$(until_eq 60 "east1,east2 east1,east2" routes rtr1)"
+# The new server, before the two that stay know it: their firewall drops
+# its connections.
+names=(--add-host "east1.$DOMAIN:${IP[east1]}" --add-host "east2.$DOMAIN:${IP[east2]}" --add-host "west.$DOMAIN:${IP[west]}")
+server west && booted west && lab_route west || exit 1
+on west "cp -a /lab/out/west /root/turnkey && chmod 700 /root/turnkey" || exit 1
+check "west: --check, before the two that stay have run setup.sh: no answer from them" \
+    "  WARN  no answer from ${IP[east1]} on TCP 2380 within 3 s: the servers must reach each other on TCP 2379, 2380, 5432 and 8008|  WARN  no answer from ${IP[east2]} on TCP 2380 within 3 s: the servers must reach each other on TCP 2379, 2380, 5432 and 8008" \
+    "$(on west '/root/turnkey/setup.sh --check' | grep 'no answer from' | paste -sd'|')"
+since=$(on east1 'systemctl show -P ActiveEnterTimestamp --timestamp=unix etcd')
+for n in east1 east2; do
+    on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
+    out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
+    check "$n: setup.sh with West's new addresses" "0 $n is set up." "$rc $(tail -1 <<<"$out")"
+    [[ $rc == 0 ]] || printf '%s\n' "$out"
+    check_match "$n: etcd, without West" '  ok    etcd: 2 of 3 members healthy \(not west\), with quorum' "$out"
+done
+check "east1: etcd not restarted (only ETCD_INITIAL_CLUSTER changed)" "$since" \
+    "$(on east1 'systemctl show -P ActiveEnterTimestamp --timestamp=unix etcd')"
+check "east1: /etc/hosts has West's new address" "${IP[west]} west.$DOMAIN west" "$(on east1 "getent hosts west.$DOMAIN" | tr -s ' ')"
+check "east1: PostgreSQL lets it replicate" 1 \
+    "$(on east1 "runuser -u postgres -- psql -X -At -c \"SELECT count(*) FROM pg_hba_file_rules WHERE 'replication' = ANY(database) AND address = '${IP[west]}'\"")"
+out=$(on west '/root/turnkey/setup.sh'); rc=$?
+check "west: setup.sh at its new addresses" "0 west is set up." "$rc $(tail -1 <<<"$out")"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+check_match "etcd: its member at the old address removed, the new one added" \
+    $'== etcd\n.*  \\.\\.    etcd: removed the member of west \\(https://172\\.31\\.99\\.13:2380\\), which isn\'t one of the three servers now\n  \\.\\.    etcd: added this server\'s member \\([0-9a-f]+\\), as a learner until it has caught up\n.*  ok    etcd: joined the cluster; 3 members healthy' "$out"
+check "etcd: West's member, at its new address" "https://${IP[west]}:2380" \
+    "$(on east1 'etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt --key /etc/etcd/tls/server.key \
+                --endpoints https://172.31.99.11:2379 member list' | awk -F', ' '$3 == "west" {print $4}')"
+check "Patroni: West copied the database" "east1=leader east2=quorum west=quorum" \
+    "$(until_eq 60 "east1=leader east2=quorum west=quorum" members)"
+check "rtr1: West advertises again, first" "west,east1,east2 west,east1,east2" \
+    "$(until_eq 60 "west,east1,east2 west,east1,east2" routes rtr1)"
+check "rtr2 too" "west west" "$(until_eq 60 "west west" routes rtr2)"
+check "west: BGP and BFD with both routers" "BGP 4, BFD 4" "$(until_eq 30 "BGP 4, BFD 4" sessions west)"
+otp "${ALICE[@]}"
+check "alice logs in, through West" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
+for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
+
+echo
+echo "== East1 replaced: a new name and addresses, after it was lost"
+docker rm -f yk-tk-east1 >/dev/null
+check "Patroni: East2 takes over" "east2=leader west=quorum" "$(until_eq 90 "east2=leader west=quorum" members east2)"
+check "rtr1: West and East2 advertise" "west,east2 west,east2" "$(until_eq 60 "west,east2 west,east2" routes rtr1)"
+otp "${ALICE[@]}"
+check "logins go on" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
+lab "sed -i 's/^name = \"east1\"\$/name = \"east1b\"/; s/^fqdn = \"east1\.$DOMAIN\"\$/fqdn = \"east1b.$DOMAIN\"/;
+            s/^ipv4 = \"${IP[east1]}\"\$/ipv4 = \"${IP[east1b]}\"/; s/^ipv6 = \"${IP6[east1]}\"\$/ipv6 = \"${IP6[east1b]}\"/' /lab/site.toml" \
+    || exit 1
+out=$(gen '-p /lab/pkgs site.toml')
+check_match "the generator: East1's keys and certificate gone" \
+    'the anycast keys and certificates of servers no longer in site\.toml are gone: east1 \(a server replaced' "$out"
+SITES=(east1b east2 west)
+router_conf rtr1 east1b east2 west | docker exec -i yk-tk-rtr1 bash -c 'cat >/etc/frr/frr.conf && systemctl restart frr' || exit 1
+check "rtr1: West and East2 again" "west,east2 west,east2" "$(until_eq 60 "west,east2 west,east2" routes rtr1)"
+for n in east2 west; do
+    on "$n" "cp -a /lab/out/$n/. /root/turnkey/" || exit 1
+    out=$(on "$n" '/root/turnkey/setup.sh'); rc=$?
+    check "$n: setup.sh with east1b instead of East1" "0 $n is set up." "$rc $(tail -1 <<<"$out")"
+    [[ $rc == 0 ]] || printf '%s\n' "$out"
+    if [[ $n == east2 ]]; then
+        check_match "east2, the primary: East1's anycast check out of the database, east1b's in" \
+            $'  \\.\\.    removed the anycast check of east1, which isn\'t one of the servers now\n  \\.\\.    removed the service account svc\\.anycast-east1\n  ok    the anycast checks of east1b east2 west: keys, service accounts, group anycast-check' "$out"
+    fi
+done
+names=(--add-host "east1b.$DOMAIN:${IP[east1b]}" --add-host "east2.$DOMAIN:${IP[east2]}" --add-host "west.$DOMAIN:${IP[west]}")
+server east1b && booted east1b && lab_route east1b || exit 1
+on east1b "cp -a /lab/out/east1b /root/turnkey && chmod 700 /root/turnkey" || exit 1
+out=$(on east1b '/root/turnkey/setup.sh'); rc=$?
+check "east1b: setup.sh, the new first server" "0 east1b is set up." "$rc $(tail -1 <<<"$out")"
+[[ $rc == 0 ]] || printf '%s\n' "$out"
+check_match "etcd: East1's member removed, east1b's added" \
+    $'  \\.\\.    etcd: removed the member of east1 \\(https://172\\.31\\.99\\.11:2380\\), which isn\'t one of the three servers now\n  \\.\\.    etcd: added this server\'s member \\([0-9a-f]+\\), as a learner until it has caught up\n.*  ok    etcd: joined the cluster; 3 members healthy' "$out"
+check_match "Patroni: it copies East2's cluster" \
+    "  \.\.    the cluster exists, with east2 as its primary: this server copies it, as a standby" "$out"
+check_match "the database: its anycast check, from East2" "  ok    the database has this server's anycast check" "$out"
+check "the database: the anycast checks of the three" "anycast-east1b anycast-east2 anycast-west|svc.anycast-east1b svc.anycast-east2 svc.anycast-west" \
+    "$(on east2 "runuser -u postgres -- psql -X -At -d yubikey -c \"SELECT (SELECT string_agg(DISTINCT username, ' ') FROM yubikeys WHERE username LIKE 'anycast-%')
+                 || '|' || (SELECT string_agg(username, ' ' ORDER BY username) FROM service_accounts WHERE username LIKE 'svc.anycast-%')\"")"
+check "Patroni: east1b a standby" "east1b=quorum east2=leader west=quorum" \
+    "$(until_eq 60 "east1b=quorum east2=leader west=quorum" members east2)"
+check_status "east1b: --status: the primary isn't east1b" east1b '^1 east1b: WARNING - Patroni: the primary is east2, not east1b '
+on east1b 'patronictl -c /etc/patroni/18-main.yml switchover --candidate east1b --force >/dev/null 2>&1'
+check "the primary moved to east1b" "east1b=leader east2=quorum west=quorum" \
+    "$(until_eq 60 "east1b=leader east2=quorum west=quorum" members east1b)"
+check "rtr1: all three advertise" "west,east1b,east2 west,east1b,east2" \
+    "$(until_eq 60 "west,east1b,east2 west,east1b,east2" routes rtr1)"
+check_match "east1b's check logs in over RADIUS and TACACS+" '^ACCEPT in [0-9]+ ms; TACACS\+ PASS' \
+    "$(on east1b '/opt/radiator-yubikey/yubikey-anycast.sh status | sed -n "s/^last check: //p"')"
+otp "${ALICE[@]}"
+check "alice logs in" "ACCEPT from $ANY4" "$(radius "$ANY4" "$CORE_SECRET" alice "s3cr3t:$OTP")"
 for n in "${SITES[@]}"; do check_status "$n: --status OK" "$n" "^0 $n: OK\$"; done
 
 rm -rf -- "$work"

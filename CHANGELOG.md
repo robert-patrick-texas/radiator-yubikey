@@ -64,6 +64,15 @@
   logins in between into the database. The runbook has a "Two servers
   lost" section. See the guide's
   [Two servers lost](docs/guide.md#two-servers-lost).
+- Turn-key: a server replaced, with new addresses or a new name (when a
+  site moves, say): after `site.toml` and `yubikey-turnkey`, `setup.sh`
+  with the new folders on the two that stay, then on the new server, which
+  removes the old server's etcd member before adding its own (and stops
+  while that one still answers). `yubikey-turnkey` says when a server has
+  new addresses (a new certificate), or is gone from `site.toml` (its
+  anycast key and certificate with it). The runbook has an "A server
+  replaced" section. See the guide's
+  [Replace a turn-key server](docs/guide.md#replace-a-turn-key-server).
 
 ### Changed
 
@@ -73,13 +82,22 @@
   says where the backups are.
 - `yubikey-turnkey` says `removed out/FILE` for a file of its own it
   removed from `out/`.
+- Turn-key: every server's folder has `db/` and the roles' SCRAM
+  verifiers, and whichever server is the primary applies them when its
+  `setup.sh` runs (it was the first server only): the anycast checks of
+  the three servers, each once, and those of servers no longer in
+  `site.toml` removed. A first server that isn't the primary waits for its
+  anycast check instead of stopping.
+- Turn-key: on a server whose etcd already ran, `setup.sh` needs only
+  etcd's quorum (it waited for all three), and doesn't restart etcd when
+  only its `ETCD_INITIAL_*` settings changed.
 - `setup.sh --reset NAME` says what to run next: `setup.sh` on this server
   alone joins the other two again; after `--reset` on all three, on all
   three.
 
 ### Tests
 
-- `tests/radiator/turnkey.sh` (255 checks): `setup.sh --status` on
+- `tests/radiator/turnkey.sh` (299 checks): `setup.sh --status` on
   the three servers, from the package without the folder, and not as root;
   and what it says with etcd stopped on one server, a router down, the
   primary moved, the anycast addresses withdrawn, a folder copied but not
@@ -98,8 +116,12 @@
   was; two servers lost (East1 and East2: logins through West from its
   copy, `setup.sh --alone` on West, refused while they run, without a
   terminal and when not answered yes, the two set up again at the same time, the OTP used on West
-  alone refused after, the primary moved back); and after `--reset` on all
-  three, the last backup restored into the new cluster.
+  alone refused after, the primary moved back); after `--reset` on all
+  three, the last backup restored into the new cluster; and servers
+  replaced: West moved to new addresses, after `--reset` on it (its
+  `--check` warning before the two that stay knew it), and East1, lost
+  while the primary, replaced by a server of a new name and addresses,
+  which then became the primary.
 - `tests/radiator/geo.sh` (212 checks): the guide's steps for automatic
   backups on the three sites, a backup checked and decrypted on the
   client, and restored on the primary at its prompt after a login (the OTP
@@ -110,8 +132,10 @@
   as a normal user and with another option, `--alone` as a normal user and
   with another option, and `--yes` alone, and checks `secrets.toml.cms`
   (it decrypts to `secrets.toml`, is made again only when it or the
-  certificate changes, and goes with `[backup]`); `turnkey_errors` the
-  checks of `[backup]`; `pg_partition` shows the copy that isn't updated;
+  certificate changes, and goes with `[backup]`), and `db/` in every
+  folder; `turnkey_errors` the checks of `[backup]`; `turnkey_secrets` a
+  server with new addresses and a server renamed (what the tool says, and
+  the keys and certificate that go and come); `pg_partition` shows the copy that isn't updated;
   new: `backup` (the settings, `status`, and `decrypt` of whole, changed
   and cut files, with right and wrong keys and passphrases) and
   `pg_backup` (`run` and how many it keeps, `check`, and `restore`: its

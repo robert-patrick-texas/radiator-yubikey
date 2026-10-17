@@ -19,9 +19,11 @@
 #                two of the three servers run it
 #     patroni    PostgreSQL under Patroni: the first server creates the
 #                cluster, the others copy it from there
-#     database   the first server: the yubikey database, its roles and
-#                passwords, the anycast check's keys and service accounts,
-#                and the groups; the others wait for them
+#     database   the primary (the first server, unless it failed over):
+#                the yubikey database, its roles and passwords, the
+#                anycast checks' keys and service accounts (those of
+#                servers no longer listed removed), and the groups; the
+#                others wait for their anycast check
 #     radiator   Radiator's configuration (radiator-groups.example.conf with
 #                this server's settings), its devices, and its database clause
 #     partition  partition mode (when on in site.toml)
@@ -45,6 +47,10 @@
 #   again needs both. When two servers are lost for good, '--alone' on the
 #   third makes it the cluster alone; then setup.sh on the other two, set
 #   up again, joins them to it.
+#   A server replaced, with a new name or addresses: setup.sh with the new
+#   folders on the other two (on a member already, etcd needs only quorum;
+#   the primary's run swaps the anycast checks), then on the new server,
+#   which removes the old one's etcd member before adding its own.
 #   '--status' shows whether the server works, for people and for
 #   monitoring; it changes nothing.
 #
@@ -482,6 +488,9 @@ etcd_ready() {
     [[ $(etcdctl_ endpoint health --cluster 2>/dev/null | grep -c 'is healthy') == 3 ]]
 }
 
+# etcd_quorum: this server's etcd answers, with quorum.
+etcd_quorum() { etcdctl_ endpoint health >/dev/null 2>&1; }
+
 # etcd_peer_members: the members as the other two's etcd has them, from the
 # first that answers on its peer port, which needs no quorum: a line each,
 # ID NAME PEER-URL CLIENT-URL, with - for no name or client URL. (Over
@@ -500,15 +509,37 @@ for m in json.load(sys.stdin):
     return 1
 }
 
+# etcd_members: the members, as the other two's etcd lists them (with
+# quorum): a line each, as etcd_peer_members.
+etcd_members() {
+    local list
+    list=$(etcdctl_others member list 2>/dev/null) || return 1
+    awk -F', ' '{print $1, ($3 == "" ? "-" : $3), $4, ($5 == "" ? "-" : $5)}' <<<"$list"
+}
+
 # etcd_member ARGS...: etcdctl_others member ARGS; again, for up to 60 s,
 # while etcd says "unhealthy cluster" (it takes no member changes until it
 # has had quorum for 5 s, as when its servers have just started) or "too
-# many learner members" (another server's, being added at the same time).
+# many learner members" (another server's, being added at the same time),
+# or the change timed out (as when another server's member changes at the
+# same time). One that timed out may have been made all the same: made
+# again, etcd says so (the member exists already, or no more), and this
+# returns 2.
 etcd_member() {
-    local out t=$SECONDS
+    local out t=$SECONDS timed=0
     until out=$(etcdctl_others member "$@" 2>&1); do
-        if [[ $out != *'unhealthy cluster'* && $out != *'too many learner members'* ]] \
-            || ((SECONDS - t >= 60)); then
+        if [[ $timed == 1 && ( $out == *'member ID already exist'* || $out == *'Peer URLs already exists'*
+                               || $out == *'member not found'* ) ]]; then
+            printf '%s\n' "$out"
+            return 2
+        fi
+        if [[ $out == *'context deadline exceeded'* || $out == *'request timed out'* ]]; then
+            timed=1
+        elif [[ $out != *'unhealthy cluster'* && $out != *'too many learner members'* ]]; then
+            printf '%s\n' "$out"
+            return 1
+        fi
+        if ((SECONDS - t >= 60)); then
             printf '%s\n' "$out"
             return 1
         fi
@@ -527,15 +558,15 @@ etcd_alone() {
 # it under another ID, having added it again before, and removed the one
 # this etcd started as: once the others have quorum, it is added again
 # (once). A member added again is a learner until it has caught up with
-# the leader: then it is promoted.
+# the leader: then it is promoted (or no learner any more: promoted by a
+# request that timed out).
 etcd_up() {
     local log out
     etcd_ready && return 0
     if [[ -n $LEARNER ]]; then
-        if out=$(etcdctl_others member promote "$LEARNER" 2>&1); then
+        if out=$(etcdctl_others member promote "$LEARNER" 2>&1) \
+            || [[ $(tail -1 <<<"$out") == *'can only promote a learner member' ]]; then
             info "etcd: promoted this server's member, which has caught up"
-            LEARNER=''
-        elif [[ $(tail -1 <<<"$out") == *'can only promote a learner member' ]]; then
             LEARNER=''
         fi
     fi
@@ -566,20 +597,36 @@ etcd_up() {
 # etcd starts as in a new cluster; if so, a member that ran can't be added
 # again, and setup.sh stops.
 etcd_rejoin() {
-    local list quorum=1 line id name client out cluster
-    if list=$(etcdctl_others member list 2>/dev/null); then
-        list=$(awk -F', ' '{print $1, ($3 == "" ? "-" : $3), $4, ($5 == "" ? "-" : $5)}' <<<"$list")
+    local list quorum=1 line id name client out cluster='' sid sname speer sclient ip
+    if list=$(etcd_members); then
+        quorum=1
     elif list=$(etcd_peer_members) && [[ -n $(awk '$4 != "-"' <<<"$list") ]]; then
         quorum=0
     else
         return 0
+    fi
+    if [[ $quorum == 1 ]]; then
+        # The members of servers that aren't among the three now (replaced),
+        # once they don't answer: before this server's is added.
+        while read -r sid sname speer sclient; do
+            ip=${speer#https://} ip=${ip%:2380}
+            [[ -n $sid && " $IPV4S " != *" $ip "* ]] || continue
+            if [[ $sclient != - ]] && etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt \
+                   --key /etc/etcd/tls/server.key --endpoints "$sclient" --dial-timeout 2s --command-timeout 4s \
+                   endpoint health >/dev/null 2>&1; then
+                die "etcd: the cluster has the member of $sname ($speer), which isn't one of the three servers in this folder, and it runs: stop it first ($PROG --reset $sname on it)"
+            fi
+            out=$(etcd_member remove "$sid") || [[ $? == 2 ]] \
+                || die "etcd: cannot remove the member of $sname ($sid): $out"
+            info "etcd: removed the member of $sname ($speer), which isn't one of the three servers now"
+        done <<<"$list"
     fi
     line=$(awk -v u="https://$IPV4:2380" '$3 == u' <<<"$list")
     read -r id name _ client <<<"$line"
     [[ -n $line && $name != - && $client == - ]] && return 0
     [[ $quorum == 0 && ( -z $line || $client != - ) ]] && etcd_alone
     if [[ -n $line && $client != - ]]; then
-        out=$(etcd_member remove "$id") \
+        out=$(etcd_member remove "$id") || [[ $? == 2 ]] \
             || die "etcd: cannot remove this server's member from before ($id): $out"
         info "etcd: removed this server's member from before ($id), to add it again"
         line=''
@@ -587,14 +634,22 @@ etcd_rejoin() {
     if [[ -z $line ]]; then
         # As a learner, which counts for no quorum, until it has caught up:
         # if it never joined, a cluster of one (see --alone) would have none.
-        out=$(etcd_member add "$NAME" --learner --peer-urls "https://$IPV4:2380") \
-            || die "etcd: cannot add this server's member: $out"
-        # (etcdctl pads the ID with spaces to 16 characters.)
-        id=$(sed -n 's/^Member  *\([0-9a-f]*\) added.*/\1/p' <<<"$out")
-        cluster=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out")
-        info "etcd: added this server's member again ($id), as a learner until it has caught up"
-    else
-        # Added before, not started yet: the members as the others list them.
+        if out=$(etcd_member add "$NAME" --learner --peer-urls "https://$IPV4:2380"); then
+            # (etcdctl pads the ID with spaces to 16 characters.)
+            id=$(sed -n 's/^Member  *\([0-9a-f]*\) added.*/\1/p' <<<"$out")
+            cluster=$(sed -n 's/^ETCD_INITIAL_CLUSTER="\(.*\)"$/\1/p' <<<"$out")
+        elif [[ $? == 2 ]]; then
+            # Added by the request that timed out: as the others list it.
+            list=$(etcd_members) || die "etcd: cannot list the members"
+            read -r id _ <<<"$(awk -v u="https://$IPV4:2380" '$3 == u' <<<"$list")"
+        else
+            die "etcd: cannot add this server's member: $out"
+        fi
+        info "etcd: added this server's member ($id), as a learner until it has caught up"
+    fi
+    if [[ -z $cluster ]]; then
+        # Added before, not started yet (or by a request that timed out):
+        # the members as the others list them.
         cluster=$(awk -v u="https://$IPV4:2380" -v n="$NAME" '{
             printf "%s%s=%s", (NR > 1 ? "," : ""), ($3 == u ? n : ($2 == "-" ? "unstarted" NR : $2)), $3 }' <<<"$list")
     fi
@@ -610,7 +665,7 @@ etcd_rejoin() {
 }
 
 etcd_step() {
-    local members
+    local members before down=() ip i=0 names
     step etcd
     if ! done_ etcd-config; then
         # The package started a single-server etcd, with its default member;
@@ -628,6 +683,7 @@ etcd_step() {
         fi
         mark etcd-config
     fi
+    before=$(grep -Ev '^(#|ETCD_INITIAL_)' /etc/default/etcd 2>/dev/null)
     install_files etcd
     systemctl enable etcd 2>/dev/null
     REJOIN=0
@@ -635,16 +691,39 @@ etcd_step() {
     # refused leaves one.)
     if ! done_ etcd && [[ ! -d /var/lib/etcd/default/member/wal ]]; then etcd_rejoin; fi
     if [[ ${#CHANGED[@]} -gt 0 ]] && systemctl -q is-active etcd; then
-        systemctl restart --no-block etcd
+        # Not for ETCD_INITIAL_* alone (another server's address, say):
+        # they count only when the cluster is first made.
+        if ! done_ etcd || [[ ${#CHANGED[@]} -gt 1 || ${CHANGED[0]} != /etc/default/etcd \
+                               || $before != "$(grep -Ev '^(#|ETCD_INITIAL_)' /etc/default/etcd)" ]]; then
+            systemctl restart --no-block etcd
+        fi
     else
         systemctl start --no-block etcd
+    fi
+    if done_ etcd && [[ $REJOIN == 0 ]]; then
+        # A member already: quorum is enough, with another server down, or
+        # being replaced.
+        wait_for "etcd, with quorum (run $PROG on the others)" "$WAIT" etcd_quorum || exit 1
+        read -ra names <<<"$SERVERS"
+        for ip in $IPV4S; do
+            etcdctl --cacert /etc/etcd/tls/ca.crt --cert /etc/etcd/tls/server.crt --key /etc/etcd/tls/server.key \
+                --endpoints "https://$ip:2379" --dial-timeout 2s --command-timeout 4s endpoint health >/dev/null 2>&1 \
+                || down+=("${names[i]}")
+            i=$((i + 1))
+        done
+        if [[ ${#down[@]} -gt 0 ]]; then
+            ok "etcd: $((3 - ${#down[@]})) of 3 members healthy (not ${down[*]}), with quorum"
+        else
+            ok "etcd: 3 members healthy"
+        fi
+        return
     fi
     wait_for "etcd on all three servers (run $PROG on the others)" "$WAIT" etcd_up || exit 1
     mark etcd
     if [[ $REJOIN == 1 ]]; then
         # The folder's file again: its ETCD_INITIAL_* settings count no more.
         install_files etcd >/dev/null
-        ok "etcd: joined the cluster again; 3 members healthy"
+        ok "etcd: joined the cluster; 3 members healthy"
         return
     fi
     ok "etcd: 3 members healthy"
@@ -718,22 +797,32 @@ exists() {
 
 db_loaded() { exists yubikeys username "anycast-$NAME" && exists service_accounts username "svc.anycast-$NAME"; }
 
+# database_step: on the primary (the first server, unless it failed over),
+# the database as db/ has it: made if need be, the roles' passwords, the
+# anycast checks of the three servers (each loaded once: a key the check
+# renewed since stays; those of servers no longer listed removed), and
+# the groups that aren't there. Elsewhere: wait until the database has
+# this server's anycast check.
 database_step() {
-    local login user line kind group dev level reply new=() out skip='' csv
+    local login user line kind group dev level reply new=() out skip='' csv lead
     step database
-    if [[ $NAME != "$FIRST" ]]; then
-        wait_for "$FIRST to create the database (its $PROG)" "$WAIT" db_loaded || exit 1
-        ok "the database has this server's anycast check"
-        return
-    fi
     if ! local_primary; then
-        # As after a failover, or on this server rebuilt.
-        if done_ database || db_loaded; then
-            info "this server's PostgreSQL isn't the primary now: the database was made before; left as it is"
-            mark database
-            return
+        if db_loaded; then
+            if [[ $NAME == "$FIRST" ]]; then
+                # As after a failover, or on this server rebuilt.
+                info "this server's PostgreSQL isn't the primary now: the database was made before; left as it is"
+            fi
+        elif [[ $NAME != "$FIRST" ]] && ! done_ database && ! exists yubikeys username "anycast-$FIRST"; then
+            wait_for "$FIRST to create the database (its $PROG)" "$WAIT" db_loaded || exit 1
+        else
+            # A server replaced, with a new name: the primary adds its check.
+            lead=$(leader)
+            wait_for "the primary${lead:+, $lead,} to add this server's anycast check (run $PROG there, with its new folder)" \
+                "$WAIT" db_loaded || exit 1
         fi
-        die "this server's PostgreSQL isn't the primary: move the primary here first (sudo patronictl -c $PATRONI switchover --candidate $NAME --force)"
+        ok "the database has this server's anycast check"
+        mark database
+        return
     fi
     # shellcheck disable=SC2046,SC2086  # one --admin per login
     out=$(ydb init-pg $(printf -- '--admin %s ' $ADMINS) 2>&1) || { printf '%s\n' "$out"; die "yubikey-db.sh init-pg failed"; }
@@ -771,6 +860,17 @@ database_step() {
     # shellcheck disable=SC2046,SC2086  # one member per server
     out=$(ydb member add anycast-check $(printf 'svc.anycast-%s ' $SERVERS) 2>&1) \
         || { printf '%s\n' "$out"; die "cannot put the anycast checks in anycast-check"; }
+    # Those of servers no longer listed: replaced.
+    while IFS= read -r user; do
+        [[ -n $user && " $SERVERS " != *" ${user#anycast-} "* ]] || continue
+        out=$(ydb delete "$user" 2>&1) || { printf '%s\n' "$out"; die "cannot remove $user"; }
+        info "removed the anycast check of ${user#anycast-}, which isn't one of the servers now"
+    done <<<"$(pg -d yubikey -c "SELECT DISTINCT username FROM yubikeys WHERE username LIKE 'anycast-%' ORDER BY 1")"
+    while IFS= read -r user; do
+        [[ -n $user && " $SERVERS " != *" ${user#svc.anycast-} "* ]] || continue
+        out=$(ydb service delete "$user" 2>&1) || { printf '%s\n' "$out"; die "cannot remove $user"; }
+        info "removed the service account $user"
+    done <<<"$(pg -d yubikey -c "SELECT username FROM service_accounts WHERE username LIKE 'svc.anycast-%' ORDER BY 1")"
     ok "the anycast checks of $SERVERS: keys, service accounts, group anycast-check"
 
     # The groups from site.toml, each once.
