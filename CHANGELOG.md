@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- `tests/radiator/upgrade.sh` starts from 1.12.1 (its git tag), not
+  1.12.0.
+
 ## 1.12.1 - 2026-10-17
 
 A fix for the anycast check, which sometimes took the anycast addresses
