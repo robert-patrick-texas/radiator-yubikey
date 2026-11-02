@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 1.12.2 - 2026-11-02
+
+The guide makes the backups' key file with 600,000 rounds of PBKDF2 for
+its passphrase, and names the certificate `yubikey-backups` (see
+Changed). Only the guide and the tests change: the scripts are the same
+as 1.12.1's, so a server running 1.12.1 needs no upgrade. To upgrade
+anyway, install this release's package as before; on a turn-key setup,
+run this release's `yubikey-turnkey` with the same `site.toml` and
+`secrets.toml` and its package (`-p`; it makes no new secrets), copy the
+folders, and run `setup.sh` on the primary first, then on the other two
+(see [Upgrade a turn-key setup](docs/guide.md#upgrade-a-turn-key-setup)).
 
 ### Changed
 
