@@ -938,8 +938,9 @@ echo "== Automatic backups, as the guide sets them up"
 # The admins' machine is the client (yk-geo-nas). Step 1 there, with the
 # passphrase given instead of asked.
 admin() { docker exec -i yk-geo-nas bash -c "$1"; }
-admin 'cd /root && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -pass pass:geo-only -out backup.key \
-       && openssl req -new -x509 -key backup.key -passin pass:geo-only -days 7300 -subj "/CN=yubikey backups" -out backup.crt' \
+admin 'cd /root && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+       | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -passout pass:geo-only -out backup.key \
+       && openssl req -new -x509 -key backup.key -passin pass:geo-only -days 7300 -subj "/CN=yubikey-backups" -out backup.crt' \
     || exit 1
 # Step 2 on each server, with the certificate copied to it.
 for n in "${SITES[@]}"; do

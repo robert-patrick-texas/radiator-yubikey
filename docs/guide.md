@@ -1108,12 +1108,19 @@ groups.
 **1. Make the key pair** on an admin's machine, not on a server:
 
 ```bash
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
-openssl req -new -x509 -key backup.key -days 7300 -subj "/CN=yubikey backups" -out backup.crt
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+    | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj "/CN=yubikey-backups" -out backup.crt
 ```
 
 `openssl` asks for a passphrase for the key (twice), and for it again to
-sign the certificate. Keep `backup.key` in two places, apart from each
+sign the certificate. `genpkey` makes the key and hands it to `pkcs8`,
+so it is never on disk in clear. `pkcs8` encrypts it with AES-256-CBC,
+with a key made from the passphrase by 600,000 rounds of PBKDF2
+(HMAC-SHA256): each guess at the passphrase is slow (`genpkey`'s own
+`-aes-256-cbc` uses 2,048). OpenSSL can't encrypt a key file with
+AES-GCM ("AEAD ciphers not supported"); the backups themselves are
+AES-256-GCM. Keep `backup.key` in two places, apart from each
 other and from the servers (two USB drives in two safes, say), and the
 passphrase on its own (a password manager): whoever has both can read
 every AES key in every backup. Test that you can decrypt (step 4) before
@@ -1137,7 +1144,7 @@ the newest backup is 0 min old
 newest: /var/backups/yubikey-db.cms.0, 2026-10-16 22:53:42 UTC, 20 KB
 kept: 1 of 7, the oldest yubikey-db.cms.0 of 2026-10-16 22:53:42 UTC
 last run: 2026-10-16 22:53:42 UTC, ok
-encrypted to: CN = yubikey backups (SHA-256 06:9E:AE:5E:EA:1C:1E:C0:E8:55:CC:E1:85:A9:7A:14:CE:F8:99:19:DC:B3:A2:4C:87:8D:B9:02:2B:CF:6B:F5), until 2046-10-11
+encrypted to: CN = yubikey-backups (SHA-256 06:9E:AE:5E:EA:1C:1E:C0:E8:55:CC:E1:85:A9:7A:14:CE:F8:99:19:DC:B3:A2:4C:87:8D:B9:02:2B:CF:6B:F5), until 2046-10-11
 ```
 
 The timer starts it every day at about 03:00 (the server's time), or at
@@ -2993,8 +3000,9 @@ from the example, and the backups' key pair next to it (step 1 of
 ```bash
 cp /opt/radiator-yubikey/site.example.toml site.toml
 editor site.toml
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
-openssl req -new -x509 -key backup.key -days 7300 -subj "/CN=yubikey backups" -out backup.crt
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+    | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj "/CN=yubikey-backups" -out backup.crt
 ```
 
 `site.toml` names only the certificate (`[backup] certificate =

@@ -146,8 +146,9 @@ EOF
     lab 'mkdir -p /lab/pkgs && /repo/packaging/build-deb.sh /lab/pkgs >/dev/null && cp /radiator/*.deb /lab/pkgs/' || exit 1
     # The backups' key pair, as the guide makes it (with the passphrase given
     # here instead of asked).
-    lab 'cd /lab && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -pass pass:lab-only -out backup.key \
-         && openssl req -new -x509 -key backup.key -passin pass:lab-only -days 7300 -subj "/CN=yubikey backups" -out backup.crt' \
+    lab 'cd /lab && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+         | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -passout pass:lab-only -out backup.key \
+         && openssl req -new -x509 -key backup.key -passin pass:lab-only -days 7300 -subj "/CN=yubikey-backups" -out backup.crt' \
         || exit 1
 }
 

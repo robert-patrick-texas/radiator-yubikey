@@ -1678,17 +1678,24 @@ would undo and asks first.</li>
 </ul>
 <p><strong>1. Make the key pair</strong> on an admin's machine, not on a
 server:</p>
-<pre class="bash"><code>openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
-openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey backups&quot; -out backup.crt</code></pre>
+<pre class="bash"><code>openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+    | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey-backups&quot; -out backup.crt</code></pre>
 <p><code>openssl</code> asks for a passphrase for the key (twice), and
-for it again to sign the certificate. Keep <code>backup.key</code> in
-two places, apart from each other and from the servers (two USB drives
-in two safes, say), and the passphrase on its own (a password manager):
-whoever has both can read every AES key in every backup. Test that you
-can decrypt (step 4) before you rely on it. <code>backup.crt</code>
-isn't secret. It lasts 20 years, but the backups decrypt after it
-expires too. When you make a new pair, keep the old key as long as you
-keep backups made for it.</p>
+for it again to sign the certificate. <code>genpkey</code> makes the key
+and hands it to <code>pkcs8</code>, so it is never on disk in clear.
+<code>pkcs8</code> encrypts it with AES-256-CBC, with a key made from
+the passphrase by 600,000 rounds of PBKDF2 (HMAC-SHA256): each guess at
+the passphrase is slow (<code>genpkey</code>'s own
+<code>-aes-256-cbc</code> uses 2,048). OpenSSL can't encrypt a key file
+with AES-GCM ("AEAD ciphers not supported"); the backups themselves are
+AES-256-GCM. Keep <code>backup.key</code> in two places, apart from each
+other and from the servers (two USB drives in two safes, say), and the
+passphrase on its own (a password manager): whoever has both can read
+every AES key in every backup. Test that you can decrypt (step 4) before
+you rely on it. <code>backup.crt</code> isn't secret. It lasts 20 years,
+but the backups decrypt after it expires too. When you make a new pair,
+keep the old key as long as you keep backups made for it.</p>
 <p><strong>2. On each database server,</strong> the certificate, the
 settings and the timer, and a first backup now:</p>
 <pre class="bash"><code>sudo install -D -m 0644 backup.crt /etc/radiator/backup.crt
@@ -1700,7 +1707,7 @@ sudo /opt/radiator-yubikey/yubikey-backup.sh status</code></pre>
 newest: /var/backups/yubikey-db.cms.0, 2026-10-16 22:53:42 UTC, 20 KB
 kept: 1 of 7, the oldest yubikey-db.cms.0 of 2026-10-16 22:53:42 UTC
 last run: 2026-10-16 22:53:42 UTC, ok
-encrypted to: CN = yubikey backups (SHA-256 06:9E:AE:5E:EA:1C:1E:C0:E8:55:CC:E1:85:A9:7A:14:CE:F8:99:19:DC:B3:A2:4C:87:8D:B9:02:2B:CF:6B:F5), until 2046-10-11</code></pre>
+encrypted to: CN = yubikey-backups (SHA-256 06:9E:AE:5E:EA:1C:1E:C0:E8:55:CC:E1:85:A9:7A:14:CE:F8:99:19:DC:B3:A2:4C:87:8D:B9:02:2B:CF:6B:F5), until 2046-10-11</code></pre>
 <p>The timer starts it every day at about 03:00 (the server's time), or
 at the next boot when the server was off then. <code>status</code> exits
 with 0 when the newest backup is less than 26 hours old and the last run
@@ -3743,8 +3750,9 @@ href="#automatic-backups">Automatic backups</a> says how to keep the
 key):</p>
 <pre class="bash"><code>cp /opt/radiator-yubikey/site.example.toml site.toml
 editor site.toml
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out backup.key
-openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey backups&quot; -out backup.crt</code></pre>
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+    | openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 600000 -out backup.key
+openssl req -new -x509 -key backup.key -days 7300 -subj &quot;/CN=yubikey-backups&quot; -out backup.crt</code></pre>
 <p><code>site.toml</code> names only the certificate
 (<code>[backup] certificate = "backup.crt"</code>);
 <code>yubikey-turnkey</code> refuses a file that holds a private

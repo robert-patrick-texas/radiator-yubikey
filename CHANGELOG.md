@@ -2,10 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- The guide's commands for the backups' key pair (step 1 of
+  [Automatic backups](docs/guide.md#automatic-backups) and of
+  [Set up three sites with yubikey-turnkey](docs/guide.md#set-up-three-sites-with-yubikey-turnkey))
+  encrypt `backup.key` with `openssl pkcs8 -iter 600000`: 600,000 rounds
+  of PBKDF2 (HMAC-SHA256) instead of the 2,048 of `genpkey -aes-256-cbc`,
+  so each guess at its passphrase takes about 300 times as long. The key
+  file is still AES-256-CBC, since OpenSSL can't encrypt one with
+  AES-GCM; the backups themselves are AES-256-GCM, as before. The
+  certificate's name is `CN=yubikey-backups` (a hyphen, not a space).
+
 ### Tests
 
 - `tests/radiator/upgrade.sh` starts from 1.12.1 (its git tag), not
   1.12.0.
+- `tests/radiator/turnkey-lib.sh` and `tests/radiator/geo.sh` make the
+  backups' key pair with the guide's new commands.
 
 ## 1.12.1 - 2026-10-17
 
