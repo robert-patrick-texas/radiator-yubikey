@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+
+- `tests/radiator/upgrade.sh` starts from 1.12.2 (its git tag), not
+  1.12.1.
+
 ## 1.12.2 - 2026-11-02
 
 The guide makes the backups' key file with 600,000 rounds of PBKDF2 for
